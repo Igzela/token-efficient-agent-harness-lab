@@ -729,12 +729,6 @@ pub fn derive_final_execution_manifest(
     {
         return Err("immutable proposal does not exactly bind the final execution".into());
     }
-    let binding_value = proposal
-        .get("provider_execution_binding")
-        .or_else(|| proposal.pointer("/provider/execution_binding"))
-        .ok_or("immutable proposal provider execution binding is required")?;
-    let binding =
-        crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json(binding_value)?;
     let requested_model = delegation
         .models
         .get("implementer")
@@ -752,6 +746,13 @@ pub fn derive_final_execution_manifest(
         })
         .transpose()?
         .unwrap_or_else(crate::rwe::campaign_package::canonical_deepseek_provider_binding);
+    let binding_value = proposal
+        .get("provider_execution_binding")
+        .or_else(|| proposal.pointer("/provider/execution_binding"));
+    let binding = match binding_value {
+        Some(v) => crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json(v)?,
+        None => expected_binding.clone(),
+    };
     if binding != expected_binding {
         return Err(
             "immutable proposal provider execution binding does not exactly match the frozen package"
@@ -1061,11 +1062,6 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
         "merge": false,
         "auto_merge": false
     });
-    let observed_binding = crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json(
-        manifest
-            .get("provider_execution_binding")
-            .ok_or("final manifest provider execution binding is required")?,
-    )?;
     let requested_model = manifest
         .pointer("/models/implementer")
         .and_then(Value::as_str)
@@ -1087,6 +1083,10 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
             package.provider_execution_binding_for_model(requested_model)?
         }
         None => crate::rwe::campaign_package::canonical_deepseek_provider_binding(),
+    };
+    let observed_binding = match manifest.get("provider_execution_binding") {
+        Some(b) => crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json(b)?,
+        None => expected_binding.clone(),
     };
     if observed_binding != expected_binding {
         return Err(
@@ -1169,7 +1169,9 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
     };
     let valid_models = manifest.get("models") == Some(&expected_models);
     let valid_provider = manifest.get("provider") == Some(&expected_provider)
-        && manifest.get("provider_execution_binding") == Some(&expected_binding_json);
+        && manifest
+            .get("provider_execution_binding")
+            .map_or(package_id.is_none(), |b| b == &expected_binding_json);
     let policy_matches = manifest
         .pointer("/target/repository")
         .and_then(Value::as_str)
@@ -1226,11 +1228,10 @@ fn delegated_execution_contract(
     node_id: &str,
 ) -> Result<crate::provider::managed_deepseek::PersistedManagedExecutionContract, String> {
     validate_delegated_manifest_policy(manifest)?;
-    let provider_binding = crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json(
-        manifest
-            .get("provider_execution_binding")
-            .ok_or("delegated manifest provider execution binding is missing")?,
-    )?;
+    let provider_binding = match manifest.get("provider_execution_binding") {
+        Some(b) => crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json(b)?,
+        None => crate::rwe::campaign_package::canonical_deepseek_provider_binding(),
+    };
     let node_ids = manifest
         .pointer("/execution/workflow_node_ids")
         .and_then(Value::as_array)
@@ -17379,5 +17380,103 @@ mod tests {
                 &principal,
             )
             .is_err());
+    }
+
+    #[test]
+    fn legacy_proposal_without_provider_binding_derives_and_validates_successfully() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        let store =
+            LocalProductStore::new_with_clock(&path, || "2026-07-25T12:00:00Z".into()).unwrap();
+        seed_key(&store, "tenant-a", "legacy-operator");
+        let principal = store
+            .authenticate_managed_acceptance_principal("tenant-a", "legacy-operator", Some(1.0))
+            .unwrap();
+        let delegation = delegated_contract();
+        store.persist_delegation(&principal, &delegation).unwrap();
+        store
+            .with_conn(|connection| {
+                connection
+                    .execute(
+                        "INSERT INTO product_tasks (
+                            task_id, schema_version, tenant_id, workspace_id, idempotency_key,
+                            status, version, objective_fingerprint, target_id, target_repo_path,
+                            source_revision, source_tree_hash, output_intent, risk_class,
+                            approval_required, confirm_execution, confirm_output,
+                            intake_contract_sha256, intake_json, workspace_binding_json,
+                            plan_id, run_id, workspace_record_id, failure_code, failure_detail,
+                            created_at, updated_at, created_by
+                         ) VALUES (
+                            ?1, 'product_task.v1', 'tenant-a', 'default',
+                            'legacy-proposal-test', 'graph_ready', 1, ?2,
+                            'alters-lab-docs', '/redacted/target', ?3, NULL, 'draft_pr', 'low',
+                            1, 1, 1, ?4, '{}', ?5, NULL, 'run-legacy-1',
+                            NULL, NULL, NULL, ?6, ?6, 'test'
+                         )",
+                        params![
+                            "product-task-golden-path-1",
+                            "a".repeat(64),
+                            "b".repeat(40),
+                            "c".repeat(64),
+                            json!({
+                                "allowed_paths": ["docs/USER_GUIDE.md"],
+                                "workspace_path": "/redacted/not-used"
+                            })
+                            .to_string(),
+                            "2026-07-25T12:00:00Z"
+                        ],
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        store
+            .bind_delegation_to_product_task(
+                &principal,
+                "product-task-golden-path-1",
+                &delegation.delegation_id,
+            )
+            .unwrap();
+        // Legacy proposal without provider_execution_binding:
+        let mut legacy_proposal = json!({
+            "schema_version": "managed_proposal_manifest.v1",
+            "target_repository": "Igzela/alters-lab",
+            "target_main_sha": "6".repeat(40),
+            "mutable_paths": ["docs/USER_GUIDE.md"],
+            "max_cost_usd": null,
+            "verifier": "deterministic_docs_health_check_v1"
+        });
+        legacy_proposal["manifest_sha256"] =
+            json!(compute_attempt_manifest_sha256(&legacy_proposal).unwrap());
+        store
+            .persist_approved_delegated_proposal(
+                &delegation.delegation_id,
+                &legacy_proposal,
+                legacy_proposal["manifest_sha256"].as_str().unwrap(),
+            )
+            .unwrap();
+
+        let manifest =
+            derive_final_execution_manifest(&legacy_proposal, &delegation, &delegated_execution())
+                .unwrap();
+        let approval = store
+            .approve_delegated_manifest(&principal, &delegation.delegation_id, &manifest)
+            .unwrap();
+        let spend = store
+            .issue_delegated_spend(
+                &principal,
+                &delegation.delegation_id,
+                approval["approval_receipt_sha256"].as_str().unwrap(),
+                &manifest,
+            )
+            .unwrap();
+        assert_eq!(spend["status"], "active");
+
+        // Validate contract derivation:
+        let contract = delegated_execution_contract(&manifest, "planning").unwrap();
+        assert_eq!(contract.requested_model, "deepseek-v4-pro");
+        let canonical = crate::rwe::campaign_package::canonical_deepseek_provider_binding();
+        assert_eq!(contract.base_url, canonical.base_url);
+        assert_eq!(contract.endpoint_path, canonical.endpoint_path);
     }
 }

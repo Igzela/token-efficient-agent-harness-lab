@@ -2024,7 +2024,7 @@ impl LedgerWorker for LiveLedgerCellWorker {
                                             Self::worker_error(&context.selected_task.id, &e)
                                         })?;
                                 }
-                                Err(_e) => {
+                                Err(error) => {
                                     // B5: Preserve provider success and usage while recording a
                                     // separate Store-owned action failure. The provider journal
                                     // remains succeeded, so the manager sees a successful effect
@@ -2035,11 +2035,11 @@ impl LedgerWorker for LiveLedgerCellWorker {
                                             &binding,
                                             "workspace_action_failed",
                                         )
-                                        .map_err(|error| {
+                                        .map_err(|err| {
                                             Self::worker_error(
                                                 &context.selected_task.id,
                                                 &format!(
-                                                    "workspace action failure evidence persist failed: {error}"
+                                                    "workspace action failure evidence persist failed: {err}"
                                                 ),
                                             )
                                         })?;
@@ -2078,9 +2078,9 @@ impl LedgerWorker for LiveLedgerCellWorker {
                                         partial_summary: None,
                                         artifact_refs: vec![],
                                         findings: vec![],
-                                        failure_reason: Some(
-                                            "managed workspace action failed".to_string(),
-                                        ),
+                                        failure_reason: Some(format!(
+                                            "managed workspace action failed: {error}"
+                                        )),
                                         usage: Some(round.envelope),
                                         effect_receipt: Some(receipt),
                                     });
@@ -9209,6 +9209,9 @@ mod tests {
         assert_eq!(
             record.disposition,
             crate::harness_evolution::LedgerTerminalDisposition::Completed,
+            "record={:?} evidence={:?}",
+            record,
+            evidence,
         );
         assert_eq!(evidence.rounds.len(), 2);
         assert_eq!(record.metrics.replan_count, 1);
