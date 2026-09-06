@@ -171,6 +171,35 @@ def promoted_dispatch_capsule(**overrides) -> dict:
     return value
 
 
+def owner_direct_binding(**overrides) -> dict:
+    value = {
+        "schema_version": "owner_direct_repair_binding.v1",
+        "source": "github_pr_owner_comment",
+        "dispatch_lane": "owner_direct_existing_pr_repair",
+        "action": "OWNER_DIRECT_EXISTING_PR_REPAIR",
+        "repository": "Igzela/token-efficient-agent-harness-lab",
+        "pr_number": 710,
+        "base_branch": "main",
+        "draft": True,
+        "head_sha": HEAD,
+        "head_branch": "codex/repair",
+        "authorization_id": "repair-1",
+        "owner_identity": "github:Igzela",
+        "owner_association": "OWNER",
+        "owner_comment_id": 9001,
+        "allowed_paths": ["scripts/", "tests/"],
+        "verification": [
+            "git diff --check",
+            "uv run --no-project python -m unittest tests.test_session_context",
+        ],
+    }
+    value.update(overrides)
+    value["binding_sha256"] = session_context._json_sha256(
+        {key: item for key, item in value.items() if key != "binding_sha256"}
+    )
+    return value
+
+
 def checkout_snapshot(**overrides) -> dict:
     value = {
         "accepted_main_sha": MAIN,
@@ -969,6 +998,125 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(entry["schema_version"], "agent_session_entry.v1")
         self.assertEqual(entry["context_mode"], "STOP")
         self.assertEqual(entry["resume_disposition"], "DECISION_REQUIRED")
+
+    def test_owner_direct_entry_authorizes_fresh_existing_pr_without_lifecycle_state(self):
+        snapshot = checkout_snapshot(
+            head_sha=HEAD,
+            branch="codex/repair",
+            dirty_paths=[],
+            path_digests={},
+            worktree_sha256="0" * 64,
+        )
+        entry = session_context.build_owner_direct_repair_entry(
+            contract=session_context.parse_route_contract(route_document()),
+            role="coding",
+            accepted_main_sha=MAIN,
+            document_source="accepted",
+            document_source_binding=MAIN,
+            binding=owner_direct_binding(),
+            snapshot=snapshot,
+        )
+
+        self.assertEqual(entry["schema_version"], "agent_owner_direct_repair_entry.v1")
+        self.assertTrue(entry["execution_authorized"])
+        self.assertFalse(entry["checkpoint_allowed"])
+        self.assertEqual(entry["context_mode"], "OWNER_DIRECT_REPAIR")
+        self.assertEqual(entry["resume_disposition"], "AUTHORIZED")
+        self.assertIsNone(entry["mission_id"])
+        self.assertIsNone(entry["stage_id"])
+        self.assertIsNone(entry["card_id"])
+        self.assertEqual(
+            entry["steward_continuity"]["reason"],
+            "steward_continuity_unavailable",
+        )
+        self.assertEqual(
+            entry["execution_authority"]["availability"], "confirmed"
+        )
+        self.assertIn("git diff --check", entry["verification_commands"])
+        self.assertIn("Do not write directly to main", entry["forbidden_next_actions"])
+
+    def test_owner_direct_entry_rejects_wrong_checkout_or_binding(self):
+        arguments = {
+            "contract": session_context.parse_route_contract(route_document()),
+            "role": "coding",
+            "accepted_main_sha": MAIN,
+            "document_source": "accepted",
+            "document_source_binding": MAIN,
+            "binding": owner_direct_binding(),
+            "snapshot": checkout_snapshot(
+                head_sha=HEAD,
+                branch="codex/repair",
+                dirty_paths=[],
+                path_digests={},
+                worktree_sha256="0" * 64,
+            ),
+        }
+        cases = (
+            ("owner_direct_repair_head_mismatch", {"head_sha": "c" * 40}),
+            ("owner_direct_repair_branch_mismatch", {"head_branch": "other"}),
+            ("owner_direct_repair_repository_invalid", {"repository": "other"}),
+        )
+        for reason, override in cases:
+            with self.subTest(reason=reason):
+                with self.assertRaisesRegex(
+                    session_context.SessionContextError, reason
+                ):
+                    session_context.build_owner_direct_repair_entry(
+                        **{**arguments, "binding": owner_direct_binding(**override)}
+                    )
+
+    def test_owner_direct_cli_does_not_read_checkpoint_and_enters_authorized_lane(self):
+        snapshot = checkout_snapshot(
+            head_sha=HEAD,
+            branch="codex/repair",
+            dirty_paths=[],
+            path_digests={},
+            worktree_sha256="0" * 64,
+        )
+        loaded = {
+            "accepted_main_sha": MAIN,
+            "accepted_main_source": "test",
+            "document_source": "accepted",
+            "document_source_binding": MAIN,
+            "documents": {
+                "START_HERE.md": route_document(),
+                "AGENTS.md": "# Agent Instructions\n",
+                "docs/ARCHITECTURE.md": "# Architecture\n",
+                "docs/AUTONOMY.md": "# Autonomy\n",
+                "README.md": "# README\n",
+                "docs/ROADMAP.md": "# Roadmap\n",
+                "docs/RUNBOOK.md": "# Runbook\n",
+            },
+        }
+        binding_loader = mock.patch.object(
+            session_context,
+            "_load_owner_direct_repair_binding",
+            return_value=owner_direct_binding(),
+        )
+        with (
+            mock.patch.object(session_context, "_load_documents", return_value=loaded),
+            mock.patch.object(session_context, "capture_checkout", return_value=snapshot),
+            binding_loader as loaded_binding,
+            mock.patch.object(
+                session_context,
+                "_canonical_session_mission",
+                side_effect=AssertionError("owner-direct lane must not create lifecycle state"),
+            ),
+            mock.patch.object(
+                session_context,
+                "read_checkpoint",
+                side_effect=AssertionError("owner-direct lane must not read a journal"),
+            ),
+            mock.patch.object(session_context, "_print") as printer,
+        ):
+            result = session_context.main(
+                ["enter", "--role", "coding", "--owner-direct-repair-pr", "710"]
+            )
+        self.assertEqual(result, 0)
+        self.assertTrue(printer.call_args.args[0]["execution_authorized"])
+        loaded_binding.assert_called_once_with(
+            710, expected_head_sha=HEAD, offline=False
+        )
 
     def test_manual_checkpoint_cli_is_not_exposed(self):
         with self.assertRaises(SystemExit):

@@ -9,8 +9,9 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
+import shlex
 import subprocess
 import sys
 from typing import Any
@@ -60,6 +61,28 @@ REQUIRED_CI_CHECKS = (
 REQUIRED_SOURCE_CI_CHECKS = tuple(
     name for name in REQUIRED_CI_CHECKS if name != "context-capsule"
 )
+
+OWNER_DIRECT_REPAIR_MARKER = "steward-owner-direct-repair:v1"
+OWNER_DIRECT_REPAIR_LANE = "owner_direct_existing_pr_repair"
+OWNER_DIRECT_REPAIR_ACTION = "OWNER_DIRECT_EXISTING_PR_REPAIR"
+OWNER_DIRECT_REPAIR_MARKER_FIELDS = frozenset(
+    {
+        "action",
+        "authorization_id",
+        "repository",
+        "pr_number",
+        "head_sha",
+        "head_branch",
+        "allowed_paths",
+        "verification",
+    }
+)
+OWNER_DIRECT_REPAIR_MARKER_RE = re.compile(
+    rf"<!--\s*{re.escape(OWNER_DIRECT_REPAIR_MARKER)}\s+(\{{.*?\}})\s*-->",
+    re.DOTALL,
+)
+OWNER_DIRECT_REPAIR_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
+OWNER_DIRECT_REPAIR_LOGIN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 # Explicit aliases for known check-name representations.
 # Every alias must canonicalize to exactly one logical required check.
@@ -375,6 +398,229 @@ def observe_open_frontiers(
         ),
         "open_frontiers": frontiers,
     }
+
+
+def _owner_direct_repair_path(value: object) -> str:
+    if not isinstance(value, str) or not value or len(value) > 512:
+        raise GitHubObservationError("owner_direct_repair_path_invalid")
+    if "\\" in value or "\x00" in value or any(char.isspace() for char in value):
+        raise GitHubObservationError("owner_direct_repair_path_invalid")
+    directory = value.endswith("/")
+    candidate = value[:-1] if directory else value
+    parsed = PurePosixPath(candidate)
+    if (
+        not candidate
+        or parsed.is_absolute()
+        or any(part in {"", ".", ".."} for part in parsed.parts)
+        or str(parsed) != candidate
+    ):
+        raise GitHubObservationError("owner_direct_repair_path_invalid")
+    if candidate == ".git" or candidate.startswith(".git/"):
+        raise GitHubObservationError("owner_direct_repair_path_forbidden")
+    if candidate == ".github" or candidate.startswith(".github/"):
+        raise GitHubObservationError("owner_direct_repair_path_forbidden")
+    return candidate + ("/" if directory else "")
+
+
+def _owner_direct_repair_paths(value: object) -> list[str]:
+    if not isinstance(value, list) or not value or len(value) > 50:
+        raise GitHubObservationError("owner_direct_repair_allowed_paths_invalid")
+    paths = [_owner_direct_repair_path(item) for item in value]
+    if paths != sorted(set(paths)):
+        raise GitHubObservationError("owner_direct_repair_allowed_paths_invalid")
+    return paths
+
+
+def _safe_owner_direct_repair_command(value: object) -> str:
+    if not isinstance(value, str) or not value or len(value) > 2_048:
+        raise GitHubObservationError("owner_direct_repair_verification_invalid")
+    if any(char in value for char in ";|&<>\n\r`$"):
+        raise GitHubObservationError("owner_direct_repair_verification_invalid")
+    try:
+        argv = tuple(shlex.split(value))
+    except ValueError as error:
+        raise GitHubObservationError("owner_direct_repair_verification_invalid") from error
+    if not argv:
+        raise GitHubObservationError("owner_direct_repair_verification_invalid")
+    safe = False
+    if argv == ("git", "diff", "--check"):
+        safe = True
+    elif argv[0] == "cargo" and len(argv) >= 2:
+        safe = argv[1] in {"check", "clippy", "test"}
+        if argv[1] == "fmt":
+            safe = "--check" in argv[2:]
+    elif argv[:4] == ("uv", "run", "--no-project", "python"):
+        python_args = argv[4:]
+        safe = python_args[:2] == ("-m", "unittest") and len(python_args) >= 3
+        safe = safe or python_args in {
+            ("scripts/check_agent_handoff.py",),
+            ("tools/check_security_baseline.py",),
+        }
+    elif argv == ("python", "scripts/check_agent_handoff.py"):
+        safe = True
+    elif argv == ("bash", "scripts/check_wire_codegen_drift.sh"):
+        safe = True
+    elif argv == ("bash", "scripts/verify_rust_typescript_stack.sh"):
+        safe = True
+    if not safe:
+        raise GitHubObservationError("owner_direct_repair_verification_forbidden")
+    return value
+
+
+def _owner_direct_repair_verification(value: object) -> list[str]:
+    if not isinstance(value, list) or not value or len(value) > 50:
+        raise GitHubObservationError("owner_direct_repair_verification_invalid")
+    checks = [_safe_owner_direct_repair_command(item) for item in value]
+    if len(checks) != len(set(checks)):
+        raise GitHubObservationError("owner_direct_repair_verification_invalid")
+    return checks
+
+
+def _owner_direct_repair_binding_digest(binding: dict[str, Any]) -> str:
+    unsigned = {key: value for key, value in binding.items() if key != "binding_sha256"}
+    return hashlib.sha256(
+        json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
+def read_owner_direct_repair_binding(
+    repository: str,
+    pr_number: int,
+    *,
+    observer: GitHubObserver | None = None,
+    expected_head_sha: str | None = None,
+) -> dict[str, Any]:
+    """Read one authenticated OWNER binding for a current Draft PR repair.
+
+    GitHub supplies the PR state, head, comment author, and OWNER association.
+    The marker contributes only a bounded identity, scope, and verification
+    contract. No local identity, mission, journal, or service state is used.
+    """
+    if (
+        not isinstance(repository, str)
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+        or type(pr_number) is not int
+        or pr_number < 1
+        or expected_head_sha is not None
+        and not re.fullmatch(r"[0-9a-f]{40}", expected_head_sha)
+    ):
+        raise GitHubObservationError("owner_direct_repair_request_invalid")
+    live_observer = observer or GitHubObserver(
+        repository, token=token_from_environment()
+    )
+    if getattr(live_observer, "repository", repository) != repository:
+        raise GitHubObservationError("owner_direct_repair_repository_mismatch")
+    try:
+        pull = live_observer.pull_request(pr_number)
+        comments = live_observer.issue_comments(pr_number)
+    except (GitHubObservationError, ValueError):
+        raise
+    if not isinstance(pull, dict) or pull.get("number") != pr_number:
+        raise GitHubObservationError("owner_direct_repair_pr_mismatch")
+    if pull.get("state") != "open":
+        raise GitHubObservationError("owner_direct_repair_pr_not_open")
+    if pull.get("draft") is not True:
+        raise GitHubObservationError("owner_direct_repair_draft_required")
+    base = pull.get("base")
+    head = pull.get("head")
+    if not isinstance(base, dict) or base.get("ref") != "main":
+        raise GitHubObservationError("owner_direct_repair_base_invalid")
+    if not isinstance(head, dict):
+        raise GitHubObservationError("owner_direct_repair_head_invalid")
+    live_head_sha = head.get("sha")
+    live_head_branch = head.get("ref")
+    if not isinstance(live_head_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", live_head_sha):
+        raise GitHubObservationError("owner_direct_repair_head_invalid")
+    if (
+        not isinstance(live_head_branch, str)
+        or OWNER_DIRECT_REPAIR_BRANCH_RE.fullmatch(live_head_branch) is None
+        or live_head_branch == "main"
+        or ".." in live_head_branch
+        or "//" in live_head_branch
+    ):
+        raise GitHubObservationError("owner_direct_repair_branch_invalid")
+    if expected_head_sha is not None and expected_head_sha != live_head_sha:
+        raise GitHubObservationError("owner_direct_repair_head_stale")
+    if not isinstance(comments, list):
+        raise GitHubObservationError("owner_direct_repair_comments_invalid")
+
+    marker_comments: list[tuple[dict[str, Any], re.Match[str]]] = []
+    for comment in comments:
+        if not isinstance(comment, dict):
+            continue
+        body = comment.get("body")
+        if not isinstance(body, str) or len(body) > 16 * 1024:
+            continue
+        match = OWNER_DIRECT_REPAIR_MARKER_RE.search(body)
+        if match is None:
+            continue
+        marker_comments.append((comment, match))
+    if not marker_comments:
+        raise GitHubObservationError("owner_direct_repair_binding_missing")
+    if len(marker_comments) != 1:
+        raise GitHubObservationError("owner_direct_repair_binding_ambiguous")
+    comment, match = marker_comments[0]
+    if comment.get("issue_url") != (
+        f"https://api.github.com/repos/{repository}/issues/{pr_number}"
+    ):
+        raise GitHubObservationError("owner_direct_repair_pr_mismatch")
+    if str(comment.get("author_association", "")).upper() != "OWNER":
+        raise GitHubObservationError("owner_direct_repair_owner_required")
+    comment_id = comment.get("id")
+    if type(comment_id) is not int or comment_id < 1:
+        raise GitHubObservationError("owner_direct_repair_comment_invalid")
+    author = comment.get("user")
+    login = author.get("login") if isinstance(author, dict) else None
+    if not isinstance(login, str) or OWNER_DIRECT_REPAIR_LOGIN_RE.fullmatch(login) is None:
+        raise GitHubObservationError("owner_direct_repair_owner_invalid")
+    try:
+        marker = json.loads(match.group(1))
+    except json.JSONDecodeError as error:
+        raise GitHubObservationError("owner_direct_repair_marker_invalid") from error
+    if not isinstance(marker, dict) or set(marker) != OWNER_DIRECT_REPAIR_MARKER_FIELDS:
+        raise GitHubObservationError("owner_direct_repair_marker_invalid")
+    if marker.get("action") != OWNER_DIRECT_REPAIR_ACTION:
+        raise GitHubObservationError("owner_direct_repair_action_invalid")
+    if marker.get("repository") != repository:
+        raise GitHubObservationError("owner_direct_repair_repository_mismatch")
+    if marker.get("pr_number") != pr_number:
+        raise GitHubObservationError("owner_direct_repair_pr_mismatch")
+    marker_head = marker.get("head_sha")
+    if marker_head != live_head_sha:
+        raise GitHubObservationError("owner_direct_repair_head_stale")
+    if marker.get("head_branch") != live_head_branch:
+        raise GitHubObservationError("owner_direct_repair_branch_stale")
+    authorization_id = marker.get("authorization_id")
+    if (
+        not isinstance(authorization_id, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", authorization_id)
+        is None
+    ):
+        raise GitHubObservationError("owner_direct_repair_authorization_invalid")
+    allowed_paths = _owner_direct_repair_paths(marker.get("allowed_paths"))
+    verification = _owner_direct_repair_verification(marker.get("verification"))
+    binding = {
+        "schema_version": "owner_direct_repair_binding.v1",
+        "source": "github_pr_owner_comment",
+        "dispatch_lane": OWNER_DIRECT_REPAIR_LANE,
+        "action": OWNER_DIRECT_REPAIR_ACTION,
+        "repository": repository,
+        "pr_number": pr_number,
+        "base_branch": "main",
+        "draft": True,
+        "head_sha": live_head_sha,
+        "head_branch": live_head_branch,
+        "authorization_id": authorization_id,
+        "owner_identity": f"github:{login}",
+        "owner_association": "OWNER",
+        "owner_comment_id": comment_id,
+        "allowed_paths": allowed_paths,
+        "verification": verification,
+    }
+    binding["binding_sha256"] = _owner_direct_repair_binding_digest(binding)
+    return binding
 
 
 def repository_from_git() -> str:
@@ -1328,6 +1574,7 @@ def compute_fingerprint(capsule: dict[str, Any]) -> str:
     pr = binding.get("pr_exact_head", {})
     canonical_pr = binding.get("canonical_active_pr_exact_head", {})
     requested_pr = binding.get("requested_pr_exact_head", {})
+    owner_direct = binding.get("owner_direct_repair") or {}
     run = binding.get("workflow_run_identity", {})
     fingerprint_input = {
         "repository": capsule.get("repository"),
@@ -1340,6 +1587,7 @@ def compute_fingerprint(capsule: dict[str, Any]) -> str:
         "canonical_active_pr_exact_head_sha": canonical_pr.get("head_sha"),
         "requested_pr_number": requested_pr.get("number"),
         "requested_pr_exact_head_sha": requested_pr.get("head_sha"),
+        "owner_direct_repair_binding_sha256": owner_direct.get("binding_sha256"),
         "checked_out_sha": binding.get("checked_out_sha"),
         "expected_head_sha": binding.get("expected_head_sha"),
         "workflow_run_id": run.get("run_id"),
@@ -1405,6 +1653,8 @@ def build_capsule(
     pr_number: int | None = None,
     expected_head_sha: str | None = None,
     exact_head_proof: Path | None = None,
+    owner_direct_repair_pr_number: int | None = None,
+    observer: GitHubObserver | None = None,
 ) -> dict[str, Any]:
     repository = repository or repository_from_git()
     baseline = accepted_baseline(offline=offline)
@@ -1423,9 +1673,25 @@ def build_capsule(
         mission = parse_registered_campaign_mission(
             git_show_text(str(baseline["sha"]), "scripts/agent-control/mission_contract.py")
         )
-    observer = None if offline else GitHubObserver(
-        repository, token=token_from_environment()
+    observer = observer if observer is not None else (
+        None
+        if offline
+        else GitHubObserver(repository, token=token_from_environment())
     )
+    owner_direct_binding = None
+    if owner_direct_repair_pr_number is not None:
+        if offline or observer is None:
+            raise GitHubObservationError("owner_direct_repair_remote_unavailable")
+        owner_direct_binding = read_owner_direct_repair_binding(
+            repository,
+            owner_direct_repair_pr_number,
+            observer=observer,
+            expected_head_sha=expected_head_sha,
+        )
+        if documents.get("availability") != "confirmed":
+            raise GitHubObservationError(
+                "owner_direct_repair_canonical_documents_unavailable"
+            )
     frontier_observation = observe_open_frontiers(
         repository,
         mission,
@@ -1510,6 +1776,12 @@ def build_capsule(
         if frontier["pr"] not in represented_numbers
     ]
     checkout = local_checkout_state()
+    if owner_direct_binding is not None and (
+        checkout.get("head_sha") != owner_direct_binding["head_sha"]
+        or checkout.get("branch") != owner_direct_binding["head_branch"]
+        or checkout.get("detached")
+    ):
+        raise ValueError("owner_direct_repair_checkout_mismatch")
     if (
         expected_head_sha
         and event_name in {"push", "workflow_dispatch"}
@@ -1624,10 +1896,43 @@ def build_capsule(
             and isinstance(workflow_pr.get("review_state_projection"), dict)
             else _review_state_projection_unavailable("no_workflow_pr_review_state")
         ),
+        "owner_direct_repair": owner_direct_binding,
     }
+
+    steward_continuity = {
+        "availability": "unavailable",
+        "reason": "steward_continuity_unavailable",
+        "source": (
+            "no_journal_or_service_required_for_owner_direct_repair"
+            if owner_direct_binding is not None
+            else "project_context_does_not_observe_steward_journal_or_service"
+        ),
+    }
+    execution_authority = (
+        {
+            "availability": "confirmed",
+            "lane": OWNER_DIRECT_REPAIR_LANE,
+            "source": "github_pr_owner_comment",
+            "repository": owner_direct_binding["repository"],
+            "pr_number": owner_direct_binding["pr_number"],
+            "head_sha": owner_direct_binding["head_sha"],
+            "authorization_id": owner_direct_binding["authorization_id"],
+        }
+        if owner_direct_binding is not None
+        else {
+            "availability": "unavailable",
+            "reason": "execution_authority_unavailable",
+        }
+    )
 
     if documents.get("availability") == "unavailable":
         action = "obtain the accepted-main canonical documents before selecting or advancing work"
+    elif owner_direct_binding is not None:
+        action = (
+            f"repair only Draft PR #{owner_direct_binding['pr_number']} at exact head "
+            f"{owner_direct_binding['head_sha']}, run its declared checks, and push only "
+            f"{owner_direct_binding['head_branch']}; keep it Draft for exact-head review and CI"
+        )
     else:
         action = next_permitted_action(mission, active_pr)
 
@@ -1647,6 +1952,8 @@ def build_capsule(
         "workflow_frontier": workflow_pr,
         "frontier_observation": frontier_observation,
         "blocked_or_other_frontiers": blocked_frontiers,
+        "steward_continuity": steward_continuity,
+        "execution_authority": execution_authority,
         "next_permitted_action": action,
         "required_reading": [
             "START_HERE.md",
@@ -1711,6 +2018,16 @@ def markdown(capsule: dict[str, Any]) -> str:
             f"availability=`{frontier_observation.get('availability') or 'unavailable'}` "
             f"binding=`{frontier_observation.get('binding') or 'none'}` "
             f"warning=`{frontier_observation.get('warning') or 'none'}`"
+        ),
+        (
+            f"- Steward continuity: "
+            f"`{(capsule.get('steward_continuity') or {}).get('availability', 'unavailable')}` "
+            f"({(capsule.get('steward_continuity') or {}).get('reason', 'unavailable')})"
+        ),
+        (
+            f"- Execution authority: "
+            f"`{(capsule.get('execution_authority') or {}).get('availability', 'unavailable')}` "
+            f"(lane=`{(capsule.get('execution_authority') or {}).get('lane', 'none')}`)"
         ),
     ]
     if frontier:
@@ -1850,6 +2167,11 @@ def parse_args() -> argparse.Namespace:
         help="Trusted exact-head action proof for a PR workflow without exposing a token to rendering.",
     )
     parser.add_argument(
+        "--owner-direct-repair-pr",
+        type=int,
+        help="Read a live OWNER binding for one existing Draft PR repair.",
+    )
+    parser.add_argument(
         "--capsule-json",
         type=Path,
         help="Render or validate an existing generated capsule without regenerating it.",
@@ -1881,8 +2203,11 @@ def main() -> int:
                 pr_number=getattr(args, "pr_number", None),
                 expected_head_sha=getattr(args, "expected_head_sha", None),
                 exact_head_proof=getattr(args, "exact_head_proof", None),
+                owner_direct_repair_pr_number=getattr(
+                    args, "owner_direct_repair_pr", None
+                ),
             )
-        except ValueError as exc:
+        except (ValueError, GitHubObservationError) as exc:
             print(f"Context capsule cannot establish trusted exact-head evidence: {exc}", file=sys.stderr)
             return 1
     if args.format == "json":

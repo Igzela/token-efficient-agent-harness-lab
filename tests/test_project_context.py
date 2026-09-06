@@ -1,7 +1,9 @@
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "project_context.py"
@@ -100,6 +102,184 @@ Prerequisite: PR #342 is accepted.
 
         self.assertIsNone(project_context.parse_first_routed_mission(text)["pr_number"])
 
+    def test_owner_direct_repair_binding_requires_current_owner_bound_draft_pr(self):
+        repository = "Igzela/token-efficient-agent-harness-lab"
+        head = "a" * 40
+        observer = _OwnerDirectObserver(
+            repository,
+            pull={
+                "number": 710,
+                "state": "open",
+                "draft": True,
+                "base": {"ref": "main", "sha": "b" * 40},
+                "head": {"ref": "codex/repair", "sha": head},
+            },
+            comments=[_owner_direct_comment(repository, 710, head)],
+        )
+
+        binding = project_context.read_owner_direct_repair_binding(
+            repository, 710, observer=observer
+        )
+
+        self.assertEqual(binding["repository"], repository)
+        self.assertEqual(binding["pr_number"], 710)
+        self.assertEqual(binding["head_sha"], head)
+        self.assertEqual(binding["owner_identity"], "github:Igzela")
+        self.assertEqual(binding["dispatch_lane"], "owner_direct_existing_pr_repair")
+        self.assertEqual(binding["allowed_paths"], ["scripts/", "tests/"])
+
+    def test_owner_direct_repair_binding_rejects_stale_identity_and_missing_owner(self):
+        repository = "Igzela/token-efficient-agent-harness-lab"
+        current_head = "a" * 40
+        cases = (
+            (
+                "owner_direct_repair_head_stale",
+                _OwnerDirectObserver(
+                    repository,
+                    pull={
+                        "number": 710,
+                        "state": "open",
+                        "draft": True,
+                        "base": {"ref": "main", "sha": "b" * 40},
+                        "head": {"ref": "codex/repair", "sha": current_head},
+                    },
+                    comments=[_owner_direct_comment(repository, 710, "c" * 40)],
+                ),
+            ),
+            (
+                "owner_direct_repair_repository_mismatch",
+                _OwnerDirectObserver(
+                    repository,
+                    pull={
+                        "number": 710,
+                        "state": "open",
+                        "draft": True,
+                        "base": {"ref": "main", "sha": "b" * 40},
+                        "head": {"ref": "codex/repair", "sha": current_head},
+                    },
+                    comments=[
+                        _owner_direct_comment(
+                            repository,
+                            710,
+                            current_head,
+                            marker_repository="other/repository",
+                        )
+                    ],
+                ),
+            ),
+            (
+                "owner_direct_repair_owner_required",
+                _OwnerDirectObserver(
+                    repository,
+                    pull={
+                        "number": 710,
+                        "state": "open",
+                        "draft": True,
+                        "base": {"ref": "main", "sha": "b" * 40},
+                        "head": {"ref": "codex/repair", "sha": current_head},
+                    },
+                    comments=[
+                        _owner_direct_comment(
+                            repository, 710, current_head, association="MEMBER"
+                        )
+                    ],
+                ),
+            ),
+            (
+                "owner_direct_repair_binding_missing",
+                _OwnerDirectObserver(
+                    repository,
+                    pull={
+                        "number": 710,
+                        "state": "open",
+                        "draft": True,
+                        "base": {"ref": "main", "sha": "b" * 40},
+                        "head": {"ref": "codex/repair", "sha": current_head},
+                    },
+                    comments=[],
+                ),
+            ),
+            (
+                "owner_direct_repair_pr_mismatch",
+                _OwnerDirectObserver(
+                    repository,
+                    pull={
+                        "number": 710,
+                        "state": "open",
+                        "draft": True,
+                        "base": {"ref": "main", "sha": "b" * 40},
+                        "head": {"ref": "codex/repair", "sha": current_head},
+                    },
+                    comments=[_owner_direct_comment(repository, 711, current_head)],
+                ),
+            ),
+        )
+        for reason, observer in cases:
+            with self.subTest(reason=reason):
+                with self.assertRaisesRegex(project_context.GitHubObservationError, reason):
+                    project_context.read_owner_direct_repair_binding(
+                        repository, 710, observer=observer
+                    )
+
+    def test_owner_direct_capsule_separates_continuity_from_execution_authority(self):
+        repository = "Igzela/token-efficient-agent-harness-lab"
+        head = "a" * 40
+        observer = _OwnerDirectObserver(
+            repository,
+            pull={
+                "number": 710,
+                "state": "open",
+                "draft": True,
+                "base": {"ref": "main", "sha": "b" * 40},
+                "head": {"ref": "codex/repair", "sha": head},
+            },
+            comments=[_owner_direct_comment(repository, 710, head)],
+            frontiers=[],
+        )
+        documents = {
+            "START_HERE.md": "# Start Here\n",
+            "AGENTS.md": "# Agents\n",
+            "README.md": "# README\n",
+            "docs/ARCHITECTURE.md": "# Architecture\n",
+            "docs/AUTONOMY.md": "# Autonomy\n",
+            "docs/ROADMAP.md": "# Roadmap\n",
+            "docs/RUNBOOK.md": "# Runbook\n",
+        }
+        with (
+            mock.patch.object(
+                project_context, "accepted_baseline", return_value={
+                    "availability": "confirmed", "branch": "main", "sha": "b" * 40,
+                    "source": "fixture",
+                }
+            ),
+            mock.patch.object(
+                project_context, "canonical_documents", return_value={
+                    "availability": "confirmed", "source_sha": "b" * 40,
+                    "documents": documents,
+                }
+            ),
+            mock.patch.object(
+                project_context, "local_checkout_state", return_value={
+                    "head_sha": head, "branch": "codex/repair", "detached": False,
+                    "dirty": False, "change_count": 0,
+                }
+            ),
+        ):
+            capsule = project_context.build_capsule(
+                offline=False,
+                repository=repository,
+                owner_direct_repair_pr_number=710,
+                observer=observer,
+            )
+        self.assertEqual(
+            capsule["steward_continuity"]["reason"],
+            "steward_continuity_unavailable",
+        )
+        self.assertEqual(capsule["execution_authority"]["availability"], "confirmed")
+        self.assertEqual(
+            capsule["binding"]["owner_direct_repair"]["head_sha"], head
+        )
+
 
 class TestReviewStateProjection(unittest.TestCase):
     def test_offline_projection_is_unavailable_with_bounded_keys(self):
@@ -149,6 +329,14 @@ class TestReviewStateProjection(unittest.TestCase):
         self.assertIn("review_state", projection)
         for forbidden in ("findings", "severity", "acceptance_condition", "disposition"):
             self.assertNotIn(forbidden, projection)
+        self.assertEqual(
+            payload["steward_continuity"]["reason"],
+            "steward_continuity_unavailable",
+        )
+        self.assertEqual(
+            payload["execution_authority"]["reason"],
+            "execution_authority_unavailable",
+        )
 
     def test_project_capsule_fields_conflict_and_legacy_paths(self):
         import sys as _sys
@@ -190,6 +378,58 @@ class TestReviewStateProjection(unittest.TestCase):
         legacy = rc.project_capsule_fields({**v3_state, "version": 2}, expected_head="a" * 40)
         self.assertEqual(legacy["availability"], "legacy")
         self.assertIsNone(legacy["review_round"])
+
+
+class _OwnerDirectObserver:
+    def __init__(self, repository, *, pull, comments, frontiers=None):
+        self.repository = repository
+        self.pull = pull
+        self.comments = comments
+        self.frontiers = frontiers or []
+
+    def list_open_pull_requests(self, *, base="main"):
+        return self.frontiers
+
+    def pull_request(self, number):
+        return self.pull
+
+    def issue_comments(self, number):
+        return self.comments
+
+
+def _owner_direct_comment(
+    repository,
+    pr_number,
+    head_sha,
+    *,
+    association="OWNER",
+    marker_repository=None,
+):
+    marker = {
+        "action": "OWNER_DIRECT_EXISTING_PR_REPAIR",
+        "authorization_id": "repair-1",
+        "repository": marker_repository or repository,
+        "pr_number": pr_number,
+        "head_sha": head_sha,
+        "head_branch": "codex/repair",
+        "allowed_paths": ["scripts/", "tests/"],
+        "verification": [
+            "git diff --check",
+            "uv run --no-project python -m unittest tests.test_session_context",
+        ],
+    }
+    return {
+        "id": 9001,
+        "issue_url": (
+            f"https://api.github.com/repos/{repository}/issues/{pr_number}"
+        ),
+        "author_association": association,
+        "user": {"login": "Igzela"},
+        "body": (
+            "owner repair authorization\n"
+            f"<!-- steward-owner-direct-repair:v1 {json.dumps(marker, sort_keys=True)} -->"
+        ),
+    }
 
 
 if __name__ == "__main__":

@@ -2,11 +2,49 @@
 
 Operator procedures for the local Agent Control Plane.
 
-Last updated: 2026-09-02.
+Last updated: 2026-09-06.
 
 ## Session Entry
 
 Operator sessions enter through the accepted router: run `uv run --no-project python scripts/session_context.py route --role operator` (or the full entry command from `START_HERE.md`) to obtain the bounded accepted-document route before using any procedure below. This file owns only procedures that have actually been proved.
+
+### Cold-start owner-direct existing-PR repair
+
+Use this lane only when the existing Draft PR already contains the live
+authenticated OWNER binding. It is independent of Steward continuity: no
+`/var/lib/agent-steward/steward.sqlite3`, Steward service, active Mission,
+Stage, or WorkCard is required or created.
+
+The binding marker is an OWNER-authored PR comment with this bounded shape
+(values are examples and must be replaced by the live PR facts):
+
+```text
+<!-- steward-owner-direct-repair:v1 {"action":"OWNER_DIRECT_EXISTING_PR_REPAIR","authorization_id":"repair-1","repository":"owner/repository","pr_number":123,"head_sha":"<40 lowercase hex chars>","head_branch":"codex/repair","allowed_paths":["scripts/","tests/"],"verification":["git diff --check","uv run --no-project python -m unittest tests.test_session_context"]} -->
+```
+
+From a checkout already on that exact PR head and branch, verify the live
+binding and enter the coding lane:
+
+```bash
+uv run --no-project python scripts/project_context.py --format json --owner-direct-repair-pr 123
+uv run --no-project python scripts/session_context.py enter --role coding --owner-direct-repair-pr 123
+```
+
+The first command must prove the PR is open, Draft, based on `main`, and
+exactly matches the single OWNER marker. The second command must return
+`agent_owner_direct_repair_entry.v1` with `execution_authorized=true`,
+`steward_continuity.reason=steward_continuity_unavailable`, no lifecycle IDs,
+and `checkpoint_allowed=false`. A stale head, wrong repository or PR, missing
+or non-OWNER marker, detached/wrong checkout, duplicate marker, or unsafe
+verification command is a hard stop. Do not use a locally supplied owner
+string, marker copy, journal, or capsule as a substitute for the live GitHub
+read.
+
+Repair only the bound branch and paths, run every declared check, and push the
+new head only to that same branch. Keep the PR Draft and follow the normal
+exact-head review, canonical CI, and guarded merge procedure; this lane never
+permits a direct `main` write, provider call/spend, deployment, destructive
+effect, adoption, review/CI bypass, or direct merge.
 
 ## Orphaned Canonical Merge Dispatch
 

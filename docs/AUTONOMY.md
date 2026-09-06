@@ -1,6 +1,6 @@
 # Autonomy and Testing Contract
 
-Last updated: 2026-09-01.
+Last updated: 2026-09-06.
 
 This document defines the autonomy governance, lifecycle state machine, review convergence protocol, exact-head CI, and guarded merge contracts for the Autonomous Steward system.
 
@@ -63,6 +63,33 @@ MISSION_RUNNING → STAGE_PLANNED → WORKCARDS_RUNNING → STAGE_INTEGRATED
 lifecycle owner.  Every production iteration holds the one service `flock`,
 reads Issue #208's `agent-emergency-stop` label before dispatch or merge, and
 records intent before a Ready, candidate-supersede, or merge-workflow mutation.
+
+### Owner-direct existing-PR repair lane
+
+Steward-dispatched work continues to require an accepted Mission, Stage, and
+WorkCard. A separate cold-start lane exists only for repairing one already
+existing Draft PR when an authenticated GitHub `OWNER` comment carries the
+bounded `steward-owner-direct-repair:v1` marker. The marker binds exactly the
+repository, PR number, current head SHA and branch, an authorization ID,
+allowed repository paths, and provider-free verification commands. GitHub's
+live PR state must prove that the PR is open, based on `main`, and still Draft;
+the comment's OWNER association and issue URL must also match. Missing,
+duplicated, malformed, stale, or mismatched binding facts fail closed.
+
+The lane is represented by the separate
+`agent_owner_direct_repair_entry.v1` session projection. It does not create or
+read a Mission, Stage, WorkCard, Steward journal, or Steward service, and its
+`steward_continuity` field explicitly remains unavailable while its
+`execution_authority` field can be confirmed by the live GitHub binding. The
+checkout must already be the bound PR branch at the bound exact head; the lane
+permits only in-scope coding, declared provider-free verification, and a push
+to that same branch. It never authorizes `main` writes, provider spend,
+deployment, destructive effects, adoption, review/CI bypass, or merge.
+
+After a repair, the PR remains Draft until the normal exact-head independent
+review, canonical CI matrix, and guarded merge workflow authorize progression.
+The owner-direct binding is not a review verdict, CI result, merge authority,
+or replacement lifecycle owner.
 
 A Mission reaches `COMPLETE` only when both conditions are satisfied:
 1. its repository-maintenance Stage lifecycle is settled; and
