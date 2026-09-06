@@ -1081,6 +1081,8 @@ def load_pr(
 
 REVIEW_RECEIPT_MARKER = review_convergence.REVIEW_RECEIPT_MARKER
 TRUSTED_REVIEW_STATE_AUTHORS = frozenset({"github-actions", "github-actions[bot]"})
+BLOCKING_TOKEN = re.compile(r"\bBLOCKING\b", re.IGNORECASE)
+NEGATED_BLOCKING_PREFIX = re.compile(r"(?:\bNON|\bNOT)[\s-]+$", re.IGNORECASE)
 
 
 def _parse_review_receipt(
@@ -1096,6 +1098,15 @@ def _parse_review_receipt(
         expected_base_sha=expected_base_sha,
         expected_pr_author_identity=expected_pr_author_identity,
     ).to_dict()
+
+
+def _has_explicit_blocking_semantics(body: object) -> bool:
+    """Recognize blocking wording without treating negated notes as blockers."""
+    text = str(body or "")
+    return any(
+        NEGATED_BLOCKING_PREFIX.search(text[:match.start()]) is None
+        for match in BLOCKING_TOKEN.finditer(text)
+    )
 
 def _build_review_observation(
     *,
@@ -1211,12 +1222,12 @@ def _build_review_observation(
     explicit_blocking = [
         review
         for review in reviews
-        if "BLOCKING" in str(review.get("body") or "").upper()
+        if _has_explicit_blocking_semantics(review.get("body"))
         or structured_block.search(str(review.get("body") or ""))
     ] + [
         comment
         for comment in comments
-        if "BLOCKING" in str(comment.get("body") or "").upper()
+        if _has_explicit_blocking_semantics(comment.get("body"))
         or structured_block.search(str(comment.get("body") or ""))
     ]
     if explicit_blocking:

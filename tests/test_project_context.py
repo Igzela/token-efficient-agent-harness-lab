@@ -333,6 +333,39 @@ Prerequisite: PR #342 is accepted.
 
 
 class TestReviewStateProjection(unittest.TestCase):
+    def test_deferred_non_blocking_review_does_not_revoke_exact_head_receipt(self):
+        head = "a" * 40
+        base = "b" * 40
+        receipt = f"""EXACT-HEAD REVIEW RECEIPT
+Reviewed SHA: {head}
+Reviewed range: {base}...{head}
+Reviewer session identity: independent-session-1
+Reviewer authenticated identity: reviewer
+Review transport: direct-github-reviewer
+Observed at: 2026-08-01T06:00:00Z
+Axes: architecture, authority, compatibility, security, audit, rollback, scope/path binding
+Outcome: PASS
+Unresolved objections: none
+"""
+
+        for note in ("Deferred/non-blocking note", "Deferred note"):
+            with self.subTest(note=note):
+                observation = project_context._build_review_observation(
+                    head_sha=head,
+                    base_sha=base,
+                    pr_author_identity="implementation-agent",
+                    aggregate_review="REVIEW_REQUIRED",
+                    reviews=[{"state": "COMMENTED", "body": note}],
+                    comments=[{"author": {"login": "reviewer"}, "body": receipt}],
+                    observation_time="2026-08-01T06:00:00Z",
+                )
+                self.assertEqual(
+                    observation["exact_head_review_state"], "confirmed"
+                )
+                self.assertEqual(
+                    observation["unresolved_objections_state"], "none_observed"
+                )
+
     def test_offline_projection_is_unavailable_with_bounded_keys(self):
         pr = project_context.load_pr(
             "Igzela/token-efficient-agent-harness-lab", 364, offline=True
