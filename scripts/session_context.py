@@ -64,6 +64,65 @@ EXECUTABLE_MISSION_STATES = frozenset({"READY_FOR_EXECUTION", "IN_PROGRESS"})
 ENTRY_CONTEXT_MODES = frozenset(
     {"FRESH_MISSION", "RESUME_CHECKPOINT", "REPAIR", "STOP"}
 )
+OWNER_DIRECT_REPAIR_ENTRY_SCHEMA = "agent_owner_direct_repair_entry.v1"
+OWNER_DIRECT_REPAIR_LANE = "owner_direct_existing_pr_repair"
+OWNER_DIRECT_REPAIR_BINDING_SCHEMA = "owner_direct_repair_binding.v1"
+OWNER_DIRECT_REPAIR_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+OWNER_DIRECT_REPAIR_BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
+OWNER_DIRECT_REPAIR_LOGIN = re.compile(r"^github:[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+OWNER_DIRECT_REPAIR_BINDING_FIELDS = frozenset(
+    {
+        "schema_version",
+        "source",
+        "dispatch_lane",
+        "action",
+        "repository",
+        "pr_number",
+        "base_branch",
+        "draft",
+        "head_sha",
+        "head_branch",
+        "authorization_id",
+        "owner_identity",
+        "owner_association",
+        "owner_comment_id",
+        "allowed_paths",
+        "verification",
+        "binding_sha256",
+    }
+)
+OWNER_DIRECT_REPAIR_ENTRY_FIELDS = frozenset(
+    {
+        "schema_version",
+        "authority",
+        "accepted_main_sha",
+        "document_source",
+        "document_source_binding",
+        "checkout_snapshot",
+        "role",
+        "mission_id",
+        "stage_id",
+        "card_id",
+        "context_mode",
+        "resume_disposition",
+        "resume_reason",
+        "checkpoint",
+        "checkpoint_id",
+        "next_permitted_action",
+        "allowed_paths",
+        "targeted_reads",
+        "verification_commands",
+        "verification_contract_sha256",
+        "deferred_documents",
+        "forbidden_next_actions",
+        "steward_continuity",
+        "execution_authority",
+        "owner_direct_repair_binding",
+        "execution_authorized",
+        "checkpoint_allowed",
+        "entry_sha256",
+    }
+)
 
 
 def _checkpoint_write_commands(
@@ -142,6 +201,297 @@ def _safe_verification_argv(command: str) -> tuple[str, ...] | None:
         }:
             return argv
     return None
+
+
+def _owner_direct_repair_binding(value: object) -> dict[str, object]:
+    wire = _wire_mapping(value, "owner_direct_repair_binding_invalid")
+    if set(wire) != OWNER_DIRECT_REPAIR_BINDING_FIELDS:
+        raise SessionContextError("owner_direct_repair_binding_fields_invalid")
+    if wire.get("schema_version") != OWNER_DIRECT_REPAIR_BINDING_SCHEMA:
+        raise SessionContextError("owner_direct_repair_binding_version_invalid")
+    if wire.get("source") != "github_pr_owner_comment":
+        raise SessionContextError("owner_direct_repair_binding_source_invalid")
+    if wire.get("dispatch_lane") != OWNER_DIRECT_REPAIR_LANE:
+        raise SessionContextError("owner_direct_repair_binding_lane_invalid")
+    if wire.get("action") != "OWNER_DIRECT_EXISTING_PR_REPAIR":
+        raise SessionContextError("owner_direct_repair_binding_action_invalid")
+    repository = wire.get("repository")
+    if not isinstance(repository, str) or OWNER_DIRECT_REPAIR_REPOSITORY.fullmatch(repository) is None:
+        raise SessionContextError("owner_direct_repair_repository_invalid")
+    pr_number = wire.get("pr_number")
+    if type(pr_number) is not int or pr_number < 1:
+        raise SessionContextError("owner_direct_repair_pr_invalid")
+    if wire.get("base_branch") != "main" or wire.get("draft") is not True:
+        raise SessionContextError("owner_direct_repair_pr_state_invalid")
+    head_sha = _validate_sha(wire.get("head_sha"), "owner_direct_repair_head_sha", SHA40)
+    head_branch = wire.get("head_branch")
+    if (
+        not isinstance(head_branch, str)
+        or OWNER_DIRECT_REPAIR_BRANCH.fullmatch(head_branch) is None
+        or head_branch == "main"
+        or ".." in head_branch
+        or "//" in head_branch
+    ):
+        raise SessionContextError("owner_direct_repair_branch_invalid")
+    authorization_id = wire.get("authorization_id")
+    if (
+        not isinstance(authorization_id, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", authorization_id) is None
+    ):
+        raise SessionContextError("owner_direct_repair_authorization_invalid")
+    owner_identity = wire.get("owner_identity")
+    if not isinstance(owner_identity, str) or OWNER_DIRECT_REPAIR_LOGIN.fullmatch(owner_identity) is None:
+        raise SessionContextError("owner_direct_repair_owner_invalid")
+    if wire.get("owner_association") != "OWNER":
+        raise SessionContextError("owner_direct_repair_owner_required")
+    owner_comment_id = wire.get("owner_comment_id")
+    if type(owner_comment_id) is not int or owner_comment_id < 1:
+        raise SessionContextError("owner_direct_repair_comment_invalid")
+    allowed_paths = _dispatch_path_list(
+        wire.get("allowed_paths"), "owner_direct_repair_allowed_paths"
+    )
+    if any(
+        path in {".git", ".git/", ".github", ".github/"}
+        or path.startswith((".git/", ".github/"))
+        for path in allowed_paths
+    ):
+        raise SessionContextError("owner_direct_repair_path_forbidden")
+    verification = _bounded_string_list(
+        wire.get("verification"),
+        "owner_direct_repair_verification",
+        max_items=50,
+    )
+    if any(_safe_verification_argv(command) is None for command in verification):
+        raise SessionContextError("owner_direct_repair_verification_forbidden")
+    binding_sha256 = _validate_sha(
+        wire.get("binding_sha256"), "owner_direct_repair_binding_sha256", SHA256
+    )
+    unsigned = {key: item for key, item in wire.items() if key != "binding_sha256"}
+    if binding_sha256 != _json_sha256(unsigned):
+        raise SessionContextError("owner_direct_repair_binding_digest_invalid")
+    return {
+        **dict(wire),
+        "head_sha": head_sha,
+        "allowed_paths": allowed_paths,
+        "verification": verification,
+    }
+
+
+def _owner_direct_repair_verification_contract_sha256(
+    binding: Mapping[str, object], verification: list[str]
+) -> str:
+    return _json_sha256(
+        {
+            "schema_version": OWNER_DIRECT_REPAIR_ENTRY_SCHEMA,
+            "repository": binding["repository"],
+            "pr_number": binding["pr_number"],
+            "head_sha": binding["head_sha"],
+            "authorization_id": binding["authorization_id"],
+            "verification": verification,
+        }
+    )
+
+
+def _owner_direct_repair_forbidden_actions() -> list[str]:
+    return [
+        "Do not create or require a Mission, Stage, WorkCard, Steward journal, or Steward service.",
+        "Do not write directly to main",
+        "Do not change the PR base branch.",
+        "Do not invoke a real provider, spend budget, deploy, release, or perform a destructive effect.",
+        "Do not adopt a candidate or bypass exact-head review, canonical CI, or guarded merge.",
+    ]
+
+
+def _owner_direct_repair_next_action(binding: Mapping[str, object]) -> str:
+    return (
+        f"Repair only Draft PR #{binding['pr_number']} at exact head {binding['head_sha']} "
+        f"on {binding['head_branch']}; run the declared checks and push only that branch, "
+        "then keep the PR Draft for exact-head review and canonical CI."
+    )
+
+
+def _validate_owner_direct_repair_entry(value: object) -> dict[str, object]:
+    wire = _wire_mapping(value, "owner_direct_repair_entry_invalid")
+    if set(wire) != OWNER_DIRECT_REPAIR_ENTRY_FIELDS:
+        raise SessionContextError("owner_direct_repair_entry_fields_invalid")
+    if wire.get("schema_version") != OWNER_DIRECT_REPAIR_ENTRY_SCHEMA:
+        raise SessionContextError("owner_direct_repair_entry_version_invalid")
+    if wire.get("authority") != (
+        "github_owner_direct_repair_binding; no_steward_continuity"
+    ):
+        raise SessionContextError("owner_direct_repair_entry_authority_invalid")
+    accepted_main_sha = _validate_sha(
+        wire.get("accepted_main_sha"), "owner_direct_repair_accepted_main_sha", SHA40
+    )
+    if wire.get("document_source") != "accepted" or wire.get("document_source_binding") != accepted_main_sha:
+        raise SessionContextError("owner_direct_repair_entry_source_invalid")
+    snapshot = CheckoutSnapshot.from_wire(wire.get("checkout_snapshot"))
+    if snapshot.accepted_main_sha != accepted_main_sha:
+        raise SessionContextError("owner_direct_repair_checkout_binding_invalid")
+    if wire.get("role") != "coding":
+        raise SessionContextError("owner_direct_repair_role_invalid")
+    if any(wire.get(field) is not None for field in ("mission_id", "stage_id", "card_id")):
+        raise SessionContextError("owner_direct_repair_lifecycle_identity_invalid")
+    if wire.get("context_mode") != "OWNER_DIRECT_REPAIR":
+        raise SessionContextError("owner_direct_repair_mode_invalid")
+    if wire.get("resume_disposition") != "AUTHORIZED":
+        raise SessionContextError("owner_direct_repair_disposition_invalid")
+    if wire.get("resume_reason") != "owner_authenticated_existing_pr_repair":
+        raise SessionContextError("owner_direct_repair_reason_invalid")
+    if wire.get("checkpoint") is not None or wire.get("checkpoint_id") is not None:
+        raise SessionContextError("owner_direct_repair_checkpoint_invalid")
+    binding = _owner_direct_repair_binding(wire.get("owner_direct_repair_binding"))
+    if snapshot.head_sha != binding["head_sha"]:
+        raise SessionContextError("owner_direct_repair_head_mismatch")
+    if snapshot.branch != binding["head_branch"] or snapshot.detached:
+        raise SessionContextError("owner_direct_repair_branch_mismatch")
+    allowed_paths = _dispatch_path_list(
+        wire.get("allowed_paths"), "owner_direct_repair_entry_allowed_paths"
+    )
+    if allowed_paths != binding["allowed_paths"]:
+        raise SessionContextError("owner_direct_repair_scope_binding_invalid")
+    if any(not _path_is_allowed(path, allowed_paths) for path in snapshot.dirty_paths):
+        raise SessionContextError("owner_direct_repair_dirty_path_invalid")
+    targeted_reads = _bounded_string_list(
+        wire.get("targeted_reads"),
+        "owner_direct_repair_targeted_reads",
+        max_items=MAX_ROUTE_DOCUMENTS,
+    )
+    if not targeted_reads or targeted_reads[0] != "START_HERE.md" or any(
+        path not in CANONICAL_DOCUMENTS for path in targeted_reads
+    ):
+        raise SessionContextError("owner_direct_repair_targeted_reads_invalid")
+    verification = _bounded_string_list(
+        wire.get("verification_commands"),
+        "owner_direct_repair_entry_verification",
+        max_items=50,
+    )
+    if verification != binding["verification"] or any(
+        _safe_verification_argv(command) is None for command in verification
+    ):
+        raise SessionContextError("owner_direct_repair_verification_invalid")
+    verification_contract = _validate_sha(
+        wire.get("verification_contract_sha256"),
+        "owner_direct_repair_verification_contract_sha256",
+        SHA256,
+    )
+    if verification_contract != _owner_direct_repair_verification_contract_sha256(
+        binding, verification
+    ):
+        raise SessionContextError("owner_direct_repair_verification_contract_invalid")
+    deferred = _bounded_string_list(
+        wire.get("deferred_documents"),
+        "owner_direct_repair_deferred_documents",
+        max_items=MAX_ROUTE_DOCUMENTS,
+    )
+    if deferred != targeted_reads:
+        raise SessionContextError("owner_direct_repair_deferred_documents_invalid")
+    if wire.get("forbidden_next_actions") != _owner_direct_repair_forbidden_actions():
+        raise SessionContextError("owner_direct_repair_forbidden_actions_invalid")
+    if wire.get("next_permitted_action") != _owner_direct_repair_next_action(binding):
+        raise SessionContextError("owner_direct_repair_next_action_invalid")
+    if wire.get("steward_continuity") != {
+        "availability": "unavailable",
+        "reason": "steward_continuity_unavailable",
+        "source": "no_journal_or_service_required_for_owner_direct_repair",
+    }:
+        raise SessionContextError("owner_direct_repair_continuity_invalid")
+    expected_authority = {
+        "availability": "confirmed",
+        "lane": OWNER_DIRECT_REPAIR_LANE,
+        "source": "github_pr_owner_comment",
+        "repository": binding["repository"],
+        "pr_number": binding["pr_number"],
+        "head_sha": binding["head_sha"],
+        "authorization_id": binding["authorization_id"],
+    }
+    if wire.get("execution_authority") != expected_authority:
+        raise SessionContextError("owner_direct_repair_authority_binding_invalid")
+    if wire.get("execution_authorized") is not True or wire.get("checkpoint_allowed") is not False:
+        raise SessionContextError("owner_direct_repair_authority_flags_invalid")
+    entry_sha256 = _validate_sha(
+        wire.get("entry_sha256"), "owner_direct_repair_entry_sha256", SHA256
+    )
+    unsigned = {key: item for key, item in wire.items() if key != "entry_sha256"}
+    if entry_sha256 != _json_sha256(unsigned):
+        raise SessionContextError("owner_direct_repair_entry_digest_invalid")
+    return dict(wire)
+
+
+def build_owner_direct_repair_entry(
+    *,
+    contract: RouteContract,
+    role: str,
+    accepted_main_sha: str,
+    document_source: str,
+    document_source_binding: str,
+    binding: object,
+    snapshot: object,
+) -> dict[str, object]:
+    """Compose a fresh owner-direct repair context without lifecycle state."""
+    if not isinstance(contract, RouteContract) or role != "coding":
+        raise SessionContextError("owner_direct_repair_role_invalid")
+    binding_model = _owner_direct_repair_binding(binding)
+    _validate_sha(accepted_main_sha, "owner_direct_repair_accepted_main_sha", SHA40)
+    if document_source != "accepted" or document_source_binding != accepted_main_sha:
+        raise SessionContextError("owner_direct_repair_entry_source_invalid")
+    snapshot_model = CheckoutSnapshot.from_wire(snapshot)
+    if snapshot_model.accepted_main_sha != accepted_main_sha:
+        raise SessionContextError("owner_direct_repair_checkout_binding_invalid")
+    if snapshot_model.head_sha != binding_model["head_sha"]:
+        raise SessionContextError("owner_direct_repair_head_mismatch")
+    if snapshot_model.branch != binding_model["head_branch"] or snapshot_model.detached:
+        raise SessionContextError("owner_direct_repair_branch_mismatch")
+    allowed_paths = list(binding_model["allowed_paths"])
+    if any(not _path_is_allowed(path, allowed_paths) for path in snapshot_model.dirty_paths):
+        raise SessionContextError("owner_direct_repair_dirty_path_invalid")
+    route = contract.role_for(role)
+    targeted_reads = list(route.required)
+    entry: dict[str, object] = {
+        "schema_version": OWNER_DIRECT_REPAIR_ENTRY_SCHEMA,
+        "authority": "github_owner_direct_repair_binding; no_steward_continuity",
+        "accepted_main_sha": accepted_main_sha,
+        "document_source": document_source,
+        "document_source_binding": document_source_binding,
+        "checkout_snapshot": snapshot_model.to_wire(),
+        "role": role,
+        "mission_id": None,
+        "stage_id": None,
+        "card_id": None,
+        "context_mode": "OWNER_DIRECT_REPAIR",
+        "resume_disposition": "AUTHORIZED",
+        "resume_reason": "owner_authenticated_existing_pr_repair",
+        "checkpoint": None,
+        "checkpoint_id": None,
+        "next_permitted_action": _owner_direct_repair_next_action(binding_model),
+        "allowed_paths": allowed_paths,
+        "targeted_reads": targeted_reads,
+        "verification_commands": list(binding_model["verification"]),
+        "verification_contract_sha256": _owner_direct_repair_verification_contract_sha256(
+            binding_model, list(binding_model["verification"])
+        ),
+        "deferred_documents": targeted_reads,
+        "forbidden_next_actions": _owner_direct_repair_forbidden_actions(),
+        "steward_continuity": {
+            "availability": "unavailable",
+            "reason": "steward_continuity_unavailable",
+            "source": "no_journal_or_service_required_for_owner_direct_repair",
+        },
+        "execution_authority": {
+            "availability": "confirmed",
+            "lane": OWNER_DIRECT_REPAIR_LANE,
+            "source": "github_pr_owner_comment",
+            "repository": binding_model["repository"],
+            "pr_number": binding_model["pr_number"],
+            "head_sha": binding_model["head_sha"],
+            "authorization_id": binding_model["authorization_id"],
+        },
+        "owner_direct_repair_binding": binding_model,
+        "execution_authorized": True,
+        "checkpoint_allowed": False,
+    }
+    entry["entry_sha256"] = _json_sha256(entry)
+    return _validate_owner_direct_repair_entry(entry)
 DISPATCH_CAPSULE_FIELDS = frozenset(
     {
         "accepted_binding_source",
@@ -2372,6 +2722,38 @@ def _load_documents(*, source: str, offline: bool) -> dict[str, Any]:
     }
 
 
+def _load_owner_direct_repair_binding(
+    pr_number: int, *, expected_head_sha: str | None = None, offline: bool = False
+) -> dict[str, object]:
+    """Read the live GitHub OWNER binding; never use a local fallback."""
+    if offline:
+        raise SessionContextError("owner_direct_repair_remote_unavailable")
+    project_context_path = ROOT / "scripts" / "project_context.py"
+    spec = importlib.util.spec_from_file_location(
+        "session_context_owner_direct_project_context", project_context_path
+    )
+    if spec is None or spec.loader is None:
+        raise SessionContextError("project_context_unavailable")
+    project_context = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = project_context
+    try:
+        spec.loader.exec_module(project_context)
+        repository = project_context.repository_from_git()
+        observer = project_context.GitHubObserver(
+            repository, token=project_context.token_from_environment()
+        )
+        return project_context.read_owner_direct_repair_binding(
+            repository,
+            pr_number,
+            observer=observer,
+            expected_head_sha=expected_head_sha,
+        )
+    except project_context.GitHubObservationError as exc:
+        raise SessionContextError(exc.reason) from exc
+    except (OSError, ValueError) as exc:
+        raise SessionContextError("owner_direct_repair_remote_unavailable") from exc
+
+
 def _canonical_session_mission(documents: Mapping[str, str]) -> dict[str, object]:
     """Represent the absence of an executable WorkCard without inventing one."""
 
@@ -2439,6 +2821,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     enter.add_argument("--role", choices=sorted(ROLES), default="coding")
     enter.add_argument("--source", choices=("accepted", "working-tree"), default="accepted")
     enter.add_argument("--offline", action="store_true")
+    enter.add_argument(
+        "--owner-direct-repair-pr",
+        type=int,
+        help="Enter a live OWNER-authorized repair lane for one existing Draft PR.",
+    )
     enter.add_argument("--format", choices=("json",), default="json")
 
     checkpoint_auto = subparsers.add_parser(
@@ -2465,9 +2852,9 @@ def main(argv: list[str] | None = None) -> int:
         loaded = _load_documents(source=source, offline=args.offline)
         accepted_main_sha = loaded["accepted_main_sha"]
         documents = loaded["documents"]
-        mission = _canonical_session_mission(documents)
 
         if args.command == "route":
+            mission = _canonical_session_mission(documents)
             contract = parse_route_contract(
                 documents["START_HERE.md"],
             )
@@ -2484,6 +2871,25 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         snapshot = capture_checkout(accepted_main_sha)
+        owner_direct_pr = getattr(args, "owner_direct_repair_pr", None)
+        if args.command == "enter" and owner_direct_pr is not None:
+            binding = _load_owner_direct_repair_binding(
+                owner_direct_pr,
+                expected_head_sha=str(snapshot["head_sha"]),
+                offline=args.offline,
+            )
+            value = build_owner_direct_repair_entry(
+                contract=parse_route_contract(documents["START_HERE.md"]),
+                role=args.role,
+                accepted_main_sha=accepted_main_sha,
+                document_source=loaded["document_source"],
+                document_source_binding=loaded["document_source_binding"],
+                binding=binding,
+                snapshot=snapshot,
+            )
+            _print(value, args.format)
+            return 0
+        mission = _canonical_session_mission(documents)
         dispatch_capsule = None
         if args.command == "enter":
             receipt = read_checkpoint()
