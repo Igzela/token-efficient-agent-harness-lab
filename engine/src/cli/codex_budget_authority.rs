@@ -35,6 +35,146 @@ pub const CODEX_BUDGET_AUTHORITY_SCHEMA: &str = "codex_budget_authority.v2";
 pub const CODEX_BUDGET_GATEWAY_SCHEMA: &str = "codex_budget_gateway.v2";
 pub const CODEX_SESSION_TOKEN_PREFIX: &str = "acp-codex-budget-";
 pub const CODEX_PROVIDER_KIND_OPENAI_COMPATIBLE: &str = "openai_compatible";
+pub const CODEX_PROVIDER_KIND_CHATGPT_SUBSCRIPTION: &str = "chatgpt_subscription";
+
+/// Upstream credential held strictly in parent memory by `CodexBudgetGateway`.
+/// Never leaked to the child environment or written to ephemeral homes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodexUpstreamAuth {
+    ApiKey(String),
+    ChatGptSubscription {
+        access_token: String,
+        account_id: Option<String>,
+    },
+}
+
+impl CodexUpstreamAuth {
+    pub fn is_present(&self) -> bool {
+        match self {
+            Self::ApiKey(key) => !key.trim().is_empty(),
+            Self::ChatGptSubscription { access_token, .. } => !access_token.trim().is_empty(),
+        }
+    }
+
+    pub fn auth_kind(&self) -> &'static str {
+        match self {
+            Self::ApiKey(_) => "api_key",
+            Self::ChatGptSubscription { .. } => "chatgpt_subscription",
+        }
+    }
+
+    /// Parse upstream auth from a Codex auth.json payload.
+    ///
+    /// Supports:
+    /// 1. ChatGPT subscription: `auth_mode == "chatgpt"` with `tokens.access_token`
+    /// 2. API key: `OPENAI_API_KEY` non-empty string.
+    pub fn from_auth_json_str(json_str: &str) -> Result<Self, String> {
+        let value: Value = serde_json::from_str(json_str)
+            .map_err(|error| format!("invalid auth.json JSON: {error}"))?;
+        Self::from_auth_json_value(&value)
+    }
+
+    pub fn from_auth_json_value(value: &Value) -> Result<Self, String> {
+        let auth_mode = value.get("auth_mode").and_then(Value::as_str);
+        if auth_mode == Some("chatgpt") {
+            let tokens = value
+                .get("tokens")
+                .and_then(Value::as_object)
+                .ok_or_else(|| "chatgpt auth missing tokens object".to_string())?;
+            let access_token = tokens
+                .get("access_token")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| "chatgpt tokens missing valid access_token".to_string())?;
+            let account_id = tokens
+                .get("account_id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.to_string());
+            return Ok(Self::ChatGptSubscription {
+                access_token: access_token.to_string(),
+                account_id,
+            });
+        }
+
+        if let Some(key) = value.get("OPENAI_API_KEY").and_then(Value::as_str) {
+            if !key.trim().is_empty() {
+                return Ok(Self::ApiKey(key.to_string()));
+            }
+        }
+
+        Err("auth.json contains neither valid chatgpt tokens nor OPENAI_API_KEY".to_string())
+    }
+
+    pub fn from_auth_json_file(path: &Path) -> Result<Self, String> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|error| format!("failed to read auth.json at {}: {error}", path.display()))?;
+        Self::from_auth_json_str(&content)
+    }
+
+    /// Resolve parent credential in fail-closed priority order:
+    /// 1. Explicit API key in ACP_CODEX_UPSTREAM_API_KEY or OPENAI_API_KEY
+    /// 2. Explicit ChatGPT token in ACP_CODEX_CHATGPT_ACCESS_TOKEN
+    /// 3. Systemd credential file in CREDENTIALS_DIRECTORY/codex-auth
+    /// 4. Explicit ACP_CODEX_AUTH_JSON path
+    /// 5. CODEX_HOME/auth.json or ~/.codex/auth.json
+    pub fn resolve_parent_credential() -> Option<Self> {
+        if let Ok(key) = std::env::var("ACP_CODEX_UPSTREAM_API_KEY") {
+            if !key.trim().is_empty() {
+                return Some(Self::ApiKey(key));
+            }
+        }
+        if let Ok(key) = std::env::var("OPENAI_API_KEY") {
+            if !key.trim().is_empty() {
+                return Some(Self::ApiKey(key));
+            }
+        }
+        if let Ok(token) = std::env::var("ACP_CODEX_CHATGPT_ACCESS_TOKEN") {
+            if !token.trim().is_empty() {
+                let account_id = std::env::var("ACP_CODEX_CHATGPT_ACCOUNT_ID")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty());
+                return Some(Self::ChatGptSubscription {
+                    access_token: token,
+                    account_id,
+                });
+            }
+        }
+        if let Ok(cred_dir) = std::env::var("CREDENTIALS_DIRECTORY") {
+            let path = Path::new(&cred_dir).join("codex-auth");
+            if path.is_file() {
+                if let Ok(auth) = Self::from_auth_json_file(&path) {
+                    return Some(auth);
+                }
+            }
+        }
+        if let Ok(path_str) = std::env::var("ACP_CODEX_AUTH_JSON") {
+            let path = Path::new(&path_str);
+            if path.is_file() {
+                if let Ok(auth) = Self::from_auth_json_file(path) {
+                    return Some(auth);
+                }
+            }
+        }
+        if let Ok(home) = std::env::var("CODEX_HOME") {
+            let path = Path::new(&home).join("auth.json");
+            if path.is_file() {
+                if let Ok(auth) = Self::from_auth_json_file(&path) {
+                    return Some(auth);
+                }
+            }
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            let path = Path::new(&home).join(".codex").join("auth.json");
+            if path.is_file() {
+                if let Ok(auth) = Self::from_auth_json_file(&path) {
+                    return Some(auth);
+                }
+            }
+        }
+        None
+    }
+}
 
 /// Admitted product-managed Codex CLI identity (exact version pin).
 /// Compatibility fixture value retained for historical dry-run evidence. New
@@ -80,6 +220,26 @@ impl CodexProviderIdentity {
                 "/chat/completions".into(),
                 "/v1/models".into(),
                 "/models".into(),
+            ],
+        })
+    }
+
+    pub fn chatgpt_subscription(base_url: &str) -> Result<Self, String> {
+        let base_url = normalize_base_url(base_url)?;
+        let host = host_from_base_url(&base_url)?;
+        Ok(Self {
+            provider_kind: CODEX_PROVIDER_KIND_CHATGPT_SUBSCRIPTION.to_string(),
+            base_url,
+            host,
+            admitted_endpoint_paths: vec![
+                "/v1/responses".into(),
+                "/responses".into(),
+                "/v1/chat/completions".into(),
+                "/chat/completions".into(),
+                "/v1/models".into(),
+                "/models".into(),
+                "/backend-api/codex/responses".into(),
+                "/backend-api/responses".into(),
             ],
         })
     }
@@ -312,7 +472,7 @@ struct GatewayState {
     authority: CodexBudgetAuthority,
     session_token: String,
     /// Real upstream credential; never exposed to the child process.
-    upstream_api_key: String,
+    upstream_auth: CodexUpstreamAuth,
     provider_requests: AtomicU64,
     cumulative_input_tokens: AtomicU64,
     cumulative_output_tokens: AtomicU64,
@@ -459,19 +619,56 @@ impl CodexBudgetGateway {
         upstream_api_key: &str,
         parent_journal_path: PathBuf,
     ) -> Result<Self, String> {
-        permit.validate_for(&authority)?;
-        Self::start_with_journal(
+        Self::start_with_auth(
+            permit,
             authority,
             upstream_base_url,
-            upstream_api_key,
+            CodexUpstreamAuth::ApiKey(upstream_api_key.to_string()),
             parent_journal_path,
         )
     }
 
-    fn start_with_journal(
+    pub(crate) fn start_with_auth(
+        permit: CodexGatewayStartPermit,
         authority: CodexBudgetAuthority,
         upstream_base_url: &str,
-        upstream_api_key: &str,
+        upstream_auth: CodexUpstreamAuth,
+        parent_journal_path: PathBuf,
+    ) -> Result<Self, String> {
+        permit.validate_for(&authority)?;
+        Self::start_with_journal_and_auth(
+            authority,
+            upstream_base_url,
+            upstream_auth,
+            parent_journal_path,
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn start_with_chatgpt_subscription(
+        permit: CodexGatewayStartPermit,
+        authority: CodexBudgetAuthority,
+        upstream_base_url: &str,
+        access_token: &str,
+        account_id: Option<&str>,
+        parent_journal_path: PathBuf,
+    ) -> Result<Self, String> {
+        Self::start_with_auth(
+            permit,
+            authority,
+            upstream_base_url,
+            CodexUpstreamAuth::ChatGptSubscription {
+                access_token: access_token.to_string(),
+                account_id: account_id.map(|s| s.to_string()),
+            },
+            parent_journal_path,
+        )
+    }
+
+    fn start_with_journal_and_auth(
+        authority: CodexBudgetAuthority,
+        upstream_base_url: &str,
+        upstream_auth: CodexUpstreamAuth,
         parent_journal_path: PathBuf,
     ) -> Result<Self, String> {
         let authority = authority.validate_new()?;
@@ -482,8 +679,8 @@ impl CodexBudgetGateway {
                 authority.provider.base_url
             ));
         }
-        if upstream_api_key.trim().is_empty() {
-            return Err("upstream API key is required for Codex budget mediation".to_string());
+        if !upstream_auth.is_present() {
+            return Err("upstream credential is required for Codex budget mediation".to_string());
         }
         // One-use unforgeable session token: random UUID material + attempt binding.
         let session_token = format!(
@@ -536,7 +733,7 @@ impl CodexBudgetGateway {
         let state = Arc::new(GatewayState {
             authority,
             session_token,
-            upstream_api_key: upstream_api_key.to_string(),
+            upstream_auth,
             provider_requests: AtomicU64::new(restored_requests),
             cumulative_input_tokens: AtomicU64::new(restored_input),
             cumulative_output_tokens: AtomicU64::new(restored_output),
@@ -575,10 +772,15 @@ impl CodexBudgetGateway {
         &self.state.authority
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn upstream_auth(&self) -> &CodexUpstreamAuth {
+        &self.state.upstream_auth
+    }
+
     /// The gateway can only exist after `start` validated a non-empty upstream
     /// credential. Expose presence only; never expose its value.
     pub(crate) fn parent_credential_owner_present(&self) -> bool {
-        !self.state.upstream_api_key.trim().is_empty()
+        self.state.upstream_auth.is_present()
     }
 
     /// Re-read the exact journal owned by this gateway and verify it remains
@@ -1286,12 +1488,24 @@ fn forward_upstream(
             .timeout(Duration::from_millis(state.authority.timeout_ms.max(1_000)))
             .build()
             .map_err(|error| format!("failed to build upstream client: {error}"))?;
-        let response = client
-            .post(&url)
-            .header(
-                "Authorization",
-                format!("Bearer {}", state.upstream_api_key),
-            )
+        let mut req = client.post(&url);
+        match &state.upstream_auth {
+            CodexUpstreamAuth::ApiKey(api_key) => {
+                req = req.header("Authorization", format!("Bearer {api_key}"));
+            }
+            CodexUpstreamAuth::ChatGptSubscription {
+                access_token,
+                account_id,
+            } => {
+                req = req.header("Authorization", format!("Bearer {access_token}"));
+                if let Some(ref account_id) = account_id {
+                    if !account_id.trim().is_empty() {
+                        req = req.header("ChatGPT-Account-ID", account_id);
+                    }
+                }
+            }
+        }
+        let response = req
             .header("Content-Type", "application/json")
             .body(body_bytes)
             .send()
@@ -1897,5 +2111,159 @@ mod tests {
         let b = new_codex_attempt_id();
         assert_ne!(a, b);
         assert!(a.starts_with("codex-attempt-"));
+    }
+
+    #[test]
+    fn test_codex_upstream_auth_from_auth_json_chatgpt() {
+        let json_str = r#"{
+            "auth_mode": "chatgpt",
+            "OPENAI_API_KEY": null,
+            "tokens": {
+                "id_token": "id-jwt-test",
+                "access_token": "access-jwt-test",
+                "refresh_token": "refresh-jwt-test",
+                "account_id": "account-uuid-test"
+            },
+            "last_refresh": "2026-09-06T12:00:00Z"
+        }"#;
+        let auth = CodexUpstreamAuth::from_auth_json_str(json_str).unwrap();
+        assert!(auth.is_present());
+        assert_eq!(auth.auth_kind(), "chatgpt_subscription");
+        match auth {
+            CodexUpstreamAuth::ChatGptSubscription {
+                access_token,
+                account_id,
+            } => {
+                assert_eq!(access_token, "access-jwt-test");
+                assert_eq!(account_id.as_deref(), Some("account-uuid-test"));
+            }
+            _ => panic!("expected ChatGptSubscription"),
+        }
+    }
+
+    #[test]
+    fn test_codex_upstream_auth_from_auth_json_api_key() {
+        let json_str = r#"{
+            "auth_mode": "api_key",
+            "OPENAI_API_KEY": "sk-proj-test1234",
+            "tokens": null
+        }"#;
+        let auth = CodexUpstreamAuth::from_auth_json_str(json_str).unwrap();
+        assert!(auth.is_present());
+        assert_eq!(auth.auth_kind(), "api_key");
+        assert_eq!(auth, CodexUpstreamAuth::ApiKey("sk-proj-test1234".into()));
+    }
+
+    #[test]
+    fn test_codex_upstream_auth_from_auth_json_invalid() {
+        assert!(CodexUpstreamAuth::from_auth_json_str("{}").is_err());
+        assert!(CodexUpstreamAuth::from_auth_json_str(r#"{"auth_mode":"chatgpt"}"#).is_err());
+        assert!(CodexUpstreamAuth::from_auth_json_str(r#"{"auth_mode":"chatgpt","tokens":{}}"#).is_err());
+        assert!(CodexUpstreamAuth::from_auth_json_str(r#"{"OPENAI_API_KEY":""}"#).is_err());
+    }
+
+    #[test]
+    fn test_gateway_forwards_chatgpt_subscription_headers() {
+        let captured_headers = Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = Arc::clone(&captured_headers);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _ = listener.set_nonblocking(true);
+        let join = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut buf = [0u8; 65536];
+                        let _ = stream.set_nonblocking(false);
+                        let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                        let n = stream.read(&mut buf).unwrap_or(0);
+                        let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+                        let mut headers = Vec::new();
+                        for line in raw.split("\r\n") {
+                            if line.is_empty() {
+                                break;
+                            }
+                            if let Some((k, v)) = line.split_once(':') {
+                                headers.push((k.trim().to_string(), v.trim().to_string()));
+                            }
+                        }
+                        if let Ok(mut guard) = captured_clone.lock() {
+                            *guard = headers;
+                        }
+                        let body = br#"{"id":"resp_sub","usage":{"input_tokens":12,"output_tokens":6},"output":[]}"#;
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.write_all(body);
+                        break;
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            || error.kind() == std::io::ErrorKind::TimedOut =>
+                    {
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let upstream = format!("http://{addr}");
+        let authority = sample_authority_for_upstream(2, 50_000, 1, &upstream);
+        let journal =
+            crate::cli::codex_usage_journal::parent_owned_journal_path(&authority.execution_id);
+        let _ = std::fs::remove_file(&journal);
+        let permit = CodexGatewayStartPermit::provider_free_fixture(&authority.execution_id);
+        let gateway = CodexBudgetGateway::start_with_chatgpt_subscription(
+            permit,
+            authority,
+            &upstream,
+            "test-access-token-xyz",
+            Some("test-account-uuid-456"),
+            journal.clone(),
+        )
+        .unwrap();
+
+        assert!(gateway.parent_credential_owner_present());
+        assert_eq!(
+            gateway.upstream_auth(),
+            &CodexUpstreamAuth::ChatGptSubscription {
+                access_token: "test-access-token-xyz".into(),
+                account_id: Some("test-account-uuid-456".into()),
+            }
+        );
+
+        let body = br#"{"model":"gpt-test-model","input":"test-sub"}"#;
+        let mut stream = TcpStream::connect(gateway.local_addr()).unwrap();
+        let req = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nContent-Type: application/json\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+            body.len(),
+            gateway.session_token()
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        stream.write_all(body).unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).unwrap();
+        assert!(resp.contains("\"input_tokens\":12"), "{resp}");
+
+        let _ = gateway.shutdown();
+        let _ = join.join();
+        let _ = std::fs::remove_file(&journal);
+
+        let headers = captured_headers.lock().unwrap();
+        let auth_hdr = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+            .map(|(_, v)| v.as_str());
+        assert_eq!(auth_hdr, Some("Bearer test-access-token-xyz"));
+
+        let acct_hdr = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("chatgpt-account-id"))
+            .map(|(_, v)| v.as_str());
+        assert_eq!(acct_hdr, Some("test-account-uuid-456"));
     }
 }
