@@ -7077,9 +7077,7 @@ impl LocalProductStore {
             .get("provider_execution")
             .cloned()
             .unwrap_or(Value::Null);
-        let journal = self
-            .delegated_provider_request_journal_optional(delegated_attempt_id)
-            .unwrap_or_default();
+        let journal = self.delegated_provider_request_journal_optional(delegated_attempt_id)?;
         Ok(Self::sort_projection_value(&json!({
             "schema_version": "rwe_cell_store_evidence_projection.v1",
             "product_task_id": product_task_id,

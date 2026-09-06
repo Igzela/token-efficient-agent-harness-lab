@@ -728,6 +728,12 @@ impl LedgerVerifier for ProviderFreeLedgerCellVerifier {
 pub const RWE_LIVE_LEDGER_CELL_COMPOSITION: &str =
     "rwe_cell_composition:ledger_orchestrated_live_delegated_implementer_rounds.v1";
 
+/// Explicitly records that the ledger manager is policy-backed and provider
+/// independent. Its call count is lifecycle accounting only; provider effects
+/// can originate solely from worker rounds.
+pub const RWE_LEDGER_MANAGER_SEMANTICS: &str =
+    "ledger-manager:provider-independent:policy-backed-deterministic:v1";
+
 /// Upper bound for one live ledger worker prompt rendering. The managed call
 /// envelope reserves `max_input_tokens` (12k frozen) against byte-counted
 /// input, so the prompt stays well inside the pre-send reservation.
@@ -1118,17 +1124,77 @@ pub fn resolve_matrix_model_to_raw(model_id: &str) -> &str {
     model_id.split(':').next().unwrap_or(model_id)
 }
 
-/// Resolve matrix Strategy projection if model-visible (memory/skill).
+/// Legacy label resolver retained only for callers that need to distinguish
+/// strategy arms. It deliberately returns no model-visible content: live
+/// execution must use the cell-bound, descriptor-validated digest reference
+/// produced by `resolve_strategy_projection_for_cell`.
 pub fn resolve_strategy_projection(strategy_id: &str) -> Option<String> {
-    match strategy_id {
-        crate::harness_evolution::MX1_MEMORY_ONLY_STRATEGY_ID => {
-            Some("strategy:memory:artifact:mx1-memory-projection-v1".to_string())
-        }
-        crate::harness_evolution::MX1_SKILL_ONLY_STRATEGY_ID => {
-            Some("strategy:skill:git:mx1-skill-projection-v1".to_string())
-        }
-        _ => None,
+    let _ = strategy_id;
+    None
+}
+
+fn resolve_strategy_projection_for_cell(
+    binding: &ProductHarnessMatrixBinding,
+) -> Result<Option<String>, String> {
+    use crate::harness_evolution::{
+        validate_mx1_descriptor_manifest, Mx1CellIdentity, Mx1StrategyAdapter,
+        MX1_MEMORY_ONLY_STRATEGY_ID, MX1_NO_PROJECTION_STRATEGY_ID, MX1_SKILL_ONLY_STRATEGY_ID,
+    };
+    let manifest = crate::harness_evolution::sample_mx1_descriptor_manifest_with_ledger_harness();
+    validate_mx1_descriptor_manifest(&manifest).map_err(|error| {
+        format!(
+            "MX1 descriptor manifest validation failed: {}",
+            error.message
+        )
+    })?;
+    let strategy = manifest
+        .strategies
+        .iter()
+        .find(|descriptor| descriptor.descriptor_id == binding.strategy_id)
+        .cloned()
+        .ok_or_else(|| "matrix strategy is not present in the sealed MX1 manifest".to_string())?;
+    if !strategy.supported_harness_ids.contains(&binding.harness_id)
+        || !strategy.supported_model_ids.contains(&binding.model_id)
+    {
+        return Err("matrix strategy is not admitted for the bound MX1 cell".into());
     }
+    if strategy.descriptor_id == MX1_NO_PROJECTION_STRATEGY_ID {
+        return Ok(None);
+    }
+    if !matches!(
+        strategy.descriptor_id.as_str(),
+        MX1_MEMORY_ONLY_STRATEGY_ID | MX1_SKILL_ONLY_STRATEGY_ID
+    ) {
+        return Err("matrix strategy is outside the admitted MX1 projection arms".into());
+    }
+    let adapter = Mx1StrategyAdapter::new(strategy)
+        .map_err(|error| format!("MX1 strategy descriptor rejected: {}", error.message))?;
+    let identity = Mx1CellIdentity {
+        harness_id: binding.harness_id.clone(),
+        model_id: binding.model_id.clone(),
+        strategy_id: binding.strategy_id.clone(),
+        task_id: binding.task_id.clone(),
+    };
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "system clock is before UNIX epoch".to_string())?
+        .as_millis() as u64;
+    let lease = adapter
+        .prepare_projection(&identity, now_unix_ms)
+        .map_err(|error| format!("MX1 projection preparation failed: {}", error.message))?
+        .ok_or_else(|| "projection strategy unexpectedly has no projection".to_string())?;
+    adapter
+        .validate_projection(&lease, &identity, now_unix_ms)
+        .map_err(|error| format!("MX1 projection validation failed: {}", error.message))?;
+    let digest_ref = json!({
+        "schema_version": "mx1_validated_projection_digest_ref.v1",
+        "strategy_id": lease.strategy_id,
+        "source_handle": lease.source_handle,
+        "content_sha256": lease.content_sha256,
+        "cell_binding_sha256": lease.cell_binding_sha256,
+        "expires_at_unix_ms": lease.expires_at_unix_ms,
+    });
+    Ok(Some(sort_value(&digest_ref).to_string()))
 }
 
 /// Provider-neutral execution adapter for live ledger worker rounds.
@@ -1213,15 +1279,15 @@ impl LiveLedgerProviderAdapter for OpenAiCompatibleProviderAdapter {
         request: &ManagedProviderCallRequest,
     ) -> Result<crate::provider::managed_deepseek::ManagedProviderResponse, String> {
         let provider_config = ProviderConfig::new(
-            &self.provider_id,
-            &self.provider_kind,
-            &self.base_url,
+            &request.provider_identity,
+            &request.provider_kind,
+            &request.base_url,
             &request.requested_model,
-            &self.credential_reference,
+            &request.credential_reference,
             "2026-07-30T00:00:00Z",
         );
         let credential = CredentialRef::new(
-            &self.credential_reference,
+            &request.credential_reference,
             "env",
             "***",
             &self.provider_subject,
@@ -1276,6 +1342,7 @@ pub struct LiveLedgerCellWorker {
     cell_cost_ceiling_usd: f64,
     transport: Option<std::sync::Arc<dyn crate::provider::transport::HttpTransport>>,
     package_id: String,
+    provider_binding: crate::rwe::campaign_package::FrozenProviderExecutionBinding,
     spent_usd: f64,
     provider_calls_made: u64,
     rounds: std::sync::Arc<std::sync::Mutex<Vec<LiveLedgerRoundRef>>>,
@@ -1299,6 +1366,7 @@ impl LiveLedgerCellWorker {
         cell_cost_ceiling_usd: f64,
         transport: Option<std::sync::Arc<dyn crate::provider::transport::HttpTransport>>,
         package_id: String,
+        provider_binding: crate::rwe::campaign_package::FrozenProviderExecutionBinding,
         rounds: std::sync::Arc<std::sync::Mutex<Vec<LiveLedgerRoundRef>>>,
         target_repo_path: Option<std::path::PathBuf>,
         provider_adapter: Option<std::sync::Arc<dyn LiveLedgerProviderAdapter>>,
@@ -1317,6 +1385,7 @@ impl LiveLedgerCellWorker {
             cell_cost_ceiling_usd,
             transport,
             package_id,
+            provider_binding,
             spent_usd: 0.0,
             provider_calls_made: 0,
             rounds,
@@ -1354,6 +1423,28 @@ impl LiveLedgerCellWorker {
         ))
     }
 
+    fn validate_adapter_matches_binding(
+        &self,
+        adapter: &dyn LiveLedgerProviderAdapter,
+        requested_model: &str,
+    ) -> Result<(), String> {
+        let binding = &self.provider_binding;
+        if adapter.provider_id() != binding.provider_identity
+            || adapter.provider_kind() != binding.provider_kind
+            || adapter.base_url() != binding.base_url
+            || adapter.endpoint_path() != binding.endpoint_path
+            || adapter.credential_reference() != binding.credential_reference
+            || adapter
+                .requested_model()
+                .is_some_and(|model| model != requested_model)
+        {
+            return Err(
+                "provider adapter does not match the frozen provider execution binding".into(),
+            );
+        }
+        Ok(())
+    }
+
     /// Authorize one round attempt under existing delegated owners (contract,
     /// proposal, prepare, approval, one-use spend, attempt lease). This
     /// mirrors the H0 armed path's steps 1-5 exactly; it stops before run
@@ -1381,12 +1472,17 @@ impl LiveLedgerCellWorker {
         // additionally fences cumulative cell spend before every round, so
         // the per-round one-use spend can never exceed the cell budget.
         let union_paths = crate::rwe::frozen_rwe_bindings::frozen_rwe_union_allowed_paths()?;
-        let raw_model = resolve_matrix_model_to_raw(&self.binding.model_id);
         let role_models = json!({
-            "planner": raw_model,
-            "implementer": raw_model,
-            "reviewer": raw_model,
+            "planner": OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL,
+            "implementer": OPERATOR_ADMITTED_MODEL,
+            "reviewer": OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL,
         });
+        self.provider_binding.validate()?;
+        if self.provider_binding.admitted_model != OPERATOR_ADMITTED_MODEL {
+            return Err(
+                "live ledger provider binding model is not the admitted implementer model".into(),
+            );
+        }
         let contract = DelegationContract {
             schema_version: DELEGATION_SCHEMA_VERSION.into(),
             delegation_id: delegation_id.clone(),
@@ -1431,25 +1527,12 @@ impl LiveLedgerCellWorker {
             "mutable_paths": self.allowed_paths,
             "max_cost_usd": Value::Null,
             "verifier": crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY,
-        });
-        if let Some(ref adapter) = self.provider_adapter {
-            let host = reqwest::Url::parse(adapter.base_url())
-                .map_err(|e| format!("invalid provider base_url: {e}"))?
-                .host_str()
-                .unwrap_or("localhost")
-                .to_string();
-            proposal["provider"] = json!({
-                "kind": adapter.provider_kind(),
-                "host": host,
-                "base_url": adapter.base_url(),
-                "endpoint_path": adapter.endpoint_path(),
-                "credential_reference": adapter.credential_reference(),
-                "request_schema_version": crate::provider::managed_deepseek::MANAGED_PROVIDER_CALL_SCHEMA,
-                "response_schema_version": crate::provider::managed_deepseek::MANAGED_PROVIDER_RESPONSE_SCHEMA,
-                "usage_parser_version": crate::provider::managed_deepseek::DEEPSEEK_USAGE_PARSER_VERSION,
+            "provider_execution_binding": self.provider_binding.to_json(),
+            "provider": {
+                "execution_binding": self.provider_binding.to_json(),
                 "price_profile": crate::provider::managed_deepseek::DeepSeekPriceProfile::default(),
-            });
-        }
+            },
+        });
         let proposal_sha = compute_attempt_manifest_sha256(&proposal)?;
         proposal["manifest_sha256"] = json!(proposal_sha);
         self.store.persist_approved_delegated_proposal(
@@ -1558,32 +1641,6 @@ impl LedgerWorker for LiveLedgerCellWorker {
                 "ledger cell frozen provider-call budget exhausted",
             );
         }
-        let staged_content = self.target_repo_path.as_ref().and_then(|target_path| {
-            self.allowed_paths.first().and_then(|rel_path| {
-                let file_path = target_path.join(rel_path);
-                if file_path.is_file() {
-                    std::fs::read_to_string(&file_path).ok().map(|content| {
-                        if content.len() > 2048 {
-                            content.chars().take(2048).collect()
-                        } else {
-                            content
-                        }
-                    })
-                } else {
-                    None
-                }
-            })
-        });
-        let strategy_projection = resolve_strategy_projection(&self.binding.strategy_id);
-        let prompt = render_live_ledger_worker_prompt(
-            context,
-            &self.objective_sha256,
-            &self.task_objective,
-            staged_content.as_deref(),
-            strategy_projection.as_deref(),
-            &self.allowed_paths,
-            &self.package_id,
-        );
         let now = self
             .store
             .require_now()
@@ -1608,7 +1665,6 @@ impl LedgerWorker for LiveLedgerCellWorker {
         ) = match self.authorize_round_attempt(round_index, &now, &expires_at) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("authorize_round_attempt error: {e}");
                 return Err(Self::worker_error(&context.selected_task.id, &e));
             }
         };
@@ -1665,11 +1721,11 @@ impl LedgerWorker for LiveLedgerCellWorker {
                     }
                 };
                 std::sync::Arc::new(OpenAiCompatibleProviderAdapter {
-                    provider_id: "deepseek-managed-rwe".to_string(),
-                    provider_kind: DEEPSEEK_PROVIDER_KIND.to_string(),
-                    base_url: DEEPSEEK_OPENAI_BASE_URL.to_string(),
-                    endpoint_path: DEEPSEEK_OPENAI_PATH.to_string(),
-                    credential_reference: DEEPSEEK_CREDENTIAL_REFERENCE.to_string(),
+                    provider_id: self.provider_binding.provider_identity.clone(),
+                    provider_kind: self.provider_binding.provider_kind.clone(),
+                    base_url: self.provider_binding.base_url.clone(),
+                    endpoint_path: self.provider_binding.endpoint_path.clone(),
+                    credential_reference: self.provider_binding.credential_reference.clone(),
                     provider_subject: "provider:deepseek".to_string(),
                     transport: transport_for_provider,
                 })
@@ -1745,33 +1801,66 @@ impl LedgerWorker for LiveLedgerCellWorker {
             spend_authorization_id,
             attempt_lease_id,
         };
+        let stage_context = self
+            .store
+            .stage_context(
+                &binding,
+                &json!({
+                    "managed_deepseek": {"stage": "implementation"}
+                }),
+            )
+            .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?
+            .ok_or_else(|| {
+                Self::worker_error(
+                    &context.selected_task.id,
+                    "store returned no implementation context",
+                )
+            })?;
+        let staged_content = serde_json::to_string(&sort_value(&stage_context)).map_err(|e| {
+            Self::worker_error(
+                &context.selected_task.id,
+                &format!("store stage context serialization failed: {e}"),
+            )
+        })?;
+        let strategy_projection = resolve_strategy_projection_for_cell(&self.binding)
+            .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?;
+        let prompt = render_live_ledger_worker_prompt(
+            context,
+            &self.objective_sha256,
+            &self.task_objective,
+            Some(&staged_content),
+            strategy_projection.as_deref(),
+            &self.allowed_paths,
+            &self.package_id,
+        );
         let mut request = ManagedProviderCallRequest::for_role(
             ManagedModelRole::Implementer,
             DeepSeekProtocol::OpenAiCompatible,
             binding.clone(),
         );
-        request.provider_kind = adapter.provider_kind().to_string();
-        request.base_url = adapter.base_url().to_string();
-        request.endpoint_path = adapter.endpoint_path().to_string();
-        request.credential_reference = adapter.credential_reference().to_string();
-        let host = reqwest::Url::parse(adapter.base_url())
-            .map_err(|e| {
+        request.provider_identity = self.provider_binding.provider_identity.clone();
+        request.provider_kind = self.provider_binding.provider_kind.clone();
+        request.host = self.provider_binding.host.clone();
+        request.base_url = self.provider_binding.base_url.clone();
+        request.endpoint_path = self.provider_binding.endpoint_path.clone();
+        request.credential_reference = self.provider_binding.credential_reference.clone();
+        request.requested_model = manifest
+            .pointer("/models/implementer")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
                 Self::worker_error(
                     &context.selected_task.id,
-                    &format!("invalid adapter base_url: {e}"),
+                    "ledger round manifest implementer model missing",
                 )
             })?
-            .host_str()
-            .unwrap_or("localhost")
             .to_string();
-        if !host.is_empty() {
-            request.host = host;
-        }
-        request.requested_model = requested_model.clone();
-        if request.requested_model != ManagedModelRole::Implementer.default_model()
-            || adapter.provider_kind() != DEEPSEEK_PROVIDER_KIND
-        {
-            request.single_model_plan = true;
+        if let Some(adapter_model) = adapter.requested_model() {
+            if adapter_model != requested_model {
+                return Err(Self::worker_error(
+                    &context.selected_task.id,
+                    "provider adapter model does not match the persisted manifest",
+                ));
+            }
         }
         request.limits = manifest_limits;
         request.price_profile = manifest_price_profile;
@@ -1781,6 +1870,8 @@ impl LedgerWorker for LiveLedgerCellWorker {
             crate::provider::transport::production_transport_provenance(adapter.transport());
         request
             .validate()
+            .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?;
+        self.validate_adapter_matches_binding(adapter.as_ref(), &request.requested_model)
             .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?;
         // Frozen cell spend fence on the store-reserved cost before any
         // provider effect: cumulative realized spend plus this round's
@@ -1805,7 +1896,7 @@ impl LedgerWorker for LiveLedgerCellWorker {
         let journal_entry = self
             .read_round_journal_entry(&delegated_attempt_id, &node_id)
             .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?;
-        let round = map_live_ledger_journal_entry(&journal_entry)
+        let mut round = map_live_ledger_journal_entry(&journal_entry)
             .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?;
         self.spent_usd += round.realized_cost_usd;
         self.provider_calls_made += round.provider_calls;
@@ -1846,10 +1937,44 @@ impl LedgerWorker for LiveLedgerCellWorker {
                             ) {
                                 Ok(act) => {
                                     action_receipt = Some(act);
+                                    let persisted_entry = self
+                                        .read_round_journal_entry(&delegated_attempt_id, &node_id)
+                                        .map_err(|e| {
+                                            Self::worker_error(&context.selected_task.id, &e)
+                                        })?;
+                                    round = map_live_ledger_journal_entry(&persisted_entry)
+                                        .map_err(|e| {
+                                            Self::worker_error(&context.selected_task.id, &e)
+                                        })?;
                                 }
-                                Err(e) => {
-                                    // B5: Preserve known provider usage and receipt on workspace action failure,
-                                    // zero replay.
+                                Err(_e) => {
+                                    // B5: Preserve provider success and usage while recording a
+                                    // separate Store-owned action failure. The provider journal
+                                    // remains succeeded, so the manager sees a successful effect
+                                    // with a terminal worker failure and cannot replay it.
+                                    let failure_evidence_digest = self
+                                        .store
+                                        .record_managed_workspace_action_failure(
+                                            &binding,
+                                            "workspace_action_failed",
+                                        )
+                                        .map_err(|error| {
+                                            Self::worker_error(
+                                                &context.selected_task.id,
+                                                &format!(
+                                                    "workspace action failure evidence persist failed: {error}"
+                                                ),
+                                            )
+                                        })?;
+                                    let persisted_entry = self
+                                        .read_round_journal_entry(&delegated_attempt_id, &node_id)
+                                        .map_err(|e| {
+                                            Self::worker_error(&context.selected_task.id, &e)
+                                        })?;
+                                    round = map_live_ledger_journal_entry(&persisted_entry)
+                                        .map_err(|e| {
+                                            Self::worker_error(&context.selected_task.id, &e)
+                                        })?;
                                     if let Ok(mut rounds) = self.rounds.lock() {
                                         rounds.push(LiveLedgerRoundRef {
                                             delegated_attempt_id: delegated_attempt_id.clone(),
@@ -1859,10 +1984,10 @@ impl LedgerWorker for LiveLedgerCellWorker {
                                     }
                                     let receipt = StoreEffectReceipt {
                                         attempt_id: ledger_attempt_id.clone(),
-                                        disposition: EffectReceiptDisposition::KnownFailedEffect,
+                                        disposition: EffectReceiptDisposition::Success,
                                         receipt_evidence_digest: Some(round.entry_digest.clone()),
                                         store_evidence_ref: Some(format!(
-                                            "delegation:{delegation_id}:attempt:{delegated_attempt_id}"
+                                            "delegation:{delegation_id}:attempt:{delegated_attempt_id}:workspace_action_failure_sha256:{failure_evidence_digest}"
                                         )),
                                     };
                                     return Ok(WorkerResult {
@@ -1876,9 +2001,9 @@ impl LedgerWorker for LiveLedgerCellWorker {
                                         partial_summary: None,
                                         artifact_refs: vec![],
                                         findings: vec![],
-                                        failure_reason: Some(format!(
-                                            "managed workspace action failed: {e}"
-                                        )),
+                                        failure_reason: Some(
+                                            "managed workspace action failed".to_string(),
+                                        ),
                                         usage: Some(round.envelope),
                                         effect_receipt: Some(receipt),
                                     });
@@ -2193,6 +2318,12 @@ pub(crate) fn run_live_ledger_cell_loop_with_adapter(
     cell_cost_ceiling_usd: f64,
     adapter: Option<std::sync::Arc<dyn LiveLedgerProviderAdapter>>,
 ) -> Result<(LedgerTerminalRecord, LiveLedgerLoopEvidence), String> {
+    let package = crate::rwe::campaign_package::resolve_frozen_campaign_package(package_id)?;
+    package.validate()?;
+    let provider_binding = package
+        .provider_execution_binding
+        .clone()
+        .ok_or("live ledger campaign package lacks a direct provider execution binding")?;
     let verification_command = task
         .expected_verification_commands
         .first()
@@ -2251,6 +2382,7 @@ pub(crate) fn run_live_ledger_cell_loop_with_adapter(
         cell_cost_ceiling_usd,
         transport.clone(),
         package_id.to_string(),
+        provider_binding,
         std::sync::Arc::clone(&rounds),
         Some(execution_workspace.clone()),
         adapter,
@@ -2488,6 +2620,7 @@ pub(crate) fn project_live_ledger_cell_outcome(
     let mut note = format!(
         "live ledger cell loop executed through {RWE_LEDGER_CELL_COMPOSITION_SEAM} ({RWE_LIVE_LEDGER_CELL_COMPOSITION}) for run {run_id}; \
          ledger_terminal_disposition={} ledger_terminal_state={:?} ledger_final_hash={} \
+         manager_semantics={RWE_LEDGER_MANAGER_SEMANTICS} \
          ledger_manager_calls={} ledger_worker_calls={} ledger_verifications={} ledger_rounds={} \
          usage_conservation={} store_journal_conserved={} provider_transport_provenance={provenance} \
          missing_evidence={} package_id={package_id} package_sha={package_sha} cell={}",
@@ -4638,6 +4771,7 @@ fn execute_armed_delegated_rwe_cell(
         "mutable_paths": task.allowed_mutable_paths,
         "max_cost_usd": Value::Null,
         "verifier": crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY,
+        "provider_execution_binding": crate::rwe::campaign_package::canonical_deepseek_provider_binding().to_json(),
     });
     let proposal_sha = compute_attempt_manifest_sha256(&proposal)?;
     proposal["manifest_sha256"] = json!(proposal_sha);
@@ -7923,21 +8057,6 @@ mod tests {
         })
     }
 
-    fn live_ledger_driver(
-        bed: &LiveLedgerTestBed,
-        responses: Vec<Result<HttpResponse, crate::provider::transport::HttpError>>,
-    ) -> ProductGoldenPathCellDriver {
-        use crate::provider::transport::MockTransport;
-        ProductGoldenPathCellDriver {
-            allow_live_provider_effects: true,
-            target_repo_path: Some(bed.target.clone()),
-            fake_transport: Some(Arc::new(MockTransport::new(responses))),
-            cell_executor_key_id: Some(bed.executor_key_id.clone()),
-            cell_confirmer_key_id: None,
-            campaign_package: None,
-        }
-    }
-
     fn admit_live_ledger_intake(bed: &LiveLedgerTestBed) -> (ProductHarnessMatrixBinding, String) {
         let binding =
             matrix_binding_from_frozen_cell(&bed.ledger_cell, &bed.ids, &bed.task0).unwrap();
@@ -8039,31 +8158,47 @@ mod tests {
             eprintln!("SKIP: frozen target repository unavailable");
             return;
         };
-        // The real frozen verifier command cannot pass in the bare temp
-        // target, so the cell ends controlled_failure after genuine live
-        // rounds; the proof here is the composition path, not delivery.
-        let driver = live_ledger_driver(
-            &bed,
-            vec![
-                live_success_response(0),
-                live_success_response(1),
-                live_success_response(2),
-                live_success_response(3),
-            ],
-        );
-        let outcome = driver
-            .execute_cell(
-                &bed.store,
-                &bed.principal,
-                &bed.frozen,
-                "run-live-comp",
-                "lease-comp",
-                &bed.ledger_cell,
-                &bed.task0,
-                &bed.ids,
+        let (binding, product_task_id) = admit_live_ledger_intake(&bed);
+        // Use a bounded probe command for this composition-only test. The
+        // production ProductTask still binds the frozen verifier; the live
+        // loop itself accepts the test-only command and remains provider-live.
+        stage_probe_for_task(&bed.store, &product_task_id, true);
+        let task = live_probe_task(&bed.task0, 4);
+        let executor = bed
+            .store
+            .authenticate_managed_acceptance_principal(
+                bed.principal.tenant_id(),
+                &bed.executor_key_id,
+                None,
             )
             .unwrap();
-        eprintln!("OUTCOME: {outcome:#?}");
+        let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> = Some(Arc::new(
+            crate::provider::transport::MockTransport::new(vec![live_success_response(0)]),
+        ));
+        let (record, evidence) = run_live_ledger_cell_loop(
+            &bed.store,
+            &bed.principal,
+            &executor,
+            &binding,
+            &task,
+            &bed.ids,
+            &product_task_id,
+            &transport,
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
+            &bed.target,
+            0.20,
+        )
+        .unwrap();
+        let outcome = project_live_ledger_cell_outcome(
+            &bed.store,
+            &product_task_id,
+            &evidence.rounds,
+            &record,
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
+            "test-sha",
+            "run-live-comp",
+            &bed.ids,
+        );
         // The live ledger composition ran, not the provider-free loop and
         // not the H0 3-node path: no Draft PR output, no H0 terminal, and
         // the live ledger seam markers are present.
@@ -8141,7 +8276,7 @@ mod tests {
             &bed.ids,
             &product_task_id,
             &transport,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             &bed.target,
             0.20,
         )
@@ -8156,7 +8291,7 @@ mod tests {
             &product_task_id,
             &evidence.rounds,
             &record,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             "test-sha",
             "run-live-seal",
             &bed.ids,
@@ -8213,6 +8348,11 @@ mod tests {
             "{}",
             outcome.note
         );
+        assert!(
+            outcome.note.contains(RWE_LEDGER_MANAGER_SEMANTICS),
+            "{}",
+            outcome.note
+        );
         // No H0 terminal evidence exists for a ledger cell, so no baseline
         // seal is even expressible.
         assert!(bed
@@ -8257,7 +8397,7 @@ mod tests {
             &bed.ids,
             &product_task_id,
             &transport,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             &bed.target,
             0.20,
         )
@@ -8288,7 +8428,7 @@ mod tests {
             &product_task_id,
             &evidence.rounds,
             &record,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             "test-sha",
             "run-live-retry",
             &bed.ids,
@@ -8335,7 +8475,7 @@ mod tests {
             &bed.ids,
             &product_task_id,
             &transport,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             &bed.target,
             0.20,
         )
@@ -8360,7 +8500,7 @@ mod tests {
             &product_task_id,
             &evidence.rounds,
             &record,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             "test-sha",
             "run-live-unk",
             &bed.ids,
@@ -8407,7 +8547,7 @@ mod tests {
             &bed.ids,
             &product_task_id,
             &transport,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             &bed.target,
             0.20,
         )
@@ -8426,7 +8566,7 @@ mod tests {
             &product_task_id,
             &evidence.rounds,
             &record,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             "test-sha",
             "run-live-vf",
             &bed.ids,
@@ -8590,7 +8730,7 @@ mod tests {
             &bed.ids,
             &product_task_id,
             &transport,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             &bed.target,
             0.20,
         )
@@ -8604,7 +8744,7 @@ mod tests {
             &product_task_id,
             &evidence.rounds,
             &record,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             "test-sha",
             "run-live-mx1",
             &bed.ids,
@@ -8832,15 +8972,14 @@ mod tests {
             &bed.ids,
             &product_task_id,
             &transport,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             &bed.target,
             0.20,
         )
         .unwrap();
-
         assert_eq!(
             record.disposition,
-            crate::harness_evolution::LedgerTerminalDisposition::Completed
+            crate::harness_evolution::LedgerTerminalDisposition::Completed,
         );
         assert_eq!(evidence.rounds.len(), 2);
         assert_eq!(record.metrics.replan_count, 1);
@@ -8854,13 +8993,44 @@ mod tests {
         assert!(!file_content.contains("assert False"));
         assert!(evidence.rounds[0].action_receipt.is_none());
         assert!(evidence.rounds[1].action_receipt.is_some());
+        let action_journal = live_round_journal(
+            &bed.store,
+            &product_task_id,
+            &evidence.rounds[1].delegated_attempt_id,
+        );
+        assert_eq!(action_journal.len(), 1);
+        assert_eq!(
+            action_journal[0]
+                .pointer("/workspace_action/schema_version")
+                .and_then(Value::as_str),
+            Some("managed_workspace_action_evidence.v1")
+        );
+        assert!(action_journal[0]
+            .pointer("/workspace_action/receipt_sha256")
+            .and_then(Value::as_str)
+            .is_some());
+        // A fresh Store projection reconstructs the persisted provider ->
+        // action -> verifier evidence chain without replaying the action.
+        let restarted_projection = bed
+            .store
+            .project_rwe_cell_store_evidence(
+                &product_task_id,
+                &evidence.rounds[1].delegated_attempt_id,
+            )
+            .unwrap();
+        assert_eq!(
+            restarted_projection
+                .pointer("/provider_request_journal/0/workspace_action/schema_version")
+                .and_then(Value::as_str),
+            Some("managed_workspace_action_evidence.v1")
+        );
 
         let outcome = project_live_ledger_cell_outcome(
             &bed.store,
             &product_task_id,
             &evidence.rounds,
             &record,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             "test-sha",
             "run-live-repair",
             &bed.ids,
@@ -8883,8 +9053,7 @@ mod tests {
             eprintln!("SKIP: frozen target repository unavailable");
             return;
         };
-        let (mut binding, product_task_id) = admit_live_ledger_intake(&bed);
-        binding.model_id = "custom-openai-model:single-model-three-role:v1".to_string();
+        let (binding, product_task_id) = admit_live_ledger_intake(&bed);
         stage_probe_for_task(&bed.store, &product_task_id, true);
         let task = live_probe_task(&bed.task0, 3);
 
@@ -8926,28 +9095,21 @@ mod tests {
             &bed.ids,
             &product_task_id,
             &transport,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             &bed.target,
             0.20,
             Some(custom_adapter),
         )
         .unwrap();
 
+        // A provider substitution is rejected against the package-owned
+        // binding before ManagedProviderCallAuthority or transport invocation.
         assert_eq!(
             record.disposition,
-            crate::harness_evolution::LedgerTerminalDisposition::Completed
+            crate::harness_evolution::LedgerTerminalDisposition::OutcomeUnknown
         );
-        assert_eq!(evidence.rounds.len(), 1);
-        let journal = live_round_journal(
-            &bed.store,
-            &product_task_id,
-            &evidence.rounds[0].delegated_attempt_id,
-        );
-        assert_eq!(journal.len(), 1);
-        assert_eq!(
-            journal[0].get("requested_model").and_then(Value::as_str),
-            Some("custom-openai-model")
-        );
+        assert!(evidence.rounds.is_empty());
+        assert_eq!(record.failure_code, "worker_execution_error");
     }
 
     #[test]
@@ -8991,7 +9153,7 @@ mod tests {
             &bed.ids,
             &product_task_id,
             &transport,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             &bed.target,
             0.20,
         )
@@ -9051,7 +9213,7 @@ mod tests {
             &bed.ids,
             &product_task_id,
             &transport,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             &bed.target,
             0.20,
         );
@@ -9162,7 +9324,7 @@ mod tests {
             &bed.ids,
             &product_task_id,
             &transport,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             &bed.target,
             0.20,
         )
@@ -9174,13 +9336,45 @@ mod tests {
         );
         assert_eq!(evidence.rounds.len(), 1);
         assert!(evidence.rounds[0].action_receipt.is_none());
+        let failed_journal = live_round_journal(
+            &bed.store,
+            &product_task_id,
+            &evidence.rounds[0].delegated_attempt_id,
+        );
+        assert_eq!(failed_journal.len(), 1);
+        assert_eq!(failed_journal[0]["status"], "succeeded");
+        assert_eq!(
+            failed_journal[0]
+                .pointer("/workspace_action_failure/schema_version")
+                .and_then(Value::as_str),
+            Some("managed_workspace_action_failure.v1")
+        );
+        assert_eq!(
+            failed_journal[0]
+                .pointer("/workspace_action_failure/replay")
+                .and_then(Value::as_str),
+            Some("forbidden")
+        );
+        let restarted_failure = bed
+            .store
+            .project_rwe_cell_store_evidence(
+                &product_task_id,
+                &evidence.rounds[0].delegated_attempt_id,
+            )
+            .unwrap();
+        assert_eq!(
+            restarted_failure
+                .pointer("/provider_request_journal/0/workspace_action_failure/replay")
+                .and_then(Value::as_str),
+            Some("forbidden")
+        );
 
         let outcome = project_live_ledger_cell_outcome(
             &bed.store,
             &product_task_id,
             &evidence.rounds,
             &record,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             "test-sha",
             "run-live-wafail",
             &bed.ids,
@@ -9273,20 +9467,78 @@ mod tests {
     #[test]
     fn live_ledger_strategy_projection_included_in_prompt() {
         use crate::harness_evolution::{
-            LedgerTaskRecord, LedgerTaskStatus, WorkerContext, MX1_MEMORY_ONLY_STRATEGY_ID,
+            LedgerTaskRecord, LedgerTaskStatus, WorkerContext, LEDGER_ORCHESTRATED_HARNESS_ID,
+            MX1_MEMORY_ONLY_STRATEGY_ID, MX1_NO_PROJECTION_STRATEGY_ID, MX1_SECOND_MODEL_ID,
             MX1_SKILL_ONLY_STRATEGY_ID,
         };
         assert_eq!(
             resolve_strategy_projection(MX1_MEMORY_ONLY_STRATEGY_ID),
-            Some("strategy:memory:artifact:mx1-memory-projection-v1".to_string())
+            None
         );
         assert_eq!(
             resolve_strategy_projection(MX1_SKILL_ONLY_STRATEGY_ID),
-            Some("strategy:skill:git:mx1-skill-projection-v1".to_string())
+            None
         );
         assert_eq!(resolve_strategy_projection(""), None);
         assert_eq!(resolve_strategy_projection("   "), None);
         assert_eq!(resolve_strategy_projection("unmapped_strategy"), None);
+
+        let base_binding = ProductHarnessMatrixBinding {
+            plan_id: "a".repeat(64),
+            manifest_sha256: "b".repeat(64),
+            rung: "r1".to_string(),
+            repetition: 1,
+            cell_id: "cell-projection".to_string(),
+            cell_descriptor_sha256: "c".repeat(64),
+            harness_id: LEDGER_ORCHESTRATED_HARNESS_ID.to_string(),
+            model_id: MX1_SECOND_MODEL_ID.to_string(),
+            strategy_id: MX1_MEMORY_ONLY_STRATEGY_ID.to_string(),
+            task_id: "task-projection".to_string(),
+        };
+        let memory_ref = resolve_strategy_projection_for_cell(&base_binding)
+            .unwrap()
+            .expect("memory strategy must project");
+        let memory_json: Value = serde_json::from_str(&memory_ref).unwrap();
+        assert_eq!(
+            memory_json["schema_version"],
+            "mx1_validated_projection_digest_ref.v1"
+        );
+        assert_eq!(
+            memory_json["source_handle"],
+            "artifact:mx1-memory-projection-v1"
+        );
+        assert!(memory_json["content_sha256"].as_str().is_some());
+
+        let mut skill_binding = base_binding.clone();
+        skill_binding.strategy_id = MX1_SKILL_ONLY_STRATEGY_ID.to_string();
+        let skill_ref = resolve_strategy_projection_for_cell(&skill_binding)
+            .unwrap()
+            .expect("skill strategy must project");
+        let skill_json: Value = serde_json::from_str(&skill_ref).unwrap();
+        assert_eq!(skill_json["source_handle"], "git:mx1-skill-projection-v1");
+        assert_ne!(memory_json["source_handle"], skill_json["source_handle"]);
+        assert_ne!(
+            memory_json["cell_binding_sha256"],
+            skill_json["cell_binding_sha256"]
+        );
+
+        let mut baseline_binding = base_binding.clone();
+        baseline_binding.strategy_id = MX1_NO_PROJECTION_STRATEGY_ID.to_string();
+        assert_eq!(
+            resolve_strategy_projection_for_cell(&baseline_binding).unwrap(),
+            None
+        );
+
+        let mut other_cell = base_binding.clone();
+        other_cell.task_id = "task-projection-other-cell".to_string();
+        let other_ref = resolve_strategy_projection_for_cell(&other_cell)
+            .unwrap()
+            .expect("other memory cell must project");
+        let other_json: Value = serde_json::from_str(&other_ref).unwrap();
+        assert_ne!(
+            memory_json["cell_binding_sha256"],
+            other_json["cell_binding_sha256"]
+        );
 
         let context = WorkerContext {
             contract_digest: "digest-abc".to_string(),
@@ -9342,6 +9594,7 @@ mod tests {
         };
 
         let contract1 = PersistedManagedExecutionContract {
+            provider_identity: "custom-provider".to_string(),
             provider_kind: "openai_compatible".to_string(),
             protocol: DeepSeekProtocol::OpenAiCompatible,
             request_schema_version: crate::provider::managed_deepseek::MANAGED_PROVIDER_CALL_SCHEMA
@@ -9400,6 +9653,7 @@ mod tests {
             DeepSeekProtocol::OpenAiCompatible,
             binding,
         );
+        req.provider_identity = "custom-provider".to_string();
         req.provider_kind = "openai_compatible".to_string();
         req.host = "api.opencode.example.com".to_string();
         req.base_url = "https://api.opencode.example.com/v1".to_string();

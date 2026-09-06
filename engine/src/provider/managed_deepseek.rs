@@ -36,6 +36,7 @@ pub const MANAGED_PROVIDER_CALL_SCHEMA: &str = "managed_provider_call.v1";
 pub const MANAGED_PROVIDER_RESPONSE_SCHEMA: &str = "managed_provider_response.v1";
 pub const DEEPSEEK_USAGE_PARSER_VERSION: &str = "deepseek_usage_parser.v1";
 pub const DEEPSEEK_PROVIDER_KIND: &str = "deepseek";
+pub const DEEPSEEK_PROVIDER_ID: &str = "deepseek-managed-rwe";
 pub const DEEPSEEK_OPENAI_BASE_URL: &str = "https://api.deepseek.com";
 pub const DEEPSEEK_ANTHROPIC_BASE_URL: &str = "https://api.deepseek.com/anthropic";
 pub const DEEPSEEK_OPENAI_PATH: &str = "/chat/completions";
@@ -429,6 +430,8 @@ impl DeepSeekPriceProfile {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ManagedProviderCallRequest {
     pub schema_version: String,
+    /// Concrete provider identity, distinct from the wire protocol/provider kind.
+    pub provider_identity: String,
     pub provider_kind: String,
     pub protocol: DeepSeekProtocol,
     pub host: String,
@@ -470,6 +473,7 @@ impl ManagedProviderCallRequest {
         let profile = DeepSeekVersionedProfile::default();
         Self {
             schema_version: MANAGED_PROVIDER_CALL_SCHEMA.to_string(),
+            provider_identity: DEEPSEEK_PROVIDER_ID.to_string(),
             provider_kind: DEEPSEEK_PROVIDER_KIND.to_string(),
             protocol,
             host: "api.deepseek.com".to_string(),
@@ -498,6 +502,11 @@ impl ManagedProviderCallRequest {
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != MANAGED_PROVIDER_CALL_SCHEMA {
             return Err("managed provider call schema version is not canonical".to_string());
+        }
+        if self.provider_identity.trim().is_empty()
+            || self.provider_identity.chars().any(char::is_control)
+        {
+            return Err("managed provider identity is missing or malformed".to_string());
         }
         if self.provider_kind == DEEPSEEK_PROVIDER_KIND {
             if self.host != "api.deepseek.com"
@@ -787,6 +796,7 @@ impl ManagedUsage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ManagedProviderResponse {
     pub schema_version: String,
+    pub provider_identity: String,
     pub provider_kind: String,
     pub protocol: DeepSeekProtocol,
     pub requested_model: String,
@@ -1057,6 +1067,7 @@ pub struct PersistedAuthoritySnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PersistedManagedExecutionContract {
+    pub provider_identity: String,
     pub provider_kind: String,
     pub protocol: DeepSeekProtocol,
     pub host: String,
@@ -1181,6 +1192,7 @@ impl ManagedProviderCallAuthority {
             ));
         }
         let provider_matches = contract.provider_kind == request.provider_kind
+            && contract.provider_identity == request.provider_identity
             && contract.host == request.host
             && contract.base_url == request.base_url
             && contract.endpoint_path == request.endpoint_path
@@ -1309,7 +1321,7 @@ pub fn response_to_usage_event(
         managed_execution_id: Some(request.binding.attempt_id.clone()),
         executor_kind: ExecutorKind::ProviderProxy,
         evidence_source_kind: EvidenceSourceKind::ProviderResponse,
-        provider_id: Some(request.provider_kind.clone()),
+        provider_id: Some(request.provider_identity.clone()),
         requested_model: Some(response.requested_model.clone()),
         resolved_model: Some(response.resolved_model.clone()),
         executable_path_fingerprint: None,
@@ -1342,9 +1354,11 @@ pub fn response_to_usage_event(
         source_schema_version: MANAGED_PROVIDER_RESPONSE_SCHEMA.to_string(),
         stable_dedupe_identity: format!(
             "{}:{}:{}",
-            request.provider_kind, request.binding.attempt_id, response.request_id
+            request.provider_identity, request.binding.attempt_id, response.request_id
         ),
         provenance_refs: vec![
+            format!("provider_identity:{}", request.provider_identity),
+            format!("provider_kind:{}", request.provider_kind),
             format!("protocol:{:?}", request.protocol),
             format!("role:{:?}", request.role),
             format!(
@@ -1720,6 +1734,7 @@ fn parse_non_stream_response(
     }
     Ok(ManagedProviderResponse {
         schema_version: MANAGED_PROVIDER_RESPONSE_SCHEMA.to_string(),
+        provider_identity: request.provider_identity.clone(),
         provider_kind: request.provider_kind.clone(),
         protocol,
         requested_model: request.requested_model.clone(),
@@ -1959,6 +1974,7 @@ fn finish_stream(
     }
     Ok(ManagedProviderResponse {
         schema_version: MANAGED_PROVIDER_RESPONSE_SCHEMA.to_string(),
+        provider_identity: request.provider_identity.clone(),
         provider_kind: request.provider_kind.clone(),
         protocol,
         requested_model: request.requested_model.clone(),
@@ -2874,6 +2890,7 @@ followed by a one-sentence summary of the change.";
                 consumed_by_attempt_id: Some(binding.attempt_id.clone()),
                 lease_status: "current".into(),
                 execution_contract: Some(PersistedManagedExecutionContract {
+                    provider_identity: DEEPSEEK_PROVIDER_ID.into(),
                     provider_kind: DEEPSEEK_PROVIDER_KIND.into(),
                     protocol: DeepSeekProtocol::OpenAiCompatible,
                     host: "api.deepseek.com".into(),
@@ -2910,6 +2927,7 @@ followed by a one-sentence summary of the change.";
     fn manual_response() -> ManagedProviderResponse {
         ManagedProviderResponse {
             schema_version: MANAGED_PROVIDER_RESPONSE_SCHEMA.into(),
+            provider_identity: DEEPSEEK_PROVIDER_ID.into(),
             provider_kind: DEEPSEEK_PROVIDER_KIND.into(),
             protocol: DeepSeekProtocol::OpenAiCompatible,
             requested_model: "deepseek-v4-pro".into(),
@@ -3124,7 +3142,7 @@ followed by a one-sentence summary of the change.";
     fn provider_response_projects_only_redacted_usage_evidence() {
         let req = request(DeepSeekProtocol::OpenAiCompatible);
         let event = response_to_usage_event(&req, &manual_response(), "2026-07-30T00:00:00Z");
-        assert_eq!(event.provider_id.as_deref(), Some("deepseek"));
+        assert_eq!(event.provider_id.as_deref(), Some(DEEPSEEK_PROVIDER_ID));
         assert_eq!(event.request_or_message_id.as_deref(), Some("r-1"));
         assert_eq!(event.input_tokens, 8);
         assert_eq!(event.reasoning_output_tokens, 1);

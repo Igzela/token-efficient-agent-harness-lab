@@ -557,19 +557,7 @@ impl DelegationContract {
             "implementer": "deepseek-v4-flash",
             "reviewer": "deepseek-v4-pro"
         });
-        let valid_models = if self.models == default_models {
-            true
-        } else {
-            let planner = self.models.get("planner").and_then(Value::as_str);
-            let implementer = self.models.get("implementer").and_then(Value::as_str);
-            let reviewer = self.models.get("reviewer").and_then(Value::as_str);
-            match (planner, implementer, reviewer) {
-                (Some(p), Some(i), Some(r)) => {
-                    !p.trim().is_empty() && !i.trim().is_empty() && !r.trim().is_empty()
-                }
-                _ => false,
-            }
-        };
+        let valid_models = self.models == default_models;
         if !valid_models
             || self.output
                 != json!({
@@ -731,22 +719,18 @@ pub fn derive_final_execution_manifest(
     {
         return Err("immutable proposal does not exactly bind the final execution".into());
     }
-    let provider = match proposal.get("provider") {
-        Some(p) if p.get("kind").is_some() => p.clone(),
-        _ => json!({
-            "kind": crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND,
-            "host": "api.deepseek.com",
-            "base_url": crate::provider::managed_deepseek::DEEPSEEK_OPENAI_BASE_URL,
-            "endpoint_path": crate::provider::managed_deepseek::DEEPSEEK_OPENAI_PATH,
-            "credential_reference": crate::provider::managed_deepseek::DEEPSEEK_CREDENTIAL_REFERENCE,
-            "request_schema_version": crate::provider::managed_deepseek::MANAGED_PROVIDER_CALL_SCHEMA,
-            "response_schema_version": crate::provider::managed_deepseek::MANAGED_PROVIDER_RESPONSE_SCHEMA,
-            "usage_parser_version": crate::provider::managed_deepseek::DEEPSEEK_USAGE_PARSER_VERSION,
-            "price_profile": crate::provider::managed_deepseek::DeepSeekPriceProfile::default()
-        }),
-    };
-    let is_deepseek = provider.get("kind").and_then(Value::as_str)
-        == Some(crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND);
+    let binding_value = proposal
+        .get("provider_execution_binding")
+        .or_else(|| proposal.pointer("/provider/execution_binding"))
+        .ok_or("immutable proposal provider execution binding is required")?;
+    let binding =
+        crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json(binding_value)?;
+    let canonical_binding = crate::rwe::campaign_package::canonical_deepseek_provider_binding();
+    if binding != canonical_binding {
+        return Err("immutable proposal provider execution binding is not canonical".into());
+    }
+    let provider = canonical_managed_deepseek_provider_value();
+    let is_deepseek = true;
     let mut manifest = sort_value(&json!({
         "schema_version": FINAL_MANIFEST_SCHEMA_VERSION,
         "proposal_manifest_sha256": proposal_sha,
@@ -763,6 +747,7 @@ pub fn derive_final_execution_manifest(
         },
         "models": delegation.models.clone(),
         "protocol": delegation.protocol.clone(),
+        "provider_execution_binding": binding.to_json(),
         "provider": provider,
         "verifier": execution.get("verifier"),
         "limits": {
@@ -806,6 +791,16 @@ pub fn derive_final_execution_manifest(
     let sha = compute_attempt_manifest_sha256(&manifest)?;
     manifest["manifest_sha256"] = json!(sha);
     Ok(manifest)
+}
+
+fn canonical_managed_deepseek_provider_value() -> Value {
+    let binding = crate::rwe::campaign_package::canonical_deepseek_provider_binding();
+    let mut provider = binding.to_json();
+    provider["kind"] = json!(binding.provider_kind);
+    provider["price_profile"] =
+        serde_json::to_value(crate::provider::managed_deepseek::DeepSeekPriceProfile::default())
+            .expect("DeepSeek price profile serializes");
+    provider
 }
 
 /// Independent artifact/output authority. It accepts only redacted hashes and
@@ -1029,16 +1024,9 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
         "merge": false,
         "auto_merge": false
     });
-    let expected_provider = json!({
-        "kind": crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND,
-        "host": "api.deepseek.com",
-        "base_url": crate::provider::managed_deepseek::DEEPSEEK_OPENAI_BASE_URL,
-        "endpoint_path": crate::provider::managed_deepseek::DEEPSEEK_OPENAI_PATH,
-        "request_schema_version": crate::provider::managed_deepseek::MANAGED_PROVIDER_CALL_SCHEMA,
-        "response_schema_version": crate::provider::managed_deepseek::MANAGED_PROVIDER_RESPONSE_SCHEMA,
-        "usage_parser_version": crate::provider::managed_deepseek::DEEPSEEK_USAGE_PARSER_VERSION,
-        "price_profile": crate::provider::managed_deepseek::DeepSeekPriceProfile::default()
-    });
+    let expected_provider = canonical_managed_deepseek_provider_value();
+    let expected_binding =
+        crate::rwe::campaign_package::canonical_deepseek_provider_binding().to_json();
     let mutable = manifest
         .pointer("/target/mutable_paths")
         .and_then(Value::as_array)
@@ -1061,11 +1049,8 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
     let max_total_cost = manifest
         .pointer("/limits/max_total_cost_usd")
         .and_then(Value::as_f64);
-    let is_deepseek = manifest
-        .pointer("/provider/kind")
-        .and_then(Value::as_str)
-        .map(|k| k == crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND)
-        .unwrap_or(true);
+    let is_deepseek = manifest.pointer("/provider/kind").and_then(Value::as_str)
+        == Some(crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND);
     let docs_policy = mutable == ["docs/USER_GUIDE.md"]
         && verifier == Some(crate::rwe::frozen_rwe_bindings::DOCS_GP_VERIFIER_IDENTITY)
         && max_files == Some(1)
@@ -1100,40 +1085,9 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
                 && max_total_cost == rwe_cell_cost)
                 || (!is_deepseek && max_cost.is_none() && max_total_cost.is_none()))
     };
-    let valid_models = if manifest.get("models") == Some(&expected_models) {
-        true
-    } else {
-        let planner = manifest.pointer("/models/planner").and_then(Value::as_str);
-        let implementer = manifest
-            .pointer("/models/implementer")
-            .and_then(Value::as_str);
-        let reviewer = manifest.pointer("/models/reviewer").and_then(Value::as_str);
-        match (planner, implementer, reviewer) {
-            (Some(p), Some(i), Some(r)) => {
-                !p.trim().is_empty() && !i.trim().is_empty() && !r.trim().is_empty()
-            }
-            _ => false,
-        }
-    };
-    let valid_provider = if manifest.get("provider") == Some(&expected_provider) {
-        true
-    } else if let Some(provider) = manifest.get("provider") {
-        let kind = provider.get("kind").and_then(Value::as_str);
-        let host = provider.get("host").and_then(Value::as_str);
-        let base_url = provider.get("base_url").and_then(Value::as_str);
-        let endpoint_path = provider.get("endpoint_path").and_then(Value::as_str);
-        match (kind, host, base_url, endpoint_path) {
-            (Some(k), Some(h), Some(b), Some(e)) => {
-                !k.trim().is_empty()
-                    && !h.trim().is_empty()
-                    && !b.trim().is_empty()
-                    && !e.trim().is_empty()
-            }
-            _ => false,
-        }
-    } else {
-        false
-    };
+    let valid_models = manifest.get("models") == Some(&expected_models);
+    let valid_provider = manifest.get("provider") == Some(&expected_provider)
+        && manifest.get("provider_execution_binding") == Some(&expected_binding);
     let policy_matches = manifest
         .pointer("/target/repository")
         .and_then(Value::as_str)
@@ -1189,6 +1143,11 @@ fn delegated_execution_contract(
     node_id: &str,
 ) -> Result<crate::provider::managed_deepseek::PersistedManagedExecutionContract, String> {
     validate_delegated_manifest_policy(manifest)?;
+    let provider_binding = crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json(
+        manifest
+            .get("provider_execution_binding")
+            .ok_or("delegated manifest provider execution binding is missing")?,
+    )?;
     let node_ids = manifest
         .pointer("/execution/workflow_node_ids")
         .and_then(Value::as_array)
@@ -1220,6 +1179,7 @@ fn delegated_execution_contract(
     .map_err(|_| "delegated manifest price profile is malformed")?;
     Ok(
         crate::provider::managed_deepseek::PersistedManagedExecutionContract {
+            provider_identity: provider_binding.provider_identity,
             provider_kind: manifest
                 .pointer("/provider/kind")
                 .and_then(Value::as_str)
@@ -1372,6 +1332,92 @@ fn validate_existing_manifest_approval(
         return Err("persisted delegated manifest approval receipt is stale or malformed".into());
     }
     Ok(receipt)
+}
+
+fn record_workspace_action_in_journal(
+    journal_json: &str,
+    binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+    receipt: &Value,
+) -> Result<(String, String), String> {
+    let mut journal: Vec<Value> = serde_json::from_str(journal_json)
+        .map_err(|_| "managed workspace action journal is invalid")?;
+    let entry = journal
+        .iter_mut()
+        .find(|entry| {
+            entry.get("node_id").and_then(Value::as_str) == Some(binding.node_id.as_str())
+        })
+        .ok_or("managed workspace action provider journal entry is missing")?;
+    if entry.get("status").and_then(Value::as_str) != Some("succeeded") {
+        return Err("managed workspace action requires a successful provider journal entry".into());
+    }
+    if entry.get("workspace_action_failure").is_some() {
+        return Err("managed workspace action already has a failure outcome".into());
+    }
+    let receipt_sha256 = sha256_hex(canonical_json(&sort_value(receipt))?.as_bytes());
+    if let Some(existing) = entry.get("workspace_action") {
+        if existing.get("receipt_sha256").and_then(Value::as_str) == Some(receipt_sha256.as_str()) {
+            return Ok((
+                sort_value(&Value::Array(journal)).to_string(),
+                receipt_sha256,
+            ));
+        }
+        return Err("managed workspace action receipt conflicts with the persisted receipt".into());
+    }
+    entry["workspace_action"] = sort_value(&json!({
+        "schema_version": "managed_workspace_action_evidence.v1",
+        "receipt_sha256": receipt_sha256,
+        "receipt": receipt,
+    }));
+    Ok((
+        sort_value(&Value::Array(journal)).to_string(),
+        receipt_sha256,
+    ))
+}
+
+fn record_workspace_action_failure_in_journal(
+    journal_json: &str,
+    binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+    failure_sha256: &str,
+) -> Result<(String, String), String> {
+    let mut journal: Vec<Value> = serde_json::from_str(journal_json)
+        .map_err(|_| "managed workspace action journal is invalid")?;
+    let entry = journal
+        .iter_mut()
+        .find(|entry| {
+            entry.get("node_id").and_then(Value::as_str) == Some(binding.node_id.as_str())
+        })
+        .ok_or("managed workspace action provider journal entry is missing")?;
+    if entry.get("status").and_then(Value::as_str) != Some("succeeded") {
+        return Err(
+            "managed workspace action failure requires a successful provider journal entry".into(),
+        );
+    }
+    if entry.get("workspace_action").is_some() {
+        return Err("managed workspace action already has a successful receipt".into());
+    }
+    let existing = entry.get("workspace_action_failure");
+    if let Some(existing) = existing {
+        if existing.get("failure_sha256").and_then(Value::as_str) == Some(failure_sha256) {
+            return Ok((
+                sort_value(&Value::Array(journal)).to_string(),
+                failure_sha256.into(),
+            ));
+        }
+        return Err("managed workspace action failure conflicts with the persisted outcome".into());
+    }
+    let evidence = sort_value(&json!({
+        "schema_version": "managed_workspace_action_failure.v1",
+        "product_task_id": binding.product_task_id,
+        "workflow_id": binding.workflow_id,
+        "node_id": binding.node_id,
+        "failure_sha256": failure_sha256,
+        "replay": "forbidden",
+    }));
+    entry["workspace_action_failure"] = evidence.clone();
+    Ok((
+        sort_value(&Value::Array(journal)).to_string(),
+        sha256_hex(canonical_json(&evidence)?.as_bytes()),
+    ))
 }
 
 impl LocalProductStore {
@@ -10983,6 +11029,19 @@ impl LocalProductStore {
                     &scheduler.allowed_paths,
                     &scheduler.workspace_path,
                 )?;
+                let (journal, _receipt_digest) =
+                    record_workspace_action_in_journal(&row.7, binding, &receipt)?;
+                let changed = tx
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET provider_request_journal_json=?1, updated_at=?2
+                         WHERE attempt_id=?3 AND provider_request_journal_json=?4",
+                        params![journal, now, binding.attempt_id, row.7],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err("workspace action receipt lost its journal authority".into());
+                }
                 tx.commit().map_err(|error| error.to_string())?;
                 Ok(receipt)
             }),
@@ -11029,8 +11088,102 @@ impl LocalProductStore {
                     &scheduler.allowed_paths,
                     &scheduler.workspace_path,
                 )?;
+                let (journal, _receipt_digest) =
+                    record_workspace_action_in_journal(&journal_json, binding, &receipt)?;
+                let changed = tx
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET provider_request_journal_json=$1, updated_at=$2
+                         WHERE attempt_id=$3 AND provider_request_journal_json=$4",
+                        &[&journal, &now, &binding.attempt_id, &journal_json],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err("workspace action receipt lost its journal authority".into());
+                }
                 tx.commit().map_err(|error| error.to_string())?;
                 Ok(receipt)
+            }),
+        }
+    }
+
+    /// Persist an action failure beside the successful provider journal entry.
+    /// The failure value is deliberately hashed: the journal remains a bounded
+    /// recovery record and never becomes a raw error/transcript store.
+    pub(crate) fn record_managed_workspace_action_failure(
+        &self,
+        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+        failure_class: &str,
+    ) -> Result<String, String> {
+        if failure_class.trim().is_empty() {
+            return Err("workspace action failure class is missing".into());
+        }
+        let failure_sha256 = sha256_hex(failure_class.as_bytes());
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|connection| {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    connection,
+                    TransactionBehavior::Immediate,
+                )
+                .map_err(|error| error.to_string())?;
+                let journal_json: String = tx
+                    .query_row(
+                        "SELECT provider_request_journal_json
+                         FROM managed_acceptance_delegations WHERE attempt_id=?1",
+                        params![binding.attempt_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let (journal, digest) = record_workspace_action_failure_in_journal(
+                    &journal_json,
+                    binding,
+                    &failure_sha256,
+                )?;
+                let now = self.now();
+                let changed = tx
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET provider_request_journal_json=?1, updated_at=?2
+                         WHERE attempt_id=?3 AND provider_request_journal_json=?4",
+                        params![journal, now, binding.attempt_id, journal_json],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err("workspace action failure lost its journal authority".into());
+                }
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(digest)
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                let mut tx = client.transaction().map_err(|error| error.to_string())?;
+                let journal_json: String = tx
+                    .query_one(
+                        "SELECT provider_request_journal_json
+                         FROM managed_acceptance_delegations WHERE attempt_id=$1 FOR UPDATE",
+                        &[&binding.attempt_id],
+                    )
+                    .map_err(|error| error.to_string())?
+                    .get(0);
+                let (journal, digest) = record_workspace_action_failure_in_journal(
+                    &journal_json,
+                    binding,
+                    &failure_sha256,
+                )?;
+                let now = self.now();
+                let changed = tx
+                    .execute(
+                        "UPDATE managed_acceptance_delegations
+                         SET provider_request_journal_json=$1, updated_at=$2
+                         WHERE attempt_id=$3 AND provider_request_journal_json=$4",
+                        &[&journal, &now, &binding.attempt_id, &journal_json],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if changed != 1 {
+                    return Err("workspace action failure lost its journal authority".into());
+                }
+                tx.commit().map_err(|error| error.to_string())?;
+                Ok(digest)
             }),
         }
     }
@@ -11521,6 +11674,23 @@ fn validate_provider_journal_authority(
     }
     let manifest: Value = serde_json::from_str(manifest_json)
         .map_err(|_| "durable provider request manifest is invalid")?;
+    let contract = delegated_execution_contract(&manifest, &request.binding.node_id)?;
+    if contract.provider_identity != request.provider_identity
+        || contract.provider_kind != request.provider_kind
+        || contract.protocol != request.protocol
+        || contract.host != request.host
+        || contract.base_url != request.base_url
+        || contract.endpoint_path != request.endpoint_path
+        || contract.credential_reference != request.credential_reference
+        || contract.requested_model != request.requested_model
+        || contract.request_schema_version != request.schema_version
+        || contract.limits != request.limits
+        || contract.price_profile != request.price_profile
+    {
+        return Err(
+            "durable provider request binding is not the persisted execution contract".into(),
+        );
+    }
     if manifest.get("manifest_sha256").and_then(Value::as_str)
         != Some(compute_attempt_manifest_sha256(&manifest)?.as_str())
         || manifest
@@ -11608,6 +11778,7 @@ fn claim_provider_journal_entry(
         "schema_version": "managed_provider_request_claim.v1",
         "ordinal": journal.len() + 1,
         "node_id": request.binding.node_id,
+        "provider_identity": request.provider_identity,
         "provider_kind": request.provider_kind,
         "role": request.role,
         "protocol": request.protocol,
@@ -11666,6 +11837,10 @@ fn reconcile_provider_journal_entry(
     // cannot upgrade an injected claim into an external one.
     if entry.get("transport_provenance").and_then(Value::as_str)
         != Some(request.transport_provenance.as_str())
+        || entry.get("provider_identity").and_then(Value::as_str)
+            != Some(request.provider_identity.as_str())
+        || entry.get("provider_kind").and_then(Value::as_str)
+            != Some(request.provider_kind.as_str())
     {
         return Err("durable provider request transport provenance is mismatched".into());
     }
@@ -11677,6 +11852,9 @@ fn reconcile_provider_journal_entry(
         if effect != crate::provider::managed_deepseek::ManagedFailureEffect::NoExternalEffect
             || response.requested_model != request.requested_model
             || response.resolved_model != request.requested_model
+            || response.provider_identity != request.provider_identity
+            || response.provider_kind != request.provider_kind
+            || response.protocol != request.protocol
             || response.usage.model != request.requested_model
             || response.usage.request_id != response.request_id
         {
@@ -11697,6 +11875,7 @@ fn reconcile_provider_journal_entry(
             }
         };
         object.insert("status".into(), json!("succeeded"));
+        object.insert("provider_identity".into(), json!(request.provider_identity));
         object.insert("provider_kind".into(), json!(request.provider_kind));
         object.insert("request_id".into(), json!(response.request_id));
         object.insert("resolved_model".into(), json!(response.resolved_model));
@@ -11729,6 +11908,7 @@ fn reconcile_provider_journal_entry(
             }
         };
         object.insert("status".into(), json!(status));
+        object.insert("provider_identity".into(), json!(request.provider_identity));
         object.insert("provider_kind".into(), json!(request.provider_kind));
         if !retain_reservation {
             object.insert("effective_tokens".into(), json!(0));
@@ -11830,20 +12010,23 @@ impl LocalProductStore {
             .pointer("/workspace_binding/workspace_path")
             .and_then(Value::as_str)
             .ok_or("managed stage context workspace path is missing")?;
-        // Docs GP stages the single USER_GUIDE file; frozen RWE stages a bounded path index
-        // plus first allowed file content when present (never invents secrets).
+        let allowed_file_paths = if rwe_paths {
+            bounded_workspace_file_paths(workspace_path, &allowed_paths)?
+        } else {
+            Vec::new()
+        };
+        // Docs GP stages the single USER_GUIDE file; frozen RWE selects a
+        // deterministic regular file from the Store-owned bounded index.
         let stage_path = if docs_paths {
             "docs/USER_GUIDE.md".to_string()
         } else {
             node_metadata
                 .pointer("/managed_deepseek/prompt_path")
                 .and_then(Value::as_str)
-                .filter(|path| {
-                    crate::rwe::frozen_rwe_bindings::path_under_allowed_paths(path, &allowed_paths)
-                })
+                .filter(|path| allowed_file_paths.iter().any(|candidate| candidate == path))
                 .map(str::to_string)
-                .or_else(|| allowed_paths.first().cloned())
-                .ok_or("managed stage context frozen RWE paths empty")?
+                .or_else(|| allowed_file_paths.first().cloned())
+                .ok_or("managed stage context frozen RWE paths contain no regular file")?
         };
         let file_path = Path::new(workspace_path).join(&stage_path);
         let (content, staged_path) = if file_path.is_file() {
@@ -11866,40 +12049,34 @@ impl LocalProductStore {
             // Keep the request-time workspace context inside the frozen
             // provider envelope. The action sink still reads the complete
             // target file before applying the model's exact replacement.
-            (content.chars().take(4096).collect(), stage_path)
-        } else if rwe_paths {
-            // Directory prefixes are valid RWE allowed paths; stage a bounded path list only.
-            (
-                format!("frozen_rwe_allowed_paths:{}", allowed_paths.join(",")),
-                stage_path,
-            )
+            (content.chars().take(4096).collect::<String>(), stage_path)
         } else {
             return Err("managed stage context allowed file is unavailable".into());
-        };
-        let allowed_file_paths = if rwe_paths {
-            bounded_workspace_file_paths(workspace_path, &allowed_paths)?
-        } else {
-            Vec::new()
         };
         let run_id = task
             .get("run_id")
             .and_then(Value::as_str)
             .ok_or("managed stage context ProductTask run is missing")?;
-        let run = self
-            .get_workflow_run(run_id)?
-            .ok_or("managed stage context workflow run is missing")?;
-        let planner_receipt = if matches!(stage, "implementation" | "review") {
-            Some(managed_deepseek_stage_receipt(
-                &run,
-                &format!("{}-planning", binding.workflow_id),
-                "managed_deepseek_plan.v1",
-            )?)
-        } else {
-            None
+        let run = self.get_workflow_run(run_id)?;
+        let planner_receipt = match (stage, run.as_ref()) {
+            ("implementation", Some(run)) | ("review", Some(run)) => {
+                Some(managed_deepseek_stage_receipt(
+                    run,
+                    &format!("{}-planning", binding.workflow_id),
+                    "managed_deepseek_plan.v1",
+                )?)
+            }
+            ("review", None) => {
+                return Err("managed stage context planner workflow run is missing".into())
+            }
+            _ => None,
         };
         let verification = if stage == "review" {
+            let run = run
+                .as_ref()
+                .ok_or("managed stage context verifier workflow run is missing")?;
             let node = managed_deepseek_run_node(
-                &run,
+                run,
                 &format!("{}-deterministic_verification", binding.workflow_id),
             )?;
             let result = node
@@ -14441,7 +14618,8 @@ mod tests {
             "target_main_sha": "6".repeat(40),
             "mutable_paths": ["docs/USER_GUIDE.md"],
             "max_cost_usd": null,
-            "verifier": "deterministic_docs_health_check_v1"
+            "verifier": "deterministic_docs_health_check_v1",
+            "provider_execution_binding": crate::rwe::campaign_package::canonical_deepseek_provider_binding().to_json()
         });
         proposal["manifest_sha256"] = json!(compute_attempt_manifest_sha256(&proposal).unwrap());
         proposal
@@ -15884,7 +16062,8 @@ mod tests {
                 "output": "one_unmerged_acp_draft_pr_only"
             },
             "provider": {
-                "protocol": "openai_compatible"
+                "protocol": "openai_compatible",
+                "execution_binding": crate::rwe::campaign_package::canonical_deepseek_provider_binding().to_json()
             },
             "role_models": {
                 "planner": "deepseek-v4-pro",

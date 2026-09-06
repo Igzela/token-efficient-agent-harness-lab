@@ -2681,13 +2681,46 @@ impl<C: LedgerController, W: LedgerWorker, V: LedgerVerifier> LedgerOrchestrator
                     WorkerOutcomeStatus::Failed => {
                         // Retry safety reads the store-owned receipt, never
                         // the generic worker status. An outcome-unknown
-                        // receipt, a success receipt on a failed result
-                        // (contradictory), or a failure with no receipt at
-                        // all — which proves nothing about the effect status
-                        // — fences the attempt as unknown instead of
-                        // replaying it. Only a receipt that proves no effect
+                        // receipt or a failure with no receipt at all — which
+                        // proves nothing about the effect status — fences the
+                        // attempt as unknown instead of replaying it. A
+                        // successful effect paired with a failed worker is a
+                        // known terminal failure: preserve its usage and
+                        // evidence, mark the task Failed, and never replay
+                        // the effect. Only a receipt that proves no effect
                         // was sent, or a known failed effect, is retryable
                         // under the attempt budget.
+                        if receipt_disposition == Some(EffectReceiptDisposition::Success) {
+                            if let Err(error) =
+                                self.accumulate_round_usage(worker_result.usage.as_ref())
+                            {
+                                return preserve_completed_effect(
+                                    self,
+                                    &task_id,
+                                    &worker_result,
+                                    receipt_disposition,
+                                    error,
+                                );
+                            }
+                            self.metrics.failed_worker_attempts += 1;
+                            if let Some(task) = self.ledger.get_task_mut(&task_id) {
+                                task.status = LedgerTaskStatus::Failed;
+                                task.failure_reason = worker_result.failure_reason.clone();
+                                task.result_digest = worker_result.output_digest.clone();
+                            }
+                            if let Err(error) = self.ledger.validate_bounds(&self.config) {
+                                return preserve_completed_effect(
+                                    self,
+                                    &task_id,
+                                    &worker_result,
+                                    receipt_disposition,
+                                    error,
+                                );
+                            }
+                            self.state = OrchestrationLifecycleState::Failed;
+                            self.pending_decision = None;
+                            return Ok(self.state);
+                        }
                         if !matches!(
                             receipt_disposition,
                             Some(
