@@ -2158,7 +2158,10 @@ mod tests {
     fn test_codex_upstream_auth_from_auth_json_invalid() {
         assert!(CodexUpstreamAuth::from_auth_json_str("{}").is_err());
         assert!(CodexUpstreamAuth::from_auth_json_str(r#"{"auth_mode":"chatgpt"}"#).is_err());
-        assert!(CodexUpstreamAuth::from_auth_json_str(r#"{"auth_mode":"chatgpt","tokens":{}}"#).is_err());
+        assert!(
+            CodexUpstreamAuth::from_auth_json_str(r#"{"auth_mode":"chatgpt","tokens":{}}"#)
+                .is_err()
+        );
         assert!(CodexUpstreamAuth::from_auth_json_str(r#"{"OPENAI_API_KEY":""}"#).is_err());
     }
 
