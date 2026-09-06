@@ -73,8 +73,10 @@ bounded `steward-owner-direct-repair:v1` marker. The marker binds exactly the
 repository, PR number, current head SHA and branch, an authorization ID,
 allowed repository paths, and provider-free verification commands. GitHub's
 live PR state must prove that the PR is open, based on `main`, and still Draft;
-the comment's OWNER association and issue URL must also match. Missing,
-duplicated, malformed, stale, or mismatched binding facts fail closed.
+the comment's OWNER association and issue URL must also match. Historical
+markers whose repository, PR, head, or branch no longer matches the live PR
+are retained but ignored. Zero currently applicable valid markers, or multiple
+currently applicable valid markers, fail closed.
 
 The lane is represented by the separate
 `agent_owner_direct_repair_entry.v1` session projection. It does not create or

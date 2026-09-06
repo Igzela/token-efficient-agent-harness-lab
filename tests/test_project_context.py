@@ -128,6 +128,57 @@ Prerequisite: PR #342 is accepted.
         self.assertEqual(binding["dispatch_lane"], "owner_direct_existing_pr_repair")
         self.assertEqual(binding["allowed_paths"], ["scripts/", "tests/"])
 
+    def test_owner_direct_repair_preserves_stale_markers_for_later_rounds(self):
+        repository = "Igzela/token-efficient-agent-harness-lab"
+        current_head = "a" * 40
+        observer = _OwnerDirectObserver(
+            repository,
+            pull={
+                "number": 710,
+                "state": "open",
+                "draft": True,
+                "base": {"ref": "main", "sha": "b" * 40},
+                "head": {"ref": "codex/repair", "sha": current_head},
+            },
+            comments=[
+                _owner_direct_comment(repository, 710, "c" * 40, comment_id=9000),
+                _owner_direct_comment(repository, 710, current_head, comment_id=9001),
+            ],
+        )
+
+        binding = project_context.read_owner_direct_repair_binding(
+            repository, 710, observer=observer
+        )
+
+        self.assertEqual(binding["head_sha"], current_head)
+        self.assertEqual(binding["owner_comment_id"], 9001)
+
+    def test_owner_direct_repair_rejects_multiple_current_markers(self):
+        repository = "Igzela/token-efficient-agent-harness-lab"
+        current_head = "a" * 40
+        observer = _OwnerDirectObserver(
+            repository,
+            pull={
+                "number": 710,
+                "state": "open",
+                "draft": True,
+                "base": {"ref": "main", "sha": "b" * 40},
+                "head": {"ref": "codex/repair", "sha": current_head},
+            },
+            comments=[
+                _owner_direct_comment(repository, 710, current_head, comment_id=9001),
+                _owner_direct_comment(repository, 710, current_head, comment_id=9002),
+            ],
+        )
+
+        with self.assertRaisesRegex(
+            project_context.GitHubObservationError,
+            "owner_direct_repair_binding_ambiguous",
+        ):
+            project_context.read_owner_direct_repair_binding(
+                repository, 710, observer=observer
+            )
+
     def test_owner_direct_repair_binding_rejects_stale_identity_and_missing_owner(self):
         repository = "Igzela/token-efficient-agent-harness-lab"
         current_head = "a" * 40
@@ -404,6 +455,7 @@ def _owner_direct_comment(
     *,
     association="OWNER",
     marker_repository=None,
+    comment_id=9001,
 ):
     marker = {
         "action": "OWNER_DIRECT_EXISTING_PR_REPAIR",
@@ -419,7 +471,7 @@ def _owner_direct_comment(
         ],
     }
     return {
-        "id": 9001,
+        "id": comment_id,
         "issue_url": (
             f"https://api.github.com/repos/{repository}/issues/{pr_number}"
         ),

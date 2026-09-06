@@ -30,13 +30,16 @@ uv run --no-project python scripts/project_context.py --format json --owner-dire
 uv run --no-project python scripts/session_context.py enter --role coding --owner-direct-repair-pr 123
 ```
 
-The first command must prove the PR is open, Draft, based on `main`, and
-exactly matches the single OWNER marker. The second command must return
+The first command must prove the PR is open, Draft, based on `main`, and has
+exactly one currently applicable valid OWNER marker. Historical markers from
+earlier heads may remain and are ignored after live repository/PR/head/branch
+filtering. The second command must return
 `agent_owner_direct_repair_entry.v1` with `execution_authorized=true`,
 `steward_continuity.reason=steward_continuity_unavailable`, no lifecycle IDs,
 and `checkpoint_allowed=false`. A stale head, wrong repository or PR, missing
-or non-OWNER marker, detached/wrong checkout, duplicate marker, or unsafe
-verification command is a hard stop. Do not use a locally supplied owner
+or non-OWNER current marker, detached/wrong checkout, duplicate current marker,
+or unsafe verification command is a hard stop. A stale-only marker set remains
+fail-closed because it has zero current valid markers. Do not use a locally supplied owner
 string, marker copy, journal, or capsule as a substitute for the live GitHub
 read.
 

@@ -485,6 +485,71 @@ def _owner_direct_repair_binding_digest(binding: dict[str, Any]) -> str:
     ).hexdigest()
 
 
+def _owner_direct_repair_binding_from_marker(
+    comment: dict[str, Any],
+    marker: dict[str, Any],
+    *,
+    repository: str,
+    pr_number: int,
+    live_head_sha: str,
+    live_head_branch: str,
+) -> dict[str, Any]:
+    if comment.get("issue_url") != (
+        f"https://api.github.com/repos/{repository}/issues/{pr_number}"
+    ):
+        raise GitHubObservationError("owner_direct_repair_pr_mismatch")
+    if str(comment.get("author_association", "")).upper() != "OWNER":
+        raise GitHubObservationError("owner_direct_repair_owner_required")
+    comment_id = comment.get("id")
+    if type(comment_id) is not int or comment_id < 1:
+        raise GitHubObservationError("owner_direct_repair_comment_invalid")
+    author = comment.get("user")
+    login = author.get("login") if isinstance(author, dict) else None
+    if not isinstance(login, str) or OWNER_DIRECT_REPAIR_LOGIN_RE.fullmatch(login) is None:
+        raise GitHubObservationError("owner_direct_repair_owner_invalid")
+    if set(marker) != OWNER_DIRECT_REPAIR_MARKER_FIELDS:
+        raise GitHubObservationError("owner_direct_repair_marker_invalid")
+    if marker.get("action") != OWNER_DIRECT_REPAIR_ACTION:
+        raise GitHubObservationError("owner_direct_repair_action_invalid")
+    if marker.get("repository") != repository:
+        raise GitHubObservationError("owner_direct_repair_repository_mismatch")
+    if marker.get("pr_number") != pr_number:
+        raise GitHubObservationError("owner_direct_repair_pr_mismatch")
+    if marker.get("head_sha") != live_head_sha:
+        raise GitHubObservationError("owner_direct_repair_head_stale")
+    if marker.get("head_branch") != live_head_branch:
+        raise GitHubObservationError("owner_direct_repair_branch_stale")
+    authorization_id = marker.get("authorization_id")
+    if (
+        not isinstance(authorization_id, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", authorization_id)
+        is None
+    ):
+        raise GitHubObservationError("owner_direct_repair_authorization_invalid")
+    allowed_paths = _owner_direct_repair_paths(marker.get("allowed_paths"))
+    verification = _owner_direct_repair_verification(marker.get("verification"))
+    binding = {
+        "schema_version": "owner_direct_repair_binding.v1",
+        "source": "github_pr_owner_comment",
+        "dispatch_lane": OWNER_DIRECT_REPAIR_LANE,
+        "action": OWNER_DIRECT_REPAIR_ACTION,
+        "repository": repository,
+        "pr_number": pr_number,
+        "base_branch": "main",
+        "draft": True,
+        "head_sha": live_head_sha,
+        "head_branch": live_head_branch,
+        "authorization_id": authorization_id,
+        "owner_identity": f"github:{login}",
+        "owner_association": "OWNER",
+        "owner_comment_id": comment_id,
+        "allowed_paths": allowed_paths,
+        "verification": verification,
+    }
+    binding["binding_sha256"] = _owner_direct_repair_binding_digest(binding)
+    return binding
+
+
 def read_owner_direct_repair_binding(
     repository: str,
     pr_number: int,
@@ -546,7 +611,8 @@ def read_owner_direct_repair_binding(
     if not isinstance(comments, list):
         raise GitHubObservationError("owner_direct_repair_comments_invalid")
 
-    marker_comments: list[tuple[dict[str, Any], re.Match[str]]] = []
+    current_markers: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    marker_errors: list[str] = []
     for comment in comments:
         if not isinstance(comment, dict):
             continue
@@ -556,71 +622,65 @@ def read_owner_direct_repair_binding(
         match = OWNER_DIRECT_REPAIR_MARKER_RE.search(body)
         if match is None:
             continue
-        marker_comments.append((comment, match))
-    if not marker_comments:
+        try:
+            marker = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            marker_errors.append("owner_direct_repair_marker_invalid")
+            continue
+        if not isinstance(marker, dict):
+            marker_errors.append("owner_direct_repair_marker_invalid")
+            continue
+        identity_mismatch = next(
+            (
+                reason
+                for field, expected, reason in (
+                    (
+                        "repository",
+                        repository,
+                        "owner_direct_repair_repository_mismatch",
+                    ),
+                    ("pr_number", pr_number, "owner_direct_repair_pr_mismatch"),
+                    ("head_sha", live_head_sha, "owner_direct_repair_head_stale"),
+                    (
+                        "head_branch",
+                        live_head_branch,
+                        "owner_direct_repair_branch_stale",
+                    ),
+                )
+                if marker.get(field) != expected
+            ),
+            None,
+        )
+        if identity_mismatch is None:
+            current_markers.append((comment, marker))
+        else:
+            marker_errors.append(identity_mismatch)
+    if not current_markers:
+        if marker_errors:
+            raise GitHubObservationError(marker_errors[0])
         raise GitHubObservationError("owner_direct_repair_binding_missing")
-    if len(marker_comments) != 1:
+    valid_bindings: list[dict[str, Any]] = []
+    for comment, marker in current_markers:
+        try:
+            valid_bindings.append(
+                _owner_direct_repair_binding_from_marker(
+                    comment,
+                    marker,
+                    repository=repository,
+                    pr_number=pr_number,
+                    live_head_sha=live_head_sha,
+                    live_head_branch=live_head_branch,
+                )
+            )
+        except GitHubObservationError as error:
+            marker_errors.append(error.reason)
+    if len(valid_bindings) > 1:
         raise GitHubObservationError("owner_direct_repair_binding_ambiguous")
-    comment, match = marker_comments[0]
-    if comment.get("issue_url") != (
-        f"https://api.github.com/repos/{repository}/issues/{pr_number}"
-    ):
-        raise GitHubObservationError("owner_direct_repair_pr_mismatch")
-    if str(comment.get("author_association", "")).upper() != "OWNER":
-        raise GitHubObservationError("owner_direct_repair_owner_required")
-    comment_id = comment.get("id")
-    if type(comment_id) is not int or comment_id < 1:
-        raise GitHubObservationError("owner_direct_repair_comment_invalid")
-    author = comment.get("user")
-    login = author.get("login") if isinstance(author, dict) else None
-    if not isinstance(login, str) or OWNER_DIRECT_REPAIR_LOGIN_RE.fullmatch(login) is None:
-        raise GitHubObservationError("owner_direct_repair_owner_invalid")
-    try:
-        marker = json.loads(match.group(1))
-    except json.JSONDecodeError as error:
-        raise GitHubObservationError("owner_direct_repair_marker_invalid") from error
-    if not isinstance(marker, dict) or set(marker) != OWNER_DIRECT_REPAIR_MARKER_FIELDS:
-        raise GitHubObservationError("owner_direct_repair_marker_invalid")
-    if marker.get("action") != OWNER_DIRECT_REPAIR_ACTION:
-        raise GitHubObservationError("owner_direct_repair_action_invalid")
-    if marker.get("repository") != repository:
-        raise GitHubObservationError("owner_direct_repair_repository_mismatch")
-    if marker.get("pr_number") != pr_number:
-        raise GitHubObservationError("owner_direct_repair_pr_mismatch")
-    marker_head = marker.get("head_sha")
-    if marker_head != live_head_sha:
-        raise GitHubObservationError("owner_direct_repair_head_stale")
-    if marker.get("head_branch") != live_head_branch:
-        raise GitHubObservationError("owner_direct_repair_branch_stale")
-    authorization_id = marker.get("authorization_id")
-    if (
-        not isinstance(authorization_id, str)
-        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", authorization_id)
-        is None
-    ):
-        raise GitHubObservationError("owner_direct_repair_authorization_invalid")
-    allowed_paths = _owner_direct_repair_paths(marker.get("allowed_paths"))
-    verification = _owner_direct_repair_verification(marker.get("verification"))
-    binding = {
-        "schema_version": "owner_direct_repair_binding.v1",
-        "source": "github_pr_owner_comment",
-        "dispatch_lane": OWNER_DIRECT_REPAIR_LANE,
-        "action": OWNER_DIRECT_REPAIR_ACTION,
-        "repository": repository,
-        "pr_number": pr_number,
-        "base_branch": "main",
-        "draft": True,
-        "head_sha": live_head_sha,
-        "head_branch": live_head_branch,
-        "authorization_id": authorization_id,
-        "owner_identity": f"github:{login}",
-        "owner_association": "OWNER",
-        "owner_comment_id": comment_id,
-        "allowed_paths": allowed_paths,
-        "verification": verification,
-    }
-    binding["binding_sha256"] = _owner_direct_repair_binding_digest(binding)
-    return binding
+    if not valid_bindings:
+        raise GitHubObservationError(
+            marker_errors[0] if marker_errors else "owner_direct_repair_binding_missing"
+        )
+    return valid_bindings[0]
 
 
 def repository_from_git() -> str:
