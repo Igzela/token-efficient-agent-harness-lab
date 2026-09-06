@@ -8234,6 +8234,10 @@ mod tests {
         let api_tests = target.join("apps/api/tests");
         if api_tests.is_dir() {
             std::fs::write(api_tests.join("probe_test.py"), body).unwrap();
+            let conftest = api_tests.join("conftest.py");
+            if conftest.is_file() {
+                std::fs::write(&conftest, "# neutralized for probe verification\n").unwrap();
+            }
         }
     }
 
@@ -9149,6 +9153,10 @@ mod tests {
                 .unwrap()
                 .contains("assert False")
         );
+        let conftest = ws_path.join("apps/api/tests/conftest.py");
+        if conftest.is_file() {
+            std::fs::write(&conftest, "# neutralized for probe verification\n").unwrap();
+        }
         std::fs::write(
             ws_path.join("apps/api/tests/unrelated_context.py"),
             "UNRELATED_CONTEXT_SENTINEL\n",
