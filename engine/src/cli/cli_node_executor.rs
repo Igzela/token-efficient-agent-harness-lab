@@ -1235,15 +1235,13 @@ fn execute_product_codex_after_store_admission(
     lease: &ManagedCodexSpawnLease,
     authority: CodexBudgetAuthority,
 ) -> NodeExecutionOutput {
-    let upstream_key = std::env::var("ACP_CODEX_UPSTREAM_API_KEY")
-        .or_else(|_| std::env::var("OPENAI_API_KEY"))
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    let Some(upstream_key) = upstream_key else {
+    let upstream_auth =
+        super::codex_budget_authority::CodexUpstreamAuth::resolve_parent_credential();
+    let Some(upstream_auth) = upstream_auth else {
         return failed_without_process(
             "codex_cli",
             "cli_execution_authority_invalid",
-            "product-managed Codex budget mediation requires ACP_CODEX_UPSTREAM_API_KEY (or OPENAI_API_KEY) held only by the parent gateway".to_string(),
+            "product-managed Codex budget mediation requires parent-held upstream credential (ACP_CODEX_UPSTREAM_API_KEY, OPENAI_API_KEY, or ChatGPT subscription auth.json)".to_string(),
             start.elapsed().as_millis() as i64,
         );
     };
@@ -1278,11 +1276,11 @@ fn execute_product_codex_after_store_admission(
     // Parent-owned journal path: NEVER under ephemeral_home (sandbox-mounted).
     let journal_path =
         super::codex_usage_journal::parent_owned_journal_path(&authority.execution_id);
-    let gateway = match CodexBudgetGateway::start(
+    let gateway = match CodexBudgetGateway::start_with_auth(
         lease.gateway_start_permit(),
         authority,
         &upstream_base,
-        &upstream_key,
+        upstream_auth,
         journal_path.clone(),
     ) {
         Ok(gateway) => gateway,
@@ -1295,8 +1293,6 @@ fn execute_product_codex_after_store_admission(
             );
         }
     };
-    // Drop the only copy of the upstream key from this stack frame.
-    drop(upstream_key);
 
     if let Err(error) = write_ephemeral_codex_home(
         &ephemeral_home,
