@@ -264,6 +264,9 @@ async fn axum_auth_rejects_missing_key_when_configured() {
 
 #[tokio::test]
 async fn axum_auth_allows_scoped_dispatch_key() {
+    // The dispatch handler reads process-global execution gates. Serialize
+    // with tests that temporarily enable trusted-local or adaptive routing.
+    let _env_lock = provider_cli_env_lock().lock().await;
     let mut resolver = TenantResolver::new();
     let scopes = HashSet::from(["dispatch:read".to_string(), "health:read".to_string()]);
     resolver.add_tenant(Tenant {

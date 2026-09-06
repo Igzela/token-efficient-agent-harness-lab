@@ -29,10 +29,11 @@ use super::runner::{
 };
 use crate::harness_evolution::{
     ControllerAction, EffectReceiptDisposition, LedgerController, LedgerOrchestrator,
-    LedgerOrchestratorConfig, LedgerTaskRecord, LedgerTerminalDisposition, LedgerTerminalRecord,
-    LedgerVerifier, LedgerWorker, NextTaskDecision, OrchestrationError, OrchestrationUsageEnvelope,
-    StoreEffectReceipt, VerificationOutcome, VerificationReport, WorkerContext,
-    WorkerOutcomeStatus, WorkerResult, WorkingLedger, LEDGER_ORCHESTRATED_HARNESS_ID,
+    LedgerOrchestratorConfig, LedgerTaskRecord, LedgerTaskStatus, LedgerTerminalDisposition,
+    LedgerTerminalRecord, LedgerVerifier, LedgerWorker, NewTaskSpec, NextTaskDecision,
+    OrchestrationError, OrchestrationUsageEnvelope, StoreEffectReceipt, VerificationOutcome,
+    VerificationReport, WorkerContext, WorkerOutcomeStatus, WorkerResult, WorkingLedger,
+    LEDGER_ORCHESTRATED_HARNESS_ID,
 };
 use crate::product_golden_path::{validate_matrix_binding, ProductHarnessMatrixBinding};
 use crate::provider::config::{CredentialRef, ProviderConfig};
@@ -727,6 +728,12 @@ impl LedgerVerifier for ProviderFreeLedgerCellVerifier {
 pub const RWE_LIVE_LEDGER_CELL_COMPOSITION: &str =
     "rwe_cell_composition:ledger_orchestrated_live_delegated_implementer_rounds.v1";
 
+/// Explicitly records that the ledger manager is policy-backed and provider
+/// independent. Its call count is lifecycle accounting only; provider effects
+/// can originate solely from worker rounds.
+pub const RWE_LEDGER_MANAGER_SEMANTICS: &str =
+    "ledger-manager:provider-independent:policy-backed-deterministic:v1";
+
 /// Upper bound for one live ledger worker prompt rendering. The managed call
 /// envelope reserves `max_input_tokens` (12k frozen) against byte-counted
 /// input, so the prompt stays well inside the pre-send reservation.
@@ -759,6 +766,71 @@ impl LedgerController for LiveLedgerCellController {
                 expected_evidence: "final_live_deliverable".to_string(),
             });
         }
+        // If a task suffered a workspace action failure after provider execution,
+        // do not replay: preserve evidence and terminate failed immediately (B5).
+        for task in &ledger.tasks {
+            if let Some(ref reason) = task.failure_reason {
+                if reason.contains("managed workspace action failed") {
+                    return Ok(NextTaskDecision {
+                        action: ControllerAction::DeclareFailed {
+                            reason: reason.clone(),
+                        },
+                        reason_summary: "live terminal workspace action failure; zero replay"
+                            .to_string(),
+                        expected_evidence: String::new(),
+                    });
+                }
+            }
+        }
+        // Inspect for verification failures on active tasks that require repair replanning.
+        for task in &ledger.tasks {
+            if task.status == LedgerTaskStatus::Pending || task.status == LedgerTaskStatus::Failed {
+                let latest_fail_obs =
+                    ledger.observations.iter().rev().find(|obs| {
+                        obs.task_id == task.id && obs.outcome == VerificationOutcome::Fail
+                    });
+                if let Some(fail_obs) = latest_fail_obs {
+                    if ledger.replan_count >= 2 || task.attempt_count >= 3 {
+                        return Ok(NextTaskDecision {
+                            action: ControllerAction::DeclareNoProgress {
+                                reason: format!(
+                                    "task {} failed verification repeatedly; replan budget exhausted",
+                                    task.id
+                                ),
+                            },
+                            reason_summary: "live terminal no-progress".to_string(),
+                            expected_evidence: String::new(),
+                        });
+                    }
+                    let base_id = task.id.split("-rep-").next().unwrap_or(&task.id);
+                    let base_id = base_id.split("-repair-").next().unwrap_or(base_id);
+                    let repair_task_id = format!("{base_id}-rep-{}", ledger.replan_count + 1);
+                    if !ledger.tasks.iter().any(|t| t.id == repair_task_id) {
+                        return Ok(NextTaskDecision {
+                            action: ControllerAction::Replan {
+                                new_plan_summary: Some(format!(
+                                    "repair task {} after verification failure: {}",
+                                    task.id, fail_obs.observation_summary
+                                )),
+                                new_tasks: vec![NewTaskSpec {
+                                    id: repair_task_id.clone(),
+                                    description: format!(
+                                        "repair {} based on verifier feedback: {}",
+                                        task.id, fail_obs.observation_summary
+                                    ),
+                                }],
+                                supersede_task_ids: vec![task.id.clone()],
+                            },
+                            reason_summary: format!(
+                                "verifier failed for {}; replanning with repair task {}",
+                                task.id, repair_task_id
+                            ),
+                            expected_evidence: format!("replan_for_{}", task.id),
+                        });
+                    }
+                }
+            }
+        }
         if let Some(pending_id) = ledger.pending_task_ids().into_iter().next() {
             return Ok(NextTaskDecision {
                 action: ControllerAction::ExecuteTask {
@@ -783,6 +855,8 @@ impl LedgerController for LiveLedgerCellController {
 pub(crate) struct LiveLedgerRoundRef {
     pub delegated_attempt_id: String,
     pub node_id: String,
+    #[allow(dead_code)]
+    pub action_receipt: Option<Value>,
 }
 
 /// Folded store-owned sums over one live cell's round journals.
@@ -838,13 +912,20 @@ fn map_live_ledger_journal_entry(entry: &Value) -> Result<LiveLedgerRoundEvidenc
     if !matches!(provenance, "external" | "injected") {
         return Err("ledger round journal entry transport provenance is invalid".into());
     }
-    let effective_cost_usd = entry
-        .get("effective_cost_usd")
-        .and_then(Value::as_f64)
-        .ok_or("ledger round journal entry lacks effective cost")?;
-    if !effective_cost_usd.is_finite() || effective_cost_usd < 0.0 {
-        return Err("ledger round journal entry effective cost is invalid".into());
-    }
+    let (realized_cost_usd, cost_usd_micros) =
+        match entry.get("effective_cost_usd").and_then(Value::as_f64) {
+            Some(cost) => {
+                if !cost.is_finite() || cost < 0.0 {
+                    return Err("ledger round journal entry effective cost is invalid".into());
+                }
+                let micros = (cost * 1_000_000.0).round();
+                if !micros.is_finite() || micros < 0.0 {
+                    return Err("ledger round journal entry cost does not fit microunits".into());
+                }
+                (cost, Some(micros as u64))
+            }
+            None => (0.0, None),
+        };
     let effective_tokens = entry
         .get("effective_tokens")
         .and_then(Value::as_u64)
@@ -858,10 +939,6 @@ fn map_live_ledger_journal_entry(entry: &Value) -> Result<LiveLedgerRoundEvidenc
         }
         _ => None,
     };
-    let cost_usd_micros = (effective_cost_usd * 1_000_000.0).round();
-    if !cost_usd_micros.is_finite() || cost_usd_micros < 0.0 {
-        return Err("ledger round journal entry cost does not fit microunits".into());
-    }
     let envelope = match disposition {
         EffectReceiptDisposition::Success => {
             let input_tokens = entry
@@ -877,7 +954,7 @@ fn map_live_ledger_journal_entry(entry: &Value) -> Result<LiveLedgerRoundEvidenc
                 completion_tokens: Some(output_tokens),
                 total_tokens: Some(effective_tokens),
                 provider_calls: Some(1),
-                cost_usd_micros: Some(cost_usd_micros as u64),
+                cost_usd_micros,
                 duration_ms,
             }
         }
@@ -889,7 +966,7 @@ fn map_live_ledger_journal_entry(entry: &Value) -> Result<LiveLedgerRoundEvidenc
                 completion_tokens: None,
                 total_tokens: Some(effective_tokens),
                 provider_calls: Some(0),
-                cost_usd_micros: Some(cost_usd_micros as u64),
+                cost_usd_micros,
                 duration_ms,
             }
         }
@@ -912,7 +989,7 @@ fn map_live_ledger_journal_entry(entry: &Value) -> Result<LiveLedgerRoundEvidenc
         envelope,
         disposition,
         entry_digest,
-        realized_cost_usd: effective_cost_usd,
+        realized_cost_usd,
         provider_calls: if disposition == EffectReceiptDisposition::FailedBeforeSendNoEffect
             || disposition == EffectReceiptDisposition::KnownFailedEffect
         {
@@ -942,6 +1019,9 @@ fn parse_ledger_round_timestamp_duration(claimed_at: &str, reconciled_at: &str) 
 fn render_live_ledger_worker_prompt(
     context: &WorkerContext,
     objective_sha256: &str,
+    task_objective: &str,
+    staged_context: Option<&str>,
+    strategy_projection: Option<&str>,
     allowed_paths: &[String],
     package_id: &str,
 ) -> String {
@@ -975,9 +1055,28 @@ fn render_live_ledger_worker_prompt(
         5,
         400,
     );
+    let objective_text: String = if task_objective.trim().is_empty() {
+        format!("objective hash {objective_sha256}")
+    } else {
+        task_objective.chars().take(2000).collect()
+    };
+    let strategy_line = match strategy_projection {
+        Some(s) if !s.trim().is_empty() => format!("\nStrategy projection: {s}"),
+        _ => String::new(),
+    };
+    let staged_section = match staged_context {
+        Some(ctx) if !ctx.trim().is_empty() => {
+            format!(
+                "\nRelevant workspace content:\n{}",
+                ctx.chars().take(2000).collect::<String>()
+            )
+        }
+        _ => String::new(),
+    };
     let prompt = format!(
         "Ledger-orchestrated matrix cell work (package {package_id}).\n\
-         Objective sha256: {objective_sha256}\n\
+         Task objective: {objective_text}\n\
+         Objective sha256: {objective_sha256}{strategy_line}{staged_section}\n\
          Contract digest: {contract_digest}\n\
          Plan: {plan_summary}\n\
          Task {task_id}: {task_description}\n\
@@ -986,7 +1085,9 @@ fn render_live_ledger_worker_prompt(
          Expected evidence: {expected_evidence}\n\
          Relevant findings: {findings}\n\
          Prior verification observations: {observations}\n\
-         Respond with a single bounded implementation proposal as plain prose \
+         If workspace modifications are required, output exactly one JSON action object (bare or in ```json ... ```):\n\
+         {{\"schema_version\": \"managed_workspace_action.v1\", \"path\": \"<relative path>\", \"action\": \"replace_text\", \"old_text\": \"<exact existing text>\", \"new_text\": \"<replacement text>\"}}\n\
+         Otherwise respond with a single bounded implementation proposal as plain prose \
          (no credentials, no transcripts, no absolute paths).",
         contract_digest = context.contract_digest,
         plan_summary = context.plan_summary.chars().take(800).collect::<String>(),
@@ -1018,13 +1119,252 @@ fn render_live_ledger_worker_prompt(
     }
 }
 
+/// Resolve registered matrix Model identifier to the exact raw model name.
+pub fn resolve_matrix_model_to_raw(model_id: &str) -> &str {
+    model_id.split(':').next().unwrap_or(model_id)
+}
+
+fn resolve_frozen_matrix_model(
+    binding: &ProductHarnessMatrixBinding,
+) -> Result<crate::harness_evolution::Mx1ModelPlanDescriptor, String> {
+    let manifest = crate::harness_evolution::sample_mx1_descriptor_manifest_with_ledger_harness();
+    crate::harness_evolution::validate_mx1_descriptor_manifest(&manifest).map_err(|error| {
+        format!(
+            "MX1 descriptor manifest validation failed for matrix model: {}",
+            error.message
+        )
+    })?;
+    let model = manifest
+        .models
+        .iter()
+        .find(|descriptor| descriptor.descriptor_id == binding.model_id)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "matrix model binding is not an admitted frozen MX1 Model descriptor: {}",
+                binding.model_id
+            )
+        })?;
+    if !model
+        .supported_harness_ids
+        .iter()
+        .any(|harness| harness == &binding.harness_id)
+        || !model
+            .supported_strategy_ids
+            .iter()
+            .any(|strategy| strategy == &binding.strategy_id)
+        || model.requested_model_id != model.resolved_model_id
+        || resolve_matrix_model_to_raw(&binding.model_id) != model.resolved_model_id
+    {
+        return Err("matrix model binding is not an exact admitted MX1 cell model".into());
+    }
+    Ok(model)
+}
+
+/// Legacy label resolver retained only for callers that need to distinguish
+/// strategy arms. It deliberately returns no model-visible content: live
+/// execution must use the cell-bound, descriptor-validated digest reference
+/// produced by `resolve_strategy_projection_for_cell`.
+pub fn resolve_strategy_projection(strategy_id: &str) -> Option<String> {
+    let _ = strategy_id;
+    None
+}
+
+fn resolve_strategy_projection_for_cell(
+    binding: &ProductHarnessMatrixBinding,
+) -> Result<Option<String>, String> {
+    use crate::harness_evolution::{
+        validate_mx1_descriptor_manifest, Mx1CellIdentity, Mx1StrategyAdapter,
+        MX1_MEMORY_ONLY_STRATEGY_ID, MX1_NO_PROJECTION_STRATEGY_ID, MX1_SKILL_ONLY_STRATEGY_ID,
+    };
+    let manifest = crate::harness_evolution::sample_mx1_descriptor_manifest_with_ledger_harness();
+    validate_mx1_descriptor_manifest(&manifest).map_err(|error| {
+        format!(
+            "MX1 descriptor manifest validation failed: {}",
+            error.message
+        )
+    })?;
+    let strategy = manifest
+        .strategies
+        .iter()
+        .find(|descriptor| descriptor.descriptor_id == binding.strategy_id)
+        .cloned()
+        .ok_or_else(|| "matrix strategy is not present in the sealed MX1 manifest".to_string())?;
+    if !strategy.supported_harness_ids.contains(&binding.harness_id)
+        || !strategy.supported_model_ids.contains(&binding.model_id)
+    {
+        return Err("matrix strategy is not admitted for the bound MX1 cell".into());
+    }
+    if strategy.descriptor_id == MX1_NO_PROJECTION_STRATEGY_ID {
+        return Ok(None);
+    }
+    if !matches!(
+        strategy.descriptor_id.as_str(),
+        MX1_MEMORY_ONLY_STRATEGY_ID | MX1_SKILL_ONLY_STRATEGY_ID
+    ) {
+        return Err("matrix strategy is outside the admitted MX1 projection arms".into());
+    }
+    let adapter = Mx1StrategyAdapter::new(strategy)
+        .map_err(|error| format!("MX1 strategy descriptor rejected: {}", error.message))?;
+    let identity = Mx1CellIdentity {
+        harness_id: binding.harness_id.clone(),
+        model_id: binding.model_id.clone(),
+        strategy_id: binding.strategy_id.clone(),
+        task_id: binding.task_id.clone(),
+    };
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "system clock is before UNIX epoch".to_string())?
+        .as_millis() as u64;
+    let lease = adapter
+        .prepare_projection(&identity, now_unix_ms)
+        .map_err(|error| format!("MX1 projection preparation failed: {}", error.message))?
+        .ok_or_else(|| "projection strategy unexpectedly has no projection".to_string())?;
+    adapter
+        .validate_projection(&lease, &identity, now_unix_ms)
+        .map_err(|error| format!("MX1 projection validation failed: {}", error.message))?;
+    let digest_ref = json!({
+        "schema_version": "mx1_validated_projection_digest_ref.v1",
+        "strategy_id": lease.strategy_id,
+        "source_handle": lease.source_handle,
+        "content_sha256": lease.content_sha256,
+        "cell_binding_sha256": lease.cell_binding_sha256,
+        "expires_at_unix_ms": lease.expires_at_unix_ms,
+    });
+    Ok(Some(sort_value(&digest_ref).to_string()))
+}
+
+/// Provider-neutral execution adapter for live ledger worker rounds.
+///
+/// Wraps provider wire invocation under `ManagedProviderCallAuthority`,
+/// ensuring calls enter the store journal, rate limits, and spend authorization.
+pub trait LiveLedgerProviderAdapter: Send + Sync {
+    fn provider_id(&self) -> &str;
+    fn provider_kind(&self) -> &str;
+    fn base_url(&self) -> &str;
+    fn endpoint_path(&self) -> &str;
+    fn credential_reference(&self) -> &str;
+    fn transport(&self) -> &std::sync::Arc<dyn crate::provider::transport::HttpTransport>;
+    fn requested_model(&self) -> Option<&str> {
+        None
+    }
+    fn invoke(
+        &self,
+        authority: &ManagedProviderCallAuthority,
+        request: &ManagedProviderCallRequest,
+    ) -> Result<crate::provider::managed_deepseek::ManagedProviderResponse, String>;
+}
+
+/// Minimal OpenAI-compatible provider adapter adhering strictly to the Chat
+/// Completions protocol (`chat/completions`) with arbitrary base URLs (e.g.
+/// OpenAI, OpenRouter, OpenCode Go, Codex proxies, or local test fixtures).
+/// It does NOT claim generic Responses API support.
+pub struct OpenAiCompatibleProviderAdapter {
+    pub provider_id: String,
+    pub provider_kind: String,
+    pub base_url: String,
+    pub endpoint_path: String,
+    pub credential_reference: String,
+    pub provider_subject: String,
+    pub transport: std::sync::Arc<dyn crate::provider::transport::HttpTransport>,
+}
+
+impl OpenAiCompatibleProviderAdapter {
+    pub fn new(
+        provider_id: impl Into<String>,
+        provider_kind: impl Into<String>,
+        base_url: impl Into<String>,
+        endpoint_path: impl Into<String>,
+        credential_reference: impl Into<String>,
+        provider_subject: impl Into<String>,
+        transport: std::sync::Arc<dyn crate::provider::transport::HttpTransport>,
+    ) -> Self {
+        Self {
+            provider_id: provider_id.into(),
+            provider_kind: provider_kind.into(),
+            base_url: base_url.into(),
+            endpoint_path: endpoint_path.into(),
+            credential_reference: credential_reference.into(),
+            provider_subject: provider_subject.into(),
+            transport,
+        }
+    }
+}
+
+impl LiveLedgerProviderAdapter for OpenAiCompatibleProviderAdapter {
+    fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+    fn provider_kind(&self) -> &str {
+        &self.provider_kind
+    }
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
+    fn endpoint_path(&self) -> &str {
+        &self.endpoint_path
+    }
+    fn credential_reference(&self) -> &str {
+        &self.credential_reference
+    }
+    fn transport(&self) -> &std::sync::Arc<dyn crate::provider::transport::HttpTransport> {
+        &self.transport
+    }
+    fn invoke(
+        &self,
+        authority: &ManagedProviderCallAuthority,
+        request: &ManagedProviderCallRequest,
+    ) -> Result<crate::provider::managed_deepseek::ManagedProviderResponse, String> {
+        let provider_config = ProviderConfig::new(
+            &request.provider_identity,
+            &request.provider_kind,
+            &request.base_url,
+            &request.requested_model,
+            &request.credential_reference,
+            "2026-07-30T00:00:00Z",
+        );
+        let credential = CredentialRef::new(
+            &request.credential_reference,
+            "env",
+            "***",
+            &self.provider_subject,
+            "2026-07-30T00:00:00Z",
+        );
+        let boundary =
+            CredentialBoundary::new("env").map_err(|e| format!("credential boundary: {e}"))?;
+        let transport = std::sync::Arc::clone(&self.transport);
+        let authority_clone = std::sync::Arc::new(authority.clone());
+        let request_clone = request.clone();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| format!("live ledger provider runtime unavailable: {error}"))?;
+            runtime
+                .block_on(authority_clone.invoke_with_retry(&request_clone, || {
+                    crate::provider::managed_deepseek::invoke_openai_wire(
+                        &provider_config,
+                        &boundary,
+                        &credential,
+                        &transport,
+                        &request_clone,
+                    )
+                }))
+                .map_err(|error| format!("{}: {}", error.domain, error.message))
+        })
+        .join()
+        .map_err(|_| "live ledger provider runtime thread panicked".to_string())?
+    }
+}
+
 /// Live worker for ledger-orchestrated cells: exactly one delegated
 /// implementer call per round through the existing managed provider
 /// authority (delegation, proposal, prepare, approval, one-use spend, attempt
 /// lease, persisted-authority single call with store claim/reconcile). The
 /// worker never mints usage or receipts: both derive from the reconciled
-/// store journal entry read back after the call. It never touches the target
-/// workspace and never falls back to the H0 3-node path.
+/// store journal entry read back after the call. Workspace modifications,
+/// when present in implementer output, apply through the store-owned
+/// `apply_managed_workspace_action` boundary, strictly within allowed paths.
 pub struct LiveLedgerCellWorker {
     store: std::sync::Arc<LocalProductStore>,
     operator_principal: AuthenticatedPrincipal,
@@ -1033,14 +1373,19 @@ pub struct LiveLedgerCellWorker {
     delegation_id_prefix: String,
     binding: ProductHarnessMatrixBinding,
     objective_sha256: String,
+    task_objective: String,
+    preferred_prompt_path: Option<String>,
     allowed_paths: Vec<String>,
     max_provider_calls: u64,
     cell_cost_ceiling_usd: f64,
     transport: Option<std::sync::Arc<dyn crate::provider::transport::HttpTransport>>,
     package_id: String,
+    provider_binding: crate::rwe::campaign_package::FrozenProviderExecutionBinding,
     spent_usd: f64,
     provider_calls_made: u64,
     rounds: std::sync::Arc<std::sync::Mutex<Vec<LiveLedgerRoundRef>>>,
+    target_repo_path: Option<std::path::PathBuf>,
+    provider_adapter: Option<std::sync::Arc<dyn LiveLedgerProviderAdapter>>,
 }
 
 impl LiveLedgerCellWorker {
@@ -1053,12 +1398,17 @@ impl LiveLedgerCellWorker {
         delegation_id_prefix: String,
         binding: ProductHarnessMatrixBinding,
         objective_sha256: String,
+        task_objective: String,
+        preferred_prompt_path: Option<String>,
         allowed_paths: Vec<String>,
         max_provider_calls: u64,
         cell_cost_ceiling_usd: f64,
         transport: Option<std::sync::Arc<dyn crate::provider::transport::HttpTransport>>,
         package_id: String,
+        provider_binding: crate::rwe::campaign_package::FrozenProviderExecutionBinding,
         rounds: std::sync::Arc<std::sync::Mutex<Vec<LiveLedgerRoundRef>>>,
+        target_repo_path: Option<std::path::PathBuf>,
+        provider_adapter: Option<std::sync::Arc<dyn LiveLedgerProviderAdapter>>,
     ) -> Self {
         Self {
             store,
@@ -1068,14 +1418,19 @@ impl LiveLedgerCellWorker {
             delegation_id_prefix,
             binding,
             objective_sha256,
+            task_objective,
+            preferred_prompt_path,
             allowed_paths,
             max_provider_calls,
             cell_cost_ceiling_usd,
             transport,
             package_id,
+            provider_binding,
             spent_usd: 0.0,
             provider_calls_made: 0,
             rounds,
+            target_repo_path,
+            provider_adapter,
         }
     }
 
@@ -1108,6 +1463,28 @@ impl LiveLedgerCellWorker {
         ))
     }
 
+    fn validate_adapter_matches_binding(
+        &self,
+        adapter: &dyn LiveLedgerProviderAdapter,
+        requested_model: &str,
+    ) -> Result<(), String> {
+        let binding = &self.provider_binding;
+        if adapter.provider_id() != binding.provider_identity
+            || adapter.provider_kind() != binding.provider_kind
+            || adapter.base_url() != binding.base_url
+            || adapter.endpoint_path() != binding.endpoint_path
+            || adapter.credential_reference() != binding.credential_reference
+            || adapter
+                .requested_model()
+                .is_some_and(|model| model != requested_model)
+        {
+            return Err(
+                "provider adapter does not match the frozen provider execution binding".into(),
+            );
+        }
+        Ok(())
+    }
+
     /// Authorize one round attempt under existing delegated owners (contract,
     /// proposal, prepare, approval, one-use spend, attempt lease). This
     /// mirrors the H0 armed path's steps 1-5 exactly; it stops before run
@@ -1135,11 +1512,13 @@ impl LiveLedgerCellWorker {
         // additionally fences cumulative cell spend before every round, so
         // the per-round one-use spend can never exceed the cell budget.
         let union_paths = crate::rwe::frozen_rwe_bindings::frozen_rwe_union_allowed_paths()?;
+        let role_model = self.provider_binding.admitted_model.clone();
         let role_models = json!({
-            "planner": OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL,
-            "implementer": OPERATOR_ADMITTED_MODEL,
-            "reviewer": OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL,
+            "planner": role_model.clone(),
+            "implementer": role_model.clone(),
+            "reviewer": role_model,
         });
+        self.provider_binding.validate()?;
         let contract = DelegationContract {
             schema_version: DELEGATION_SCHEMA_VERSION.into(),
             delegation_id: delegation_id.clone(),
@@ -1184,6 +1563,13 @@ impl LiveLedgerCellWorker {
             "mutable_paths": self.allowed_paths,
             "max_cost_usd": Value::Null,
             "verifier": crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY,
+            "campaign_package_id": self.package_id,
+            "matrix_model_descriptor_id": self.binding.model_id,
+            "provider_execution_binding": self.provider_binding.to_json(),
+            "provider": {
+                "execution_binding": self.provider_binding.to_json(),
+                "price_profile": crate::provider::managed_deepseek::DeepSeekPriceProfile::default(),
+            },
         });
         let proposal_sha = compute_attempt_manifest_sha256(&proposal)?;
         proposal["manifest_sha256"] = json!(proposal_sha);
@@ -1275,24 +1661,6 @@ impl LiveLedgerCellWorker {
     }
 }
 
-fn live_ledger_blocking_invoke(
-    provider: std::sync::Arc<ManagedDeepSeekProvider>,
-    authority: std::sync::Arc<ManagedProviderCallAuthority>,
-    request: ManagedProviderCallRequest,
-) -> Result<crate::provider::managed_deepseek::ManagedProviderResponse, String> {
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| format!("live ledger provider runtime unavailable: {error}"))?;
-        runtime
-            .block_on(provider.invoke_with_authority(&authority, &request))
-            .map_err(|error| format!("{}: {}", error.domain, error.message))
-    })
-    .join()
-    .map_err(|_| "live ledger provider runtime thread panicked".to_string())?
-}
-
 impl LedgerWorker for LiveLedgerCellWorker {
     fn execute_task(
         &mut self,
@@ -1311,12 +1679,6 @@ impl LedgerWorker for LiveLedgerCellWorker {
                 "ledger cell frozen provider-call budget exhausted",
             );
         }
-        let prompt = render_live_ledger_worker_prompt(
-            context,
-            &self.objective_sha256,
-            &self.allowed_paths,
-            &self.package_id,
-        );
         let now = self
             .store
             .require_now()
@@ -1341,7 +1703,6 @@ impl LedgerWorker for LiveLedgerCellWorker {
         ) = match self.authorize_round_attempt(round_index, &now, &expires_at) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("authorize_round_attempt error: {e}");
                 return Err(Self::worker_error(&context.selected_task.id, &e));
             }
         };
@@ -1381,6 +1742,33 @@ impl LedgerWorker for LiveLedgerCellWorker {
                 )
             })?
             .to_string();
+        let serving_transport = self.transport.as_ref().map(|tx| {
+            std::sync::Arc::new(crate::provider::transport::InjectedTransportBoundary(
+                std::sync::Arc::clone(tx),
+            )) as std::sync::Arc<dyn crate::provider::transport::HttpTransport>
+        });
+        let adapter: std::sync::Arc<dyn LiveLedgerProviderAdapter> = match &self.provider_adapter {
+            Some(a) => std::sync::Arc::clone(a),
+            None => {
+                let transport_for_provider: std::sync::Arc<
+                    dyn crate::provider::transport::HttpTransport,
+                > = match serving_transport {
+                    Some(tx) => tx,
+                    None => {
+                        std::sync::Arc::new(crate::provider::transport::ReqwestTransport::new())
+                    }
+                };
+                std::sync::Arc::new(OpenAiCompatibleProviderAdapter {
+                    provider_id: self.provider_binding.provider_identity.clone(),
+                    provider_kind: self.provider_binding.provider_kind.clone(),
+                    base_url: self.provider_binding.base_url.clone(),
+                    endpoint_path: self.provider_binding.endpoint_path.clone(),
+                    credential_reference: self.provider_binding.credential_reference.clone(),
+                    provider_subject: "provider:deepseek".to_string(),
+                    transport: transport_for_provider,
+                })
+            }
+        };
         let requested_model = manifest
             .pointer("/models/implementer")
             .and_then(Value::as_str)
@@ -1439,43 +1827,6 @@ impl LedgerWorker for LiveLedgerCellWorker {
                 "ledger round manifest price profile malformed",
             )
         })?;
-        let serving_transport = self.transport.as_ref().map(|tx| {
-            std::sync::Arc::new(crate::provider::transport::InjectedTransportBoundary(
-                std::sync::Arc::clone(tx),
-            )) as std::sync::Arc<dyn crate::provider::transport::HttpTransport>
-        });
-        let transport_for_provider: std::sync::Arc<dyn crate::provider::transport::HttpTransport> =
-            match serving_transport {
-                Some(tx) => tx,
-                None => std::sync::Arc::new(crate::provider::transport::ReqwestTransport::new()),
-            };
-        let provider_config = ProviderConfig::new(
-            "deepseek-managed-rwe",
-            "openai_compatible",
-            DEEPSEEK_OPENAI_BASE_URL,
-            &requested_model,
-            DEEPSEEK_CREDENTIAL_REFERENCE,
-            "2026-07-30T00:00:00Z",
-        );
-        let credential = CredentialRef::new(
-            DEEPSEEK_CREDENTIAL_REFERENCE,
-            "env",
-            "***",
-            "provider:deepseek",
-            "2026-07-30T00:00:00Z",
-        );
-        let boundary = CredentialBoundary::new("env").map_err(|e| {
-            Self::worker_error(
-                &context.selected_task.id,
-                &format!("credential boundary: {e}"),
-            )
-        })?;
-        let provider = std::sync::Arc::new(ManagedDeepSeekProvider::new_openai(
-            provider_config,
-            boundary,
-            credential,
-            std::sync::Arc::clone(&transport_for_provider),
-        ));
         let binding = ManagedCallBinding {
             product_task_id: self.product_task_id.clone(),
             workflow_id,
@@ -1484,19 +1835,120 @@ impl LedgerWorker for LiveLedgerCellWorker {
             spend_authorization_id,
             attempt_lease_id,
         };
+        let stage_context_metadata = json!({
+            "managed_deepseek": {"stage": "implementation"}
+        });
+        let initial_stage_context = self
+            .store
+            .stage_context(&binding, &stage_context_metadata)
+            .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?
+            .ok_or_else(|| {
+                Self::worker_error(
+                    &context.selected_task.id,
+                    "store returned no implementation context",
+                )
+            })?;
+        let allowed_file_paths = initial_stage_context
+            .get("allowed_file_paths")
+            .and_then(Value::as_array)
+            .map(|paths| {
+                paths
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let prompt_path = self
+            .preferred_prompt_path
+            .as_ref()
+            .filter(|path| {
+                allowed_file_paths
+                    .iter()
+                    .any(|candidate| candidate == *path)
+            })
+            .cloned()
+            .or_else(|| allowed_file_paths.first().cloned());
+        let stage_context = if let Some(prompt_path) = prompt_path {
+            let mut metadata = stage_context_metadata;
+            metadata["managed_deepseek"]["prompt_path"] = json!(prompt_path);
+            self.store
+                .stage_context(&binding, &metadata)
+                .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?
+                .ok_or_else(|| {
+                    Self::worker_error(
+                        &context.selected_task.id,
+                        "store returned no selected implementation context",
+                    )
+                })?
+        } else {
+            initial_stage_context
+        };
+        let staged_content = serde_json::to_string(&sort_value(&stage_context)).map_err(|e| {
+            Self::worker_error(
+                &context.selected_task.id,
+                &format!("store stage context serialization failed: {e}"),
+            )
+        })?;
+        let strategy_projection = resolve_strategy_projection_for_cell(&self.binding)
+            .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?;
+        let prompt = render_live_ledger_worker_prompt(
+            context,
+            &self.objective_sha256,
+            &self.task_objective,
+            Some(&staged_content),
+            strategy_projection.as_deref(),
+            &self.allowed_paths,
+            &self.package_id,
+        );
         let mut request = ManagedProviderCallRequest::for_role(
             ManagedModelRole::Implementer,
             DeepSeekProtocol::OpenAiCompatible,
-            binding,
+            binding.clone(),
         );
-        request.requested_model = requested_model.clone();
+        request.provider_identity = self.provider_binding.provider_identity.clone();
+        request.provider_kind = self.provider_binding.provider_kind.clone();
+        request.host = self.provider_binding.host.clone();
+        request.base_url = self.provider_binding.base_url.clone();
+        request.endpoint_path = self.provider_binding.endpoint_path.clone();
+        request.credential_reference = self.provider_binding.credential_reference.clone();
+        request.response_schema_version = self.provider_binding.response_schema_version.clone();
+        request.usage_parser_version = self.provider_binding.usage_parser_version.clone();
+        request.requested_model = manifest
+            .pointer("/models/implementer")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                Self::worker_error(
+                    &context.selected_task.id,
+                    "ledger round manifest implementer model missing",
+                )
+            })?
+            .to_string();
+        request.single_model_plan = true;
+        if request.requested_model != self.provider_binding.admitted_model {
+            return Err(Self::worker_error(
+                &context.selected_task.id,
+                "matrix model binding does not match the persisted provider binding",
+            ));
+        }
+        if let Some(adapter_model) = adapter.requested_model() {
+            if adapter_model != requested_model {
+                return Err(Self::worker_error(
+                    &context.selected_task.id,
+                    "provider adapter model does not match the persisted manifest",
+                ));
+            }
+        }
         request.limits = manifest_limits;
         request.price_profile = manifest_price_profile;
         request.messages = vec![ManagedMessage::text("user", &prompt)];
         request.max_output_tokens = request.limits.max_output_tokens;
-        request.transport_provenance = provider.transport_provenance();
+        request.transport_provenance =
+            crate::provider::transport::production_transport_provenance(adapter.transport());
         request
             .validate()
+            .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?;
+        self.validate_adapter_matches_binding(adapter.as_ref(), &request.requested_model)
             .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?;
         // Frozen cell spend fence on the store-reserved cost before any
         // provider effect: cumulative realized spend plus this round's
@@ -1514,32 +1966,18 @@ impl LedgerWorker for LiveLedgerCellWorker {
             )
             .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?,
         );
-        let invoke_result =
-            live_ledger_blocking_invoke(std::sync::Arc::clone(&provider), authority, request);
+        let invoke_result = adapter.invoke(&authority, &request);
         // The usage envelope and effect receipt derive from the reconciled
         // store journal entry read back after the call, never from the
         // in-hand response or the worker's own status claim.
         let journal_entry = self
             .read_round_journal_entry(&delegated_attempt_id, &node_id)
             .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?;
-        let round = map_live_ledger_journal_entry(&journal_entry)
+        let mut round = map_live_ledger_journal_entry(&journal_entry)
             .map_err(|e| Self::worker_error(&context.selected_task.id, &e))?;
         self.spent_usd += round.realized_cost_usd;
         self.provider_calls_made += round.provider_calls;
-        if let Ok(mut rounds) = self.rounds.lock() {
-            rounds.push(LiveLedgerRoundRef {
-                delegated_attempt_id: delegated_attempt_id.clone(),
-                node_id: node_id.clone(),
-            });
-        }
-        let receipt = StoreEffectReceipt {
-            attempt_id: ledger_attempt_id.clone(),
-            disposition: round.disposition,
-            receipt_evidence_digest: Some(round.entry_digest.clone()),
-            store_evidence_ref: Some(format!(
-                "delegation:{delegation_id}:attempt:{delegated_attempt_id}"
-            )),
-        };
+        let mut action_receipt: Option<Value> = None;
         match invoke_result {
             Ok(response) => {
                 if round.disposition != EffectReceiptDisposition::Success {
@@ -1551,6 +1989,126 @@ impl LedgerWorker for LiveLedgerCellWorker {
                         "provider response conflicts with the reconciled journal entry",
                     ));
                 }
+                let trimmed = response.output_text.trim();
+                let candidate = if let Some(body) = trimmed.strip_prefix("```json") {
+                    body.strip_suffix("```").map(str::trim).unwrap_or("")
+                } else if let Some(body) = trimmed.strip_prefix("```") {
+                    body.strip_suffix("```").map(str::trim).unwrap_or("")
+                } else {
+                    trimmed
+                };
+                if let Ok(action_val) = serde_json::from_str::<Value>(candidate) {
+                    if action_val.get("schema_version").and_then(Value::as_str)
+                        == Some("managed_workspace_action.v1")
+                    {
+                        if let Some(target_repo_path) = &self.target_repo_path {
+                            let node_metadata = json!({
+                                "workspace_path": target_repo_path.to_string_lossy(),
+                                "workspace_root": target_repo_path.to_string_lossy(),
+                                "allowed_paths": self.allowed_paths,
+                            });
+                            match self.store.apply_managed_workspace_action(
+                                &binding,
+                                &node_metadata,
+                                &response.output_text,
+                            ) {
+                                Ok(act) => {
+                                    action_receipt = Some(act);
+                                    let persisted_entry = self
+                                        .read_round_journal_entry(&delegated_attempt_id, &node_id)
+                                        .map_err(|e| {
+                                            Self::worker_error(&context.selected_task.id, &e)
+                                        })?;
+                                    round = map_live_ledger_journal_entry(&persisted_entry)
+                                        .map_err(|e| {
+                                            Self::worker_error(&context.selected_task.id, &e)
+                                        })?;
+                                }
+                                Err(error) => {
+                                    // B5: Preserve provider success and usage while recording a
+                                    // separate Store-owned action failure. The provider journal
+                                    // remains succeeded, so the manager sees a successful effect
+                                    // with a terminal worker failure and cannot replay it.
+                                    let failure_evidence_digest = self
+                                        .store
+                                        .record_managed_workspace_action_failure(
+                                            &binding,
+                                            "workspace_action_failed",
+                                        )
+                                        .map_err(|err| {
+                                            Self::worker_error(
+                                                &context.selected_task.id,
+                                                &format!(
+                                                    "workspace action failure evidence persist failed: {err}"
+                                                ),
+                                            )
+                                        })?;
+                                    let persisted_entry = self
+                                        .read_round_journal_entry(&delegated_attempt_id, &node_id)
+                                        .map_err(|e| {
+                                            Self::worker_error(&context.selected_task.id, &e)
+                                        })?;
+                                    round = map_live_ledger_journal_entry(&persisted_entry)
+                                        .map_err(|e| {
+                                            Self::worker_error(&context.selected_task.id, &e)
+                                        })?;
+                                    if let Ok(mut rounds) = self.rounds.lock() {
+                                        rounds.push(LiveLedgerRoundRef {
+                                            delegated_attempt_id: delegated_attempt_id.clone(),
+                                            node_id: node_id.clone(),
+                                            action_receipt: None,
+                                        });
+                                    }
+                                    let receipt = StoreEffectReceipt {
+                                        attempt_id: ledger_attempt_id.clone(),
+                                        disposition: EffectReceiptDisposition::Success,
+                                        receipt_evidence_digest: Some(round.entry_digest.clone()),
+                                        store_evidence_ref: Some(format!(
+                                            "delegation:{delegation_id}:attempt:{delegated_attempt_id}:workspace_action_failure_sha256:{failure_evidence_digest}"
+                                        )),
+                                    };
+                                    return Ok(WorkerResult {
+                                        task_id: context.selected_task.id.clone(),
+                                        attempt_id: ledger_attempt_id,
+                                        status: WorkerOutcomeStatus::Failed,
+                                        effect_free: false,
+                                        output_digest: Some(sha256_hex(
+                                            response.output_text.as_bytes(),
+                                        )),
+                                        partial_summary: None,
+                                        artifact_refs: vec![],
+                                        findings: vec![],
+                                        failure_reason: Some(format!(
+                                            "managed workspace action failed: {error}"
+                                        )),
+                                        usage: Some(round.envelope),
+                                        effect_receipt: Some(receipt),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Ok(mut rounds) = self.rounds.lock() {
+                    rounds.push(LiveLedgerRoundRef {
+                        delegated_attempt_id: delegated_attempt_id.clone(),
+                        node_id: node_id.clone(),
+                        action_receipt: action_receipt.clone(),
+                    });
+                }
+                let mut evidence_ref =
+                    format!("delegation:{delegation_id}:attempt:{delegated_attempt_id}");
+                if let Some(ref act) = action_receipt {
+                    if let Some(after_sha) = act.get("after_sha256").and_then(Value::as_str) {
+                        evidence_ref = format!("{evidence_ref}:action_sha:{after_sha}");
+                    }
+                }
+                let receipt = StoreEffectReceipt {
+                    attempt_id: ledger_attempt_id.clone(),
+                    disposition: round.disposition,
+                    receipt_evidence_digest: Some(round.entry_digest.clone()),
+                    store_evidence_ref: Some(evidence_ref),
+                };
                 Ok(WorkerResult {
                     task_id: context.selected_task.id.clone(),
                     attempt_id: ledger_attempt_id,
@@ -1566,11 +2124,21 @@ impl LedgerWorker for LiveLedgerCellWorker {
                 })
             }
             Err(call_failure) => {
-                // The managed authority already reconciled the failure into
-                // the journal (pre-send, known-failed, or unknown). Retry
-                // safety now reads the receipt disposition alone: proved
-                // no-effect and known-failed attempts may retry under the
-                // attempt budget; unknown outcomes fence with zero replay.
+                if let Ok(mut rounds) = self.rounds.lock() {
+                    rounds.push(LiveLedgerRoundRef {
+                        delegated_attempt_id: delegated_attempt_id.clone(),
+                        node_id: node_id.clone(),
+                        action_receipt: None,
+                    });
+                }
+                let receipt = StoreEffectReceipt {
+                    attempt_id: ledger_attempt_id.clone(),
+                    disposition: round.disposition,
+                    receipt_evidence_digest: Some(round.entry_digest.clone()),
+                    store_evidence_ref: Some(format!(
+                        "delegation:{delegation_id}:attempt:{delegated_attempt_id}"
+                    )),
+                };
                 let domain = call_failure
                     .split(':')
                     .next()
@@ -1629,11 +2197,16 @@ impl LiveLedgerCellVerifier {
 
     fn bounded_command_output(
         &self,
+        env: &[(String, String)],
         argv: &[String],
     ) -> Result<(std::process::ExitStatus, Vec<u8>), String> {
         use std::io::Read;
         use std::time::{Duration, Instant};
-        let mut child = std::process::Command::new(&argv[0])
+        let mut cmd = std::process::Command::new(&argv[0]);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let mut child = cmd
             .args(&argv[1..])
             .current_dir(&self.target_path)
             .stdin(std::process::Stdio::null())
@@ -1710,18 +2283,16 @@ impl LedgerVerifier for LiveLedgerCellVerifier {
                 evidence_digest: None,
             });
         }
-        let argv: Vec<String> = self
-            .verification_command
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
-        if argv.is_empty() {
-            return Err(OrchestrationError::VerificationError(
-                "live ledger verification command is empty".to_string(),
-            ));
-        }
+        let (env, argv) = crate::product_golden_path::parse_strict_product_verification_command(
+            &self.verification_command,
+        )
+        .map_err(|e| {
+            OrchestrationError::VerificationError(format!(
+                "live ledger verification command is invalid: {e}"
+            ))
+        })?;
         let output_sha256 = result.output_digest.clone().unwrap_or_default();
-        match self.bounded_command_output(&argv) {
+        match self.bounded_command_output(&env, &argv) {
             Ok((status, output)) => {
                 let code = status.code().unwrap_or(-1);
                 let process_outcome =
@@ -1793,6 +2364,58 @@ pub(crate) fn run_live_ledger_cell_loop(
     target_repo_path: &std::path::Path,
     cell_cost_ceiling_usd: f64,
 ) -> Result<(LedgerTerminalRecord, LiveLedgerLoopEvidence), String> {
+    run_live_ledger_cell_loop_with_adapter(
+        store,
+        operator_principal,
+        executor_principal,
+        binding,
+        task,
+        ids,
+        product_task_id,
+        transport,
+        package_id,
+        target_repo_path,
+        cell_cost_ceiling_usd,
+        None,
+    )
+}
+
+fn preferred_stage_prompt_path(
+    verification_command: &str,
+    allowed_paths: &[String],
+) -> Option<String> {
+    let (_, argv) =
+        crate::product_golden_path::parse_strict_product_verification_command(verification_command)
+            .ok()?;
+    argv.into_iter().find(|argument| {
+        !argument.starts_with('-')
+            && allowed_paths.iter().any(|allowed| {
+                argument == allowed
+                    || argument.starts_with(&format!("{}/", allowed.trim_end_matches('/')))
+            })
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_live_ledger_cell_loop_with_adapter(
+    store: &std::sync::Arc<LocalProductStore>,
+    operator_principal: &AuthenticatedPrincipal,
+    executor_principal: &AuthenticatedPrincipal,
+    binding: &ProductHarnessMatrixBinding,
+    task: &RweTaskDefinition,
+    ids: &CellIdentities,
+    product_task_id: &str,
+    transport: &Option<std::sync::Arc<dyn crate::provider::transport::HttpTransport>>,
+    package_id: &str,
+    _target_repo_path: &std::path::Path,
+    cell_cost_ceiling_usd: f64,
+    adapter: Option<std::sync::Arc<dyn LiveLedgerProviderAdapter>>,
+) -> Result<(LedgerTerminalRecord, LiveLedgerLoopEvidence), String> {
+    let package = crate::rwe::campaign_package::resolve_frozen_campaign_package(package_id)?;
+    package.validate()?;
+    let matrix_model = resolve_frozen_matrix_model(binding)?;
+    let provider_binding =
+        package.provider_execution_binding_for_model(&matrix_model.resolved_model_id)?;
     let verification_command = task
         .expected_verification_commands
         .first()
@@ -1820,7 +2443,22 @@ pub(crate) fn run_live_ledger_cell_loop(
             ),
             &LedgerOrchestratorConfig::default(),
         )
-        .map_err(|e| format!("live ledger cell task admission failed: {e}"))?;
+        .map_err(|e| format!("live ledger cell add task failed: {e}"))?;
+    let task_val = store
+        .get_product_task(product_task_id)
+        .map_err(|e| format!("live ledger cell get product task {product_task_id} failed: {e}"))?
+        .ok_or_else(|| format!("live ledger cell product task {product_task_id} not found"))?;
+    let execution_workspace = task_val
+        .pointer("/workspace_binding/workspace_path")
+        .and_then(Value::as_str)
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_dir())
+        .ok_or_else(|| {
+            format!(
+                "live ledger cell product task {product_task_id} missing or invalid execution workspace binding"
+            )
+        })?;
+
     let rounds = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let worker = LiveLedgerCellWorker::new(
         std::sync::Arc::clone(store),
@@ -1830,15 +2468,20 @@ pub(crate) fn run_live_ledger_cell_loop(
         format!("rwe-del-ledger-{}", ids.delegated_attempt_id),
         binding.clone(),
         task.objective_sha256.clone(),
+        task.objective.clone(),
+        preferred_stage_prompt_path(&verification_command, &task.allowed_mutable_paths),
         task.allowed_mutable_paths.clone(),
         task.per_task_max_provider_requests.max(1),
         cell_cost_ceiling_usd,
         transport.clone(),
         package_id.to_string(),
+        provider_binding,
         std::sync::Arc::clone(&rounds),
+        Some(execution_workspace.clone()),
+        adapter,
     );
     let verifier = LiveLedgerCellVerifier::new(
-        target_repo_path.to_path_buf(),
+        execution_workspace.clone(),
         verification_command,
         task.timeout_ms,
     )?;
@@ -1854,6 +2497,7 @@ pub(crate) fn run_live_ledger_cell_loop(
     let evidence = LiveLedgerLoopEvidence {
         rounds: rounds.lock().map(|r| r.clone()).unwrap_or_default(),
     };
+
     Ok((record, evidence))
 }
 
@@ -2069,6 +2713,7 @@ pub(crate) fn project_live_ledger_cell_outcome(
     let mut note = format!(
         "live ledger cell loop executed through {RWE_LEDGER_CELL_COMPOSITION_SEAM} ({RWE_LIVE_LEDGER_CELL_COMPOSITION}) for run {run_id}; \
          ledger_terminal_disposition={} ledger_terminal_state={:?} ledger_final_hash={} \
+         manager_semantics={RWE_LEDGER_MANAGER_SEMANTICS} \
          ledger_manager_calls={} ledger_worker_calls={} ledger_verifications={} ledger_rounds={} \
          usage_conservation={} store_journal_conserved={} provider_transport_provenance={provenance} \
          missing_evidence={} package_id={package_id} package_sha={package_sha} cell={}",
@@ -2993,6 +3638,7 @@ pub fn issue_and_admit_v2(
             authorization_id: authorization_id.into(),
             golden_path_prerequisite_product_task_id: golden_path_prerequisite_product_task_id
                 .into(),
+            campaign_package_id: None,
             expires_at: expires_at.into(),
         },
     )?;
@@ -4218,6 +4864,7 @@ fn execute_armed_delegated_rwe_cell(
         "mutable_paths": task.allowed_mutable_paths,
         "max_cost_usd": Value::Null,
         "verifier": crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY,
+        "provider_execution_binding": crate::rwe::campaign_package::canonical_deepseek_provider_binding().to_json(),
     });
     let proposal_sha = compute_attempt_manifest_sha256(&proposal)?;
     proposal["manifest_sha256"] = json!(proposal_sha);
@@ -4798,17 +5445,18 @@ pub fn project_first_baseline_evidence(run_aggregate: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::transport::HttpResponse;
+    use crate::provider::transport::{HttpError, HttpRequest, HttpResponse, HttpTransport};
     use crate::storage::local_product_store::{
         SCOPE_ATTEMPT_ADMIT, SCOPE_DELEGATED_ARTIFACT_CONFIRM, SCOPE_DELEGATED_AUTONOMY,
         SCOPE_DELEGATED_EXECUTE, SCOPE_DELEGATED_MANIFEST_APPROVE, SCOPE_REVOKE,
         SCOPE_RISK_ACKNOWLEDGE, SCOPE_SPEND_AUTHORIZE,
     };
     use sha2::Digest;
+    use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::{channel, sync_channel};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tempfile::tempdir;
 
@@ -7173,8 +7821,9 @@ mod tests {
         ledger_cell["matrix_rung"] = Value::String("1x2x3".to_string());
         ledger_cell["matrix_repetition"] = Value::from(ids.repetition);
         ledger_cell["matrix_cell_descriptor_sha256"] = Value::String("c".repeat(64));
-        ledger_cell["matrix_model_id"] =
-            Value::String("deepseek-v4-pro:single-model-three-role:v1".to_string());
+        ledger_cell["matrix_model_id"] = Value::String(format!(
+            "{OPERATOR_ADMITTED_MODEL}:single-model-three-role:v1"
+        ));
         ledger_cell["matrix_strategy_id"] =
             Value::String("single-pass-plan-implement-review:memory-only:v1".to_string());
         ledger_cell
@@ -7435,6 +8084,36 @@ mod tests {
         }
     }
 
+    struct CapturingTransport {
+        requests: Arc<Mutex<Vec<HttpRequest>>>,
+        responses: Mutex<VecDeque<Result<HttpResponse, HttpError>>>,
+    }
+
+    impl CapturingTransport {
+        fn new(
+            responses: Vec<Result<HttpResponse, HttpError>>,
+        ) -> (Arc<Self>, Arc<Mutex<Vec<HttpRequest>>>) {
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let transport = Arc::new(Self {
+                requests: Arc::clone(&requests),
+                responses: Mutex::new(responses.into_iter().collect()),
+            });
+            (transport, requests)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for CapturingTransport {
+        async fn send(&self, request: &HttpRequest) -> Result<HttpResponse, HttpError> {
+            self.requests.lock().unwrap().push(request.clone());
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(HttpError::PreSend("capturing transport exhausted".into())))
+        }
+    }
+
     fn live_ledger_test_env() -> LiveLedgerEnvGuard {
         // Minimal live gates: product intake admission plus the operator
         // live-run token. No target-output or network-output symbols are
@@ -7502,24 +8181,26 @@ mod tests {
         })
     }
 
-    fn live_ledger_driver(
-        bed: &LiveLedgerTestBed,
-        responses: Vec<Result<HttpResponse, crate::provider::transport::HttpError>>,
-    ) -> ProductGoldenPathCellDriver {
-        use crate::provider::transport::MockTransport;
-        ProductGoldenPathCellDriver {
-            allow_live_provider_effects: true,
-            target_repo_path: Some(bed.target.clone()),
-            fake_transport: Some(Arc::new(MockTransport::new(responses))),
-            cell_executor_key_id: Some(bed.executor_key_id.clone()),
-            cell_confirmer_key_id: None,
-            campaign_package: None,
-        }
-    }
-
     fn admit_live_ledger_intake(bed: &LiveLedgerTestBed) -> (ProductHarnessMatrixBinding, String) {
         let binding =
             matrix_binding_from_frozen_cell(&bed.ledger_cell, &bed.ids, &bed.task0).unwrap();
+        admit_live_ledger_intake_with_binding(bed, binding)
+    }
+
+    fn admit_live_ledger_intake_with_model(
+        bed: &LiveLedgerTestBed,
+        model_id: &str,
+    ) -> (ProductHarnessMatrixBinding, String) {
+        let mut binding =
+            matrix_binding_from_frozen_cell(&bed.ledger_cell, &bed.ids, &bed.task0).unwrap();
+        binding.model_id = model_id.to_string();
+        admit_live_ledger_intake_with_binding(bed, binding)
+    }
+
+    fn admit_live_ledger_intake_with_binding(
+        bed: &LiveLedgerTestBed,
+        binding: ProductHarnessMatrixBinding,
+    ) -> (ProductHarnessMatrixBinding, String) {
         let intake = build_rwe_cell_product_intake_with_matrix(
             &bed.principal,
             &bed.frozen,
@@ -7550,6 +8231,26 @@ mod tests {
             "def test_probe_ok():\n    assert False, 'probe failure'\n"
         };
         std::fs::write(target.join("probe_test.py"), body).unwrap();
+        let api_tests = target.join("apps/api/tests");
+        if api_tests.is_dir() {
+            std::fs::write(api_tests.join("probe_test.py"), body).unwrap();
+            let conftest = api_tests.join("conftest.py");
+            if conftest.is_file() {
+                std::fs::write(&conftest, "# neutralized for probe verification\n").unwrap();
+            }
+        }
+    }
+
+    fn stage_probe_for_task(store: &LocalProductStore, product_task_id: &str, pass: bool) {
+        let task_row = store
+            .get_product_task(product_task_id)
+            .unwrap()
+            .expect("task must exist");
+        let ws_str = task_row
+            .pointer("/workspace_binding/workspace_path")
+            .and_then(Value::as_str)
+            .expect("workspace_path must exist");
+        stage_probe_verifier_target(std::path::Path::new(ws_str), pass);
     }
 
     fn live_probe_task(base: &RweTaskDefinition, max_calls: u64) -> RweTaskDefinition {
@@ -7563,9 +8264,16 @@ mod tests {
     fn live_success_response(
         n: u64,
     ) -> Result<HttpResponse, crate::provider::transport::HttpError> {
+        live_success_response_for_model(n, OPERATOR_ADMITTED_MODEL)
+    }
+
+    fn live_success_response_for_model(
+        n: u64,
+        model: &str,
+    ) -> Result<HttpResponse, crate::provider::transport::HttpError> {
         Ok(mock_rwe_openai_response(
             &format!("resp-live-{n}"),
-            OPERATOR_ADMITTED_MODEL,
+            model,
             json!({"proposal": n}),
         ))
     }
@@ -7602,31 +8310,47 @@ mod tests {
             eprintln!("SKIP: frozen target repository unavailable");
             return;
         };
-        // The real frozen verifier command cannot pass in the bare temp
-        // target, so the cell ends controlled_failure after genuine live
-        // rounds; the proof here is the composition path, not delivery.
-        let driver = live_ledger_driver(
-            &bed,
-            vec![
-                live_success_response(0),
-                live_success_response(1),
-                live_success_response(2),
-                live_success_response(3),
-            ],
-        );
-        let outcome = driver
-            .execute_cell(
-                &bed.store,
-                &bed.principal,
-                &bed.frozen,
-                "run-live-comp",
-                "lease-comp",
-                &bed.ledger_cell,
-                &bed.task0,
-                &bed.ids,
+        let (binding, product_task_id) = admit_live_ledger_intake(&bed);
+        // Use a bounded probe command for this composition-only test. The
+        // production ProductTask still binds the frozen verifier; the live
+        // loop itself accepts the test-only command and remains provider-live.
+        stage_probe_for_task(&bed.store, &product_task_id, true);
+        let task = live_probe_task(&bed.task0, 4);
+        let executor = bed
+            .store
+            .authenticate_managed_acceptance_principal(
+                bed.principal.tenant_id(),
+                &bed.executor_key_id,
+                None,
             )
             .unwrap();
-        eprintln!("OUTCOME: {outcome:#?}");
+        let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> = Some(Arc::new(
+            crate::provider::transport::MockTransport::new(vec![live_success_response(0)]),
+        ));
+        let (record, evidence) = run_live_ledger_cell_loop(
+            &bed.store,
+            &bed.principal,
+            &executor,
+            &binding,
+            &task,
+            &bed.ids,
+            &product_task_id,
+            &transport,
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
+            &bed.target,
+            0.20,
+        )
+        .unwrap();
+        let outcome = project_live_ledger_cell_outcome(
+            &bed.store,
+            &product_task_id,
+            &evidence.rounds,
+            &record,
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
+            "test-sha",
+            "run-live-comp",
+            &bed.ids,
+        );
         // The live ledger composition ran, not the provider-free loop and
         // not the H0 3-node path: no Draft PR output, no H0 terminal, and
         // the live ledger seam markers are present.
@@ -7684,7 +8408,7 @@ mod tests {
             return;
         };
         let (binding, product_task_id) = admit_live_ledger_intake(&bed);
-        stage_probe_verifier_target(&bed.target, true);
+        stage_probe_for_task(&bed.store, &product_task_id, true);
         let task = live_probe_task(&bed.task0, 3);
         use crate::provider::transport::MockTransport;
         let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> =
@@ -7704,7 +8428,7 @@ mod tests {
             &bed.ids,
             &product_task_id,
             &transport,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             &bed.target,
             0.20,
         )
@@ -7719,7 +8443,7 @@ mod tests {
             &product_task_id,
             &evidence.rounds,
             &record,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             "test-sha",
             "run-live-seal",
             &bed.ids,
@@ -7776,6 +8500,11 @@ mod tests {
             "{}",
             outcome.note
         );
+        assert!(
+            outcome.note.contains(RWE_LEDGER_MANAGER_SEMANTICS),
+            "{}",
+            outcome.note
+        );
         // No H0 terminal evidence exists for a ledger cell, so no baseline
         // seal is even expressible.
         assert!(bed
@@ -7796,7 +8525,7 @@ mod tests {
             return;
         };
         let (binding, product_task_id) = admit_live_ledger_intake(&bed);
-        stage_probe_verifier_target(&bed.target, true);
+        stage_probe_for_task(&bed.store, &product_task_id, true);
         let task = live_probe_task(&bed.task0, 3);
         let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> =
             Some(Arc::new(MockTransport::new(vec![
@@ -7820,7 +8549,7 @@ mod tests {
             &bed.ids,
             &product_task_id,
             &transport,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             &bed.target,
             0.20,
         )
@@ -7851,7 +8580,7 @@ mod tests {
             &product_task_id,
             &evidence.rounds,
             &record,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             "test-sha",
             "run-live-retry",
             &bed.ids,
@@ -7875,7 +8604,7 @@ mod tests {
             return;
         };
         let (binding, product_task_id) = admit_live_ledger_intake(&bed);
-        stage_probe_verifier_target(&bed.target, true);
+        stage_probe_for_task(&bed.store, &product_task_id, true);
         let task = live_probe_task(&bed.task0, 3);
         let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> =
             Some(Arc::new(MockTransport::new(vec![Err(
@@ -7898,7 +8627,7 @@ mod tests {
             &bed.ids,
             &product_task_id,
             &transport,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             &bed.target,
             0.20,
         )
@@ -7923,7 +8652,7 @@ mod tests {
             &product_task_id,
             &evidence.rounds,
             &record,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             "test-sha",
             "run-live-unk",
             &bed.ids,
@@ -7945,7 +8674,7 @@ mod tests {
             return;
         };
         let (binding, product_task_id) = admit_live_ledger_intake(&bed);
-        stage_probe_verifier_target(&bed.target, false);
+        stage_probe_for_task(&bed.store, &product_task_id, false);
         let task = live_probe_task(&bed.task0, 2);
         use crate::provider::transport::MockTransport;
         let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> =
@@ -7970,7 +8699,7 @@ mod tests {
             &bed.ids,
             &product_task_id,
             &transport,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             &bed.target,
             0.20,
         )
@@ -7989,7 +8718,7 @@ mod tests {
             &product_task_id,
             &evidence.rounds,
             &record,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             "test-sha",
             "run-live-vf",
             &bed.ids,
@@ -8131,7 +8860,7 @@ mod tests {
             return;
         };
         let (_binding, product_task_id) = admit_live_ledger_intake(&bed);
-        stage_probe_verifier_target(&bed.target, true);
+        stage_probe_for_task(&bed.store, &product_task_id, true);
         let task = live_probe_task(&bed.task0, 3);
         use crate::provider::transport::MockTransport;
         let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> =
@@ -8153,7 +8882,7 @@ mod tests {
             &bed.ids,
             &product_task_id,
             &transport,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             &bed.target,
             0.20,
         )
@@ -8167,7 +8896,7 @@ mod tests {
             &product_task_id,
             &evidence.rounds,
             &record,
-            "test-package",
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
             "test-sha",
             "run-live-mx1",
             &bed.ids,
@@ -8317,5 +9046,925 @@ mod tests {
             .unwrap();
         assert_eq!(off_outcome.classification, "blocked_provider_free_mode");
         assert_eq!(off_outcome.provider_requests, 0);
+    }
+
+    #[test]
+    fn live_ledger_matrix_model_descriptor_binds_exact_request_model() {
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = live_ledger_test_env();
+        for (suffix, model_id, raw_model) in [
+            (
+                "pro",
+                crate::harness_evolution::MX1_ARM_ZERO_MODEL_ID,
+                "deepseek-v4-pro",
+            ),
+            (
+                "flash",
+                crate::harness_evolution::MX1_SECOND_MODEL_ID,
+                "deepseek-v4-flash",
+            ),
+        ] {
+            let Some(bed) = live_ledger_bed(
+                &format!("run-live-model-{suffix}"),
+                &format!("t-live-model-{suffix}"),
+                &format!("live-model-{suffix}.db"),
+            ) else {
+                eprintln!("SKIP: frozen target repository unavailable");
+                return;
+            };
+            let (binding, product_task_id) = admit_live_ledger_intake_with_model(&bed, model_id);
+            stage_probe_for_task(&bed.store, &product_task_id, true);
+            let task = live_probe_task(&bed.task0, 1);
+            let (capturing_transport, captured_requests) =
+                CapturingTransport::new(vec![live_success_response_for_model(0, raw_model)]);
+            let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> =
+                Some(capturing_transport);
+            let executor = bed
+                .store
+                .authenticate_managed_acceptance_principal(
+                    bed.principal.tenant_id(),
+                    &bed.executor_key_id,
+                    None,
+                )
+                .unwrap();
+
+            let (record, evidence) = run_live_ledger_cell_loop(
+                &bed.store,
+                &bed.principal,
+                &executor,
+                &binding,
+                &task,
+                &bed.ids,
+                &product_task_id,
+                &transport,
+                crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
+                &bed.target,
+                0.20,
+            )
+            .unwrap();
+            assert_eq!(
+                record.disposition,
+                crate::harness_evolution::LedgerTerminalDisposition::Completed
+            );
+            assert_eq!(evidence.rounds.len(), 1);
+            let requests = captured_requests.lock().unwrap();
+            let body: Value =
+                serde_json::from_slice(requests[0].body.as_deref().expect("captured request body"))
+                    .unwrap();
+            assert_eq!(body["model"], raw_model);
+            let journal = live_round_journal(
+                &bed.store,
+                &product_task_id,
+                &evidence.rounds[0].delegated_attempt_id,
+            );
+            assert_eq!(journal[0]["requested_model"], raw_model);
+        }
+    }
+
+    #[test]
+    fn live_ledger_initial_fail_repaired_by_worker_modification_to_pass() {
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = live_ledger_test_env();
+        let Some(bed) = live_ledger_bed("run-live-repair", "t-live-repair", "live-repair.db")
+        else {
+            eprintln!("SKIP: frozen target repository unavailable");
+            return;
+        };
+        let (binding, product_task_id) = admit_live_ledger_intake(&bed);
+        let task_row = bed
+            .store
+            .get_product_task(&product_task_id)
+            .unwrap()
+            .expect("task must exist");
+        let ws_str = task_row
+            .pointer("/workspace_binding/workspace_path")
+            .and_then(Value::as_str)
+            .expect("workspace_path must exist");
+        let ws_path = std::path::PathBuf::from(ws_str);
+
+        // Stage initial FAIL on disk in apps/api/tests/probe_test.py
+        stage_probe_for_task(&bed.store, &product_task_id, false);
+        assert!(
+            std::fs::read_to_string(ws_path.join("apps/api/tests/probe_test.py"))
+                .unwrap()
+                .contains("assert False")
+        );
+        let conftest = ws_path.join("apps/api/tests/conftest.py");
+        if conftest.is_file() {
+            std::fs::write(&conftest, "# neutralized for probe verification\n").unwrap();
+        }
+        std::fs::write(
+            ws_path.join("apps/api/tests/unrelated_context.py"),
+            "UNRELATED_CONTEXT_SENTINEL\n",
+        )
+        .unwrap();
+
+        let mut task = live_probe_task(&bed.task0, 3);
+        task.expected_verification_commands = vec![
+            "PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/probe_test.py -q".to_string(),
+        ];
+
+        // Round 1: worker produces a response without workspace modifications -> verifier fails.
+        // Controller detects verification failure and replans with a repair task.
+        // Round 2: worker produces managed_workspace_action.v1 modifying the test to pass.
+        // Verifier runs again and passes -> loop completes.
+        let repair_patch = json!({
+            "schema_version": "managed_workspace_action.v1",
+            "path": "apps/api/tests/probe_test.py",
+            "action": "replace_text",
+            "old_text": "assert False, 'probe failure'",
+            "new_text": "assert True"
+        });
+        let resp_round1 = live_success_response(0);
+        let resp_round2 = Ok(mock_rwe_openai_response(
+            "resp-live-repair",
+            OPERATOR_ADMITTED_MODEL,
+            repair_patch,
+        ));
+
+        let (capturing_transport, captured_requests) =
+            CapturingTransport::new(vec![resp_round1, resp_round2]);
+        let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> =
+            Some(capturing_transport);
+
+        let executor = bed
+            .store
+            .authenticate_managed_acceptance_principal(
+                bed.principal.tenant_id(),
+                &bed.executor_key_id,
+                None,
+            )
+            .unwrap();
+
+        let (record, evidence) = run_live_ledger_cell_loop(
+            &bed.store,
+            &bed.principal,
+            &executor,
+            &binding,
+            &task,
+            &bed.ids,
+            &product_task_id,
+            &transport,
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
+            &bed.target,
+            0.20,
+        )
+        .unwrap();
+        assert_eq!(
+            record.disposition,
+            crate::harness_evolution::LedgerTerminalDisposition::Completed,
+            "record={:?} evidence={:?}",
+            record,
+            evidence,
+        );
+        assert_eq!(evidence.rounds.len(), 2);
+        assert_eq!(record.metrics.replan_count, 1);
+        assert_eq!(record.metrics.provider_calls, Some(2));
+        assert_eq!(record.metrics.verification_count, 2);
+
+        // Verify disk content was ACTUALLY modified by the worker's action:
+        let file_content =
+            std::fs::read_to_string(ws_path.join("apps/api/tests/probe_test.py")).unwrap();
+        assert!(file_content.contains("assert True"));
+        assert!(!file_content.contains("assert False"));
+        assert!(evidence.rounds[0].action_receipt.is_none());
+        assert!(evidence.rounds[1].action_receipt.is_some());
+        let action_journal = live_round_journal(
+            &bed.store,
+            &product_task_id,
+            &evidence.rounds[1].delegated_attempt_id,
+        );
+        assert_eq!(action_journal.len(), 1);
+        assert_eq!(
+            action_journal[0]
+                .pointer("/workspace_action/schema_version")
+                .and_then(Value::as_str),
+            Some("managed_workspace_action_evidence.v1")
+        );
+        assert!(action_journal[0]
+            .pointer("/workspace_action/receipt_sha256")
+            .and_then(Value::as_str)
+            .is_some());
+        // A fresh Store projection reconstructs the persisted provider ->
+        // action -> verifier evidence chain without replaying the action.
+        let restarted_projection = bed
+            .store
+            .project_rwe_cell_store_evidence(
+                &product_task_id,
+                &evidence.rounds[1].delegated_attempt_id,
+            )
+            .unwrap();
+        assert_eq!(
+            restarted_projection
+                .pointer("/provider_request_journal/0/workspace_action/schema_version")
+                .and_then(Value::as_str),
+            Some("managed_workspace_action_evidence.v1")
+        );
+
+        let outcome = project_live_ledger_cell_outcome(
+            &bed.store,
+            &product_task_id,
+            &evidence.rounds,
+            &record,
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
+            "test-sha",
+            "run-live-repair",
+            &bed.ids,
+        );
+        assert_eq!(outcome.classification, "fixture_success");
+        assert_eq!(outcome.verification_status, "evidence_recorded");
+        assert!(outcome.verification_trustworthy);
+        assert_eq!(outcome.provider_requests, 2);
+
+        let captured_requests = captured_requests.lock().unwrap().clone();
+        assert_eq!(captured_requests.len(), 2);
+        let second_body: Value = serde_json::from_slice(
+            captured_requests[1]
+                .body
+                .as_deref()
+                .expect("captured provider request body"),
+        )
+        .unwrap();
+        let second_prompt = second_body["messages"][0]["content"]
+            .as_str()
+            .expect("captured second-round prompt");
+        assert!(second_prompt.contains(&task.objective));
+        assert!(second_prompt.contains("assert False, 'probe failure'"));
+        assert!(second_prompt.contains("Prior verification observations:"));
+        assert!(second_prompt.contains("frozen verifier exited 1"));
+        assert!(!second_prompt.contains("UNRELATED_CONTEXT_SENTINEL"));
+    }
+
+    #[test]
+    fn live_ledger_openai_compatible_seam_with_matrix_model_identity() {
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = live_ledger_test_env();
+        let _custom_env =
+            LiveLedgerEnvGuard::set(&[("CUSTOM_OPENAI_API_KEY", Some("test-custom-token"))]);
+        let Some(bed) = live_ledger_bed("run-live-seam", "t-live-seam", "live-seam.db") else {
+            eprintln!("SKIP: frozen target repository unavailable");
+            return;
+        };
+        let (binding, product_task_id) = admit_live_ledger_intake(&bed);
+        stage_probe_for_task(&bed.store, &product_task_id, true);
+        let task = live_probe_task(&bed.task0, 3);
+
+        use crate::provider::transport::MockTransport;
+        let mock_transport: Arc<dyn crate::provider::transport::HttpTransport> =
+            Arc::new(MockTransport::new(vec![Ok(mock_rwe_openai_response(
+                "resp-live-custom",
+                "custom-openai-model",
+                json!({"status": "custom-provider-ok"}),
+            ))]));
+        let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> =
+            Some(mock_transport.clone());
+
+        let custom_adapter = Arc::new(OpenAiCompatibleProviderAdapter {
+            provider_id: "custom-openai-provider".to_string(),
+            provider_kind: "openai_compatible".to_string(),
+            base_url: "https://api.opencode.example.com/v1".to_string(),
+            endpoint_path: "chat/completions".to_string(),
+            credential_reference: "CUSTOM_OPENAI_API_KEY".to_string(),
+            provider_subject: "provider:custom_openai".to_string(),
+            transport: mock_transport,
+        });
+
+        let executor = bed
+            .store
+            .authenticate_managed_acceptance_principal(
+                bed.principal.tenant_id(),
+                &bed.executor_key_id,
+                None,
+            )
+            .unwrap();
+
+        let (record, evidence) = run_live_ledger_cell_loop_with_adapter(
+            &bed.store,
+            &bed.principal,
+            &executor,
+            &binding,
+            &task,
+            &bed.ids,
+            &product_task_id,
+            &transport,
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
+            &bed.target,
+            0.20,
+            Some(custom_adapter),
+        )
+        .unwrap();
+
+        // A provider substitution is rejected against the package-owned
+        // binding before ManagedProviderCallAuthority or transport invocation.
+        assert_eq!(
+            record.disposition,
+            crate::harness_evolution::LedgerTerminalDisposition::OutcomeUnknown
+        );
+        assert!(evidence.rounds.is_empty());
+        assert_eq!(record.failure_code, "worker_execution_error");
+    }
+
+    #[test]
+    fn live_ledger_repeated_verifier_failure_terminates_no_progress() {
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = live_ledger_test_env();
+        let Some(bed) = live_ledger_bed("run-live-np", "t-live-np", "live-np.db") else {
+            eprintln!("SKIP: frozen target repository unavailable");
+            return;
+        };
+        let (binding, product_task_id) = admit_live_ledger_intake(&bed);
+        stage_probe_for_task(&bed.store, &product_task_id, false);
+        let task = live_probe_task(&bed.task0, 5);
+
+        use crate::provider::transport::MockTransport;
+        let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> =
+            Some(Arc::new(MockTransport::new(vec![
+                live_success_response(0),
+                live_success_response(1),
+                live_success_response(2),
+                live_success_response(3),
+            ])));
+
+        let executor = bed
+            .store
+            .authenticate_managed_acceptance_principal(
+                bed.principal.tenant_id(),
+                &bed.executor_key_id,
+                None,
+            )
+            .unwrap();
+
+        let (record, evidence) = run_live_ledger_cell_loop(
+            &bed.store,
+            &bed.principal,
+            &executor,
+            &binding,
+            &task,
+            &bed.ids,
+            &product_task_id,
+            &transport,
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
+            &bed.target,
+            0.20,
+        )
+        .unwrap();
+
+        assert_eq!(
+            record.disposition,
+            crate::harness_evolution::LedgerTerminalDisposition::NoProgress
+        );
+        assert!(evidence.rounds.len() >= 2);
+    }
+
+    #[test]
+    fn live_ledger_missing_workspace_fails_closed() {
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = live_ledger_test_env();
+        let Some(bed) = live_ledger_bed(
+            "run-live-noworkspace",
+            "t-live-noworkspace",
+            "live-noworkspace.db",
+        ) else {
+            eprintln!("SKIP: frozen target repository unavailable");
+            return;
+        };
+        let (binding, product_task_id) = admit_live_ledger_intake(&bed);
+        let task_row = bed
+            .store
+            .get_product_task(&product_task_id)
+            .unwrap()
+            .expect("task must exist");
+        let ws_str = task_row
+            .pointer("/workspace_binding/workspace_path")
+            .and_then(Value::as_str)
+            .expect("workspace_path must exist");
+        std::fs::remove_dir_all(ws_str).unwrap();
+
+        let task = live_probe_task(&bed.task0, 3);
+        use crate::provider::transport::MockTransport;
+        let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> =
+            Some(Arc::new(MockTransport::new(vec![live_success_response(0)])));
+        let executor = bed
+            .store
+            .authenticate_managed_acceptance_principal(
+                bed.principal.tenant_id(),
+                &bed.executor_key_id,
+                None,
+            )
+            .unwrap();
+        let result = run_live_ledger_cell_loop(
+            &bed.store,
+            &bed.principal,
+            &executor,
+            &binding,
+            &task,
+            &bed.ids,
+            &product_task_id,
+            &transport,
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
+            &bed.target,
+            0.20,
+        );
+        assert!(result.is_err(), "missing workspace must fail closed");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("missing or invalid execution workspace binding"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn live_ledger_custom_adapter_cannot_mint_external_provenance() {
+        use crate::provider::transport::MockTransport;
+        let mock_transport: Arc<dyn crate::provider::transport::HttpTransport> =
+            Arc::new(MockTransport::new(vec![]));
+        let custom_adapter = OpenAiCompatibleProviderAdapter {
+            provider_id: "custom-openai-provider".to_string(),
+            provider_kind: "openai_compatible".to_string(),
+            base_url: "https://api.opencode.example.com/v1".to_string(),
+            endpoint_path: "chat/completions".to_string(),
+            credential_reference: "CUSTOM_OPENAI_API_KEY".to_string(),
+            provider_subject: "provider:custom_openai".to_string(),
+            transport: mock_transport,
+        };
+        let prov =
+            crate::provider::transport::production_transport_provenance(custom_adapter.transport());
+        assert_eq!(
+            prov,
+            crate::provider::transport::ProviderTransportProvenance::Injected
+        );
+        assert_ne!(
+            prov,
+            crate::provider::transport::ProviderTransportProvenance::External
+        );
+
+        struct FakeCustomTransport;
+        #[async_trait::async_trait]
+        impl crate::provider::transport::HttpTransport for FakeCustomTransport {
+            async fn send(
+                &self,
+                _req: &crate::provider::transport::HttpRequest,
+            ) -> Result<HttpResponse, crate::provider::transport::HttpError> {
+                unimplemented!()
+            }
+        }
+        let fake_transport: Arc<dyn crate::provider::transport::HttpTransport> =
+            Arc::new(FakeCustomTransport);
+        let prov_fake =
+            crate::provider::transport::production_transport_provenance(&fake_transport);
+        assert_eq!(
+            prov_fake,
+            crate::provider::transport::ProviderTransportProvenance::Injected
+        );
+        assert_ne!(
+            prov_fake,
+            crate::provider::transport::ProviderTransportProvenance::External
+        );
+    }
+
+    #[test]
+    fn live_ledger_workspace_action_failure_preserves_usage_and_zero_replay() {
+        let _lock = crate::cli::config::cli_env_test_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = live_ledger_test_env();
+        let Some(bed) = live_ledger_bed("run-live-wafail", "t-live-wafail", "live-wafail.db")
+        else {
+            eprintln!("SKIP: frozen target repository unavailable");
+            return;
+        };
+        let (binding, product_task_id) = admit_live_ledger_intake(&bed);
+        stage_probe_for_task(&bed.store, &product_task_id, false);
+        let task = live_probe_task(&bed.task0, 3);
+
+        let failing_patch = json!({
+            "schema_version": "managed_workspace_action.v1",
+            "path": "apps/api/tests/nonexistent_probe_file.py",
+            "action": "replace_text",
+            "old_text": "does not exist",
+            "new_text": "replacement"
+        });
+        let resp = Ok(mock_rwe_openai_response(
+            "resp-live-wafail",
+            OPERATOR_ADMITTED_MODEL,
+            failing_patch,
+        ));
+
+        use crate::provider::transport::MockTransport;
+        let transport: Option<Arc<dyn crate::provider::transport::HttpTransport>> =
+            Some(Arc::new(MockTransport::new(vec![resp])));
+
+        let executor = bed
+            .store
+            .authenticate_managed_acceptance_principal(
+                bed.principal.tenant_id(),
+                &bed.executor_key_id,
+                None,
+            )
+            .unwrap();
+
+        let (record, evidence) = run_live_ledger_cell_loop(
+            &bed.store,
+            &bed.principal,
+            &executor,
+            &binding,
+            &task,
+            &bed.ids,
+            &product_task_id,
+            &transport,
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
+            &bed.target,
+            0.20,
+        )
+        .unwrap();
+
+        assert_eq!(
+            record.disposition,
+            crate::harness_evolution::LedgerTerminalDisposition::Failed
+        );
+        assert_eq!(evidence.rounds.len(), 1);
+        assert!(evidence.rounds[0].action_receipt.is_none());
+        let failed_journal = live_round_journal(
+            &bed.store,
+            &product_task_id,
+            &evidence.rounds[0].delegated_attempt_id,
+        );
+        assert_eq!(failed_journal.len(), 1);
+        assert_eq!(failed_journal[0]["status"], "succeeded");
+        assert_eq!(
+            failed_journal[0]
+                .pointer("/workspace_action_failure/schema_version")
+                .and_then(Value::as_str),
+            Some("managed_workspace_action_failure.v1")
+        );
+        assert_eq!(
+            failed_journal[0]
+                .pointer("/workspace_action_failure/replay")
+                .and_then(Value::as_str),
+            Some("forbidden")
+        );
+        let restarted_failure = bed
+            .store
+            .project_rwe_cell_store_evidence(
+                &product_task_id,
+                &evidence.rounds[0].delegated_attempt_id,
+            )
+            .unwrap();
+        assert_eq!(
+            restarted_failure
+                .pointer("/provider_request_journal/0/workspace_action_failure/replay")
+                .and_then(Value::as_str),
+            Some("forbidden")
+        );
+
+        let outcome = project_live_ledger_cell_outcome(
+            &bed.store,
+            &product_task_id,
+            &evidence.rounds,
+            &record,
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID,
+            "test-sha",
+            "run-live-wafail",
+            &bed.ids,
+        );
+        assert_eq!(outcome.provider_requests, 1);
+        assert_eq!(outcome.total_tokens, 30);
+    }
+
+    #[test]
+    fn live_ledger_second_round_prompt_captures_real_objective_feedback_and_staged_context() {
+        use crate::harness_evolution::{
+            LedgerFinding, LedgerTaskRecord, LedgerTaskStatus, VerificationObservation,
+            VerificationOutcome, WorkerContext,
+        };
+        let context = WorkerContext {
+            contract_digest: "digest-xyz".to_string(),
+            contract_summary: Some("repair contract".to_string()),
+            plan_summary: "Test repair plan".to_string(),
+            selected_task: LedgerTaskRecord {
+                id: "task-repair-1".to_string(),
+                description: "Fix broken verification in test".to_string(),
+                status: LedgerTaskStatus::Pending,
+                result_digest: None,
+                evidence_refs: vec![],
+                attempt_count: 1,
+                attempt_id: None,
+                failure_reason: None,
+            },
+            relevant_findings: vec![LedgerFinding {
+                id: "finding-1".to_string(),
+                summary: "Test suite failed with AssertionError".to_string(),
+                source: "verifier".to_string(),
+                related_task_id: None,
+                evidence_digest: None,
+            }],
+            relevant_observations: vec![VerificationObservation {
+                round: 1,
+                task_id: "task-repair-1".to_string(),
+                attempt_id: None,
+                result_digest: None,
+                outcome: VerificationOutcome::Fail,
+                observation_summary: "AssertionError: probe failure in probe_test.py".to_string(),
+                evidence_digest: None,
+            }],
+            relevant_artifact_refs: vec![],
+            expected_evidence: "Passing pytest output".to_string(),
+            execution_metadata: {
+                let mut map = std::collections::BTreeMap::new();
+                map.insert("attempt".to_string(), "1".to_string());
+                map.insert("round".to_string(), "2".to_string());
+                map
+            },
+        };
+        let objective = "Resolve failing pytest probe in probe_test.py and ensure tests pass";
+        let staged = "def test_probe():\n    assert False, 'probe failure'\n";
+        let strategy = "direct_patch_repair";
+        let allowed = vec!["apps/api/tests/probe_test.py".to_string()];
+
+        let prompt = render_live_ledger_worker_prompt(
+            &context,
+            "hash-123",
+            objective,
+            Some(staged),
+            Some(strategy),
+            &allowed,
+            "test-pkg",
+        );
+
+        assert!(
+            prompt.contains(objective),
+            "prompt must include real objective"
+        );
+        assert!(prompt.contains("Prior verification observations: round 1 Fail: AssertionError: probe failure in probe_test.py"), "prompt must include verifier feedback");
+        assert!(
+            prompt.contains(
+                "Relevant workspace content:\ndef test_probe():\n    assert False, 'probe failure'"
+            ),
+            "prompt must include staged context"
+        );
+        assert!(
+            prompt.contains("Strategy projection: direct_patch_repair"),
+            "prompt must include strategy projection"
+        );
+        assert!(
+            prompt.contains("Attempt 1 of round 2"),
+            "prompt must reflect round 2"
+        );
+    }
+
+    #[test]
+    fn live_ledger_strategy_projection_included_in_prompt() {
+        use crate::harness_evolution::{
+            LedgerTaskRecord, LedgerTaskStatus, WorkerContext, LEDGER_ORCHESTRATED_HARNESS_ID,
+            MX1_MEMORY_ONLY_STRATEGY_ID, MX1_NO_PROJECTION_STRATEGY_ID, MX1_SECOND_MODEL_ID,
+            MX1_SKILL_ONLY_STRATEGY_ID,
+        };
+        assert_eq!(
+            resolve_strategy_projection(MX1_MEMORY_ONLY_STRATEGY_ID),
+            None
+        );
+        assert_eq!(
+            resolve_strategy_projection(MX1_SKILL_ONLY_STRATEGY_ID),
+            None
+        );
+        assert_eq!(resolve_strategy_projection(""), None);
+        assert_eq!(resolve_strategy_projection("   "), None);
+        assert_eq!(resolve_strategy_projection("unmapped_strategy"), None);
+
+        let base_binding = ProductHarnessMatrixBinding {
+            plan_id: "a".repeat(64),
+            manifest_sha256: "b".repeat(64),
+            rung: "r1".to_string(),
+            repetition: 1,
+            cell_id: "cell-projection".to_string(),
+            cell_descriptor_sha256: "c".repeat(64),
+            harness_id: LEDGER_ORCHESTRATED_HARNESS_ID.to_string(),
+            model_id: MX1_SECOND_MODEL_ID.to_string(),
+            strategy_id: MX1_MEMORY_ONLY_STRATEGY_ID.to_string(),
+            task_id: "task-projection".to_string(),
+        };
+        let memory_ref = resolve_strategy_projection_for_cell(&base_binding)
+            .unwrap()
+            .expect("memory strategy must project");
+        let memory_json: Value = serde_json::from_str(&memory_ref).unwrap();
+        assert_eq!(
+            memory_json["schema_version"],
+            "mx1_validated_projection_digest_ref.v1"
+        );
+        assert_eq!(
+            memory_json["source_handle"],
+            "artifact:mx1-memory-projection-v1"
+        );
+        assert!(memory_json["content_sha256"].as_str().is_some());
+
+        let mut skill_binding = base_binding.clone();
+        skill_binding.strategy_id = MX1_SKILL_ONLY_STRATEGY_ID.to_string();
+        let skill_ref = resolve_strategy_projection_for_cell(&skill_binding)
+            .unwrap()
+            .expect("skill strategy must project");
+        let skill_json: Value = serde_json::from_str(&skill_ref).unwrap();
+        assert_eq!(skill_json["source_handle"], "git:mx1-skill-projection-v1");
+        assert_ne!(memory_json["source_handle"], skill_json["source_handle"]);
+        assert_ne!(
+            memory_json["cell_binding_sha256"],
+            skill_json["cell_binding_sha256"]
+        );
+
+        let mut baseline_binding = base_binding.clone();
+        baseline_binding.strategy_id = MX1_NO_PROJECTION_STRATEGY_ID.to_string();
+        assert_eq!(
+            resolve_strategy_projection_for_cell(&baseline_binding).unwrap(),
+            None
+        );
+
+        let mut other_cell = base_binding.clone();
+        other_cell.task_id = "task-projection-other-cell".to_string();
+        let other_ref = resolve_strategy_projection_for_cell(&other_cell)
+            .unwrap()
+            .expect("other memory cell must project");
+        let other_json: Value = serde_json::from_str(&other_ref).unwrap();
+        assert_ne!(
+            memory_json["cell_binding_sha256"],
+            other_json["cell_binding_sha256"]
+        );
+
+        let context = WorkerContext {
+            contract_digest: "digest-abc".to_string(),
+            contract_summary: None,
+            plan_summary: "Plan summary".to_string(),
+            selected_task: LedgerTaskRecord {
+                id: "t1".to_string(),
+                description: "desc".to_string(),
+                status: LedgerTaskStatus::Pending,
+                result_digest: None,
+                evidence_refs: vec![],
+                attempt_count: 1,
+                attempt_id: None,
+                failure_reason: None,
+            },
+            relevant_findings: vec![],
+            relevant_observations: vec![],
+            relevant_artifact_refs: vec![],
+            expected_evidence: "evidence".to_string(),
+            execution_metadata: std::collections::BTreeMap::new(),
+        };
+
+        let prompt_with = render_live_ledger_worker_prompt(
+            &context,
+            "hash",
+            "task objective",
+            None,
+            Some("projection_aware"),
+            &[],
+            "pkg",
+        );
+        assert!(prompt_with.contains("Strategy projection: projection_aware"));
+
+        let prompt_without = render_live_ledger_worker_prompt(
+            &context,
+            "hash",
+            "task objective",
+            None,
+            None,
+            &[],
+            "pkg",
+        );
+        assert!(!prompt_without.contains("Strategy projection:"));
+    }
+
+    #[test]
+    fn live_ledger_openai_compatible_exact_url_and_mismatch_rejection() {
+        use crate::provider::managed_deepseek::{
+            DeepSeekPriceProfile, DeepSeekProtocol, ManagedCallBinding, ManagedCallLimits,
+            ManagedMessage, ManagedModelRole, ManagedProviderCallAuthority,
+            ManagedProviderCallRequest, PersistedAuthoritySnapshot,
+            PersistedManagedExecutionContract,
+        };
+
+        let contract1 = PersistedManagedExecutionContract {
+            provider_identity: "custom-provider".to_string(),
+            provider_kind: "openai_compatible".to_string(),
+            protocol: DeepSeekProtocol::OpenAiCompatible,
+            request_schema_version: crate::provider::managed_deepseek::MANAGED_PROVIDER_CALL_SCHEMA
+                .to_string(),
+            response_schema_version:
+                crate::provider::managed_deepseek::MANAGED_PROVIDER_RESPONSE_SCHEMA.to_string(),
+            usage_parser_version: crate::provider::managed_deepseek::DEEPSEEK_USAGE_PARSER_VERSION
+                .to_string(),
+            host: "api.opencode.example.com".to_string(),
+            base_url: "https://api.opencode.example.com/v1".to_string(),
+            endpoint_path: "chat/completions".to_string(),
+            credential_reference: "CUSTOM_KEY".to_string(),
+            requested_model: "test-model".to_string(),
+            limits: ManagedCallLimits::default(),
+            price_profile: DeepSeekPriceProfile::default(),
+        };
+        assert_eq!(
+            contract1.url(),
+            "https://api.opencode.example.com/v1/chat/completions"
+        );
+
+        let mut contract2 = contract1.clone();
+        contract2.base_url = "https://api.opencode.example.com/v1/".to_string();
+        contract2.endpoint_path = "/chat/completions".to_string();
+        assert_eq!(
+            contract2.url(),
+            "https://api.opencode.example.com/v1/chat/completions"
+        );
+
+        let mut contract3 = contract1.clone();
+        contract3.base_url = "https://api.opencode.example.com/v1".to_string();
+        contract3.endpoint_path = "/chat/completions".to_string();
+        assert_eq!(
+            contract3.url(),
+            "https://api.opencode.example.com/v1/chat/completions"
+        );
+
+        let mut contract4 = contract1.clone();
+        contract4.base_url = "https://api.opencode.example.com/v1/".to_string();
+        contract4.endpoint_path = "chat/completions".to_string();
+        assert_eq!(
+            contract4.url(),
+            "https://api.opencode.example.com/v1/chat/completions"
+        );
+
+        let binding = ManagedCallBinding {
+            product_task_id: "p1".to_string(),
+            workflow_id: "wf1".to_string(),
+            node_id: "n1".to_string(),
+            attempt_id: "att1".to_string(),
+            spend_authorization_id: "auth1".to_string(),
+            attempt_lease_id: "lease1".to_string(),
+        };
+        let mut req = ManagedProviderCallRequest::for_role(
+            ManagedModelRole::Implementer,
+            DeepSeekProtocol::OpenAiCompatible,
+            binding,
+        );
+        req.provider_identity = "custom-provider".to_string();
+        req.provider_kind = "openai_compatible".to_string();
+        req.host = "api.opencode.example.com".to_string();
+        req.base_url = "https://api.opencode.example.com/v1".to_string();
+        req.endpoint_path = "chat/completions".to_string();
+        req.credential_reference = "CUSTOM_KEY".to_string();
+        req.requested_model = "test-model".to_string();
+        req.single_model_plan = true;
+        req.messages = vec![ManagedMessage::text("user", "test")];
+
+        struct MockAuthSource(PersistedAuthoritySnapshot);
+        impl crate::provider::managed_deepseek::ManagedAuthoritySource for MockAuthSource {
+            fn current_authority(
+                &self,
+                _binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+            ) -> Result<PersistedAuthoritySnapshot, String> {
+                Ok(self.0.clone())
+            }
+        }
+
+        let base_persisted = PersistedAuthoritySnapshot {
+            product_task_id: "p1".to_string(),
+            workflow_id: "wf1".to_string(),
+            node_id: "n1".to_string(),
+            attempt_id: "att1".to_string(),
+            spend_authorization_id: "auth1".to_string(),
+            attempt_lease_id: "lease1".to_string(),
+            spend_status: "consumed".to_string(),
+            consumed_by_attempt_id: Some("att1".to_string()),
+            lease_status: "current".to_string(),
+            execution_contract: Some(contract1.clone()),
+        };
+
+        let authority = ManagedProviderCallAuthority::new(
+            Arc::new(MockAuthSource(base_persisted)),
+            contract1.limits.clone(),
+        )
+        .unwrap();
+
+        assert!(authority.validate_current_authority(&req).is_ok());
+
+        req.credential_reference = "WRONG_KEY".to_string();
+        assert!(authority.validate_current_authority(&req).is_err());
+        req.credential_reference = "CUSTOM_KEY".to_string();
+
+        req.requested_model = "other-model".to_string();
+        assert!(authority.validate_current_authority(&req).is_err());
+        req.requested_model = "test-model".to_string();
+
+        req.base_url = "https://evil.example.com/v1".to_string();
+        assert!(authority.validate_current_authority(&req).is_err());
+        req.base_url = "https://api.opencode.example.com/v1".to_string();
+
+        req.provider_kind = "deepseek".to_string();
+        assert!(authority.validate_current_authority(&req).is_err());
     }
 }

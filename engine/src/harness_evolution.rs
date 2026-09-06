@@ -14,8 +14,8 @@ pub use ledger_orchestration::{
     compute_progress_fingerprint, project_worker_context, ControllerAction,
     EffectReceiptDisposition, LedgerController, LedgerFinding, LedgerOrchestrator,
     LedgerOrchestratorConfig, LedgerTaskRecord, LedgerTaskStatus, LedgerTerminalDisposition,
-    LedgerTerminalRecord, LedgerVerifier, LedgerWorker, NextTaskDecision, OrchestrationError,
-    OrchestrationLifecycleState, OrchestrationMetrics, OrchestrationSummary,
+    LedgerTerminalRecord, LedgerVerifier, LedgerWorker, NewTaskSpec, NextTaskDecision,
+    OrchestrationError, OrchestrationLifecycleState, OrchestrationMetrics, OrchestrationSummary,
     OrchestrationUsageEnvelope, StoreEffectReceipt, VerificationObservation, VerificationOutcome,
     VerificationReport, WorkerContext, WorkerOutcomeStatus, WorkerResult, WorkingLedger,
 };

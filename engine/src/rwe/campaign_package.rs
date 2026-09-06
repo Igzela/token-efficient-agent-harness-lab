@@ -24,6 +24,8 @@ use crate::storage::local_product_store::{AuthenticatedPrincipal, LocalProductSt
 pub const RWE_CAMPAIGN_PACKAGE_SCHEMA: &str = "rwe_campaign_package.v1";
 pub const RWE_DEEPSEEK_V2_PACKAGE_ID: &str = "rwe-campaign-deepseek-v2";
 pub const RWE_AGY_V1_PACKAGE_ID: &str = "rwe-campaign-agy-v1";
+pub const FROZEN_PROVIDER_EXECUTION_BINDING_SCHEMA: &str =
+    "rwe_frozen_provider_execution_binding.v1";
 
 fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -51,6 +53,125 @@ fn is_sha256(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// The provider route that a frozen campaign actually admits.  This is an
+/// execution identity, not a display hint: every field is copied into the
+/// Store-owned manifest and compared again immediately before transport.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrozenProviderExecutionBinding {
+    pub schema_version: String,
+    pub provider_identity: String,
+    pub provider_kind: String,
+    pub protocol: String,
+    pub host: String,
+    pub base_url: String,
+    pub endpoint_path: String,
+    pub credential_reference: String,
+    pub request_schema_version: String,
+    pub response_schema_version: String,
+    pub usage_parser_version: String,
+    pub pricing_identity: Option<String>,
+    pub cost_unavailable: bool,
+    pub admitted_model: String,
+}
+
+impl FrozenProviderExecutionBinding {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != FROZEN_PROVIDER_EXECUTION_BINDING_SCHEMA {
+            return Err("frozen provider binding schema is not canonical".into());
+        }
+        for (name, value) in [
+            ("provider_identity", &self.provider_identity),
+            ("provider_kind", &self.provider_kind),
+            ("protocol", &self.protocol),
+            ("host", &self.host),
+            ("base_url", &self.base_url),
+            ("endpoint_path", &self.endpoint_path),
+            ("credential_reference", &self.credential_reference),
+            ("request_schema_version", &self.request_schema_version),
+            ("response_schema_version", &self.response_schema_version),
+            ("usage_parser_version", &self.usage_parser_version),
+            ("admitted_model", &self.admitted_model),
+        ] {
+            if value.trim().is_empty() || value.chars().any(char::is_control) {
+                return Err(format!("frozen provider binding {name} is malformed"));
+            }
+        }
+        if self.protocol != "openai_compatible" {
+            return Err("frozen provider binding protocol is not admitted".into());
+        }
+        let url = reqwest::Url::parse(&self.base_url)
+            .map_err(|_| "frozen provider binding base URL is malformed".to_string())?;
+        if url.scheme() != "https" || url.host_str() != Some(self.host.as_str()) {
+            return Err("frozen provider binding host and base URL disagree".into());
+        }
+        if !self.endpoint_path.starts_with('/')
+            || self.endpoint_path.contains('?')
+            || self.endpoint_path.contains('#')
+        {
+            return Err("frozen provider binding endpoint path is malformed".into());
+        }
+        match (&self.pricing_identity, self.cost_unavailable) {
+            (Some(identity), false) if !identity.trim().is_empty() => {}
+            (None, true) => {}
+            _ => return Err("frozen provider binding pricing identity is ambiguous".into()),
+        }
+        Ok(())
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({
+            "schema_version": self.schema_version,
+            "provider_identity": self.provider_identity,
+            "provider_kind": self.provider_kind,
+            "protocol": self.protocol,
+            "host": self.host,
+            "base_url": self.base_url,
+            "endpoint_path": self.endpoint_path,
+            "credential_reference": self.credential_reference,
+            "request_schema_version": self.request_schema_version,
+            "response_schema_version": self.response_schema_version,
+            "usage_parser_version": self.usage_parser_version,
+            "pricing_identity": self.pricing_identity,
+            "cost_unavailable": self.cost_unavailable,
+            "admitted_model": self.admitted_model,
+        })
+    }
+
+    pub fn from_json(value: &Value) -> Result<Self, String> {
+        let binding: Self = serde_json::from_value(value.clone())
+            .map_err(|error| format!("frozen provider binding is malformed: {error}"))?;
+        binding.validate()?;
+        Ok(binding)
+    }
+}
+
+/// The only provider binding admitted by the current managed DeepSeek route.
+/// Keeping this constructor independent of the corpus freeze lets every
+/// Store-owned boundary compare the same exact binding without reconstructing
+/// a route from a provider kind or a user-supplied URL.
+pub fn canonical_deepseek_provider_binding() -> FrozenProviderExecutionBinding {
+    FrozenProviderExecutionBinding {
+        schema_version: FROZEN_PROVIDER_EXECUTION_BINDING_SCHEMA.into(),
+        provider_identity: crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_ID.into(),
+        provider_kind: crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND.into(),
+        protocol: "openai_compatible".into(),
+        host: "api.deepseek.com".into(),
+        base_url: crate::provider::managed_deepseek::DEEPSEEK_OPENAI_BASE_URL.into(),
+        endpoint_path: crate::provider::managed_deepseek::DEEPSEEK_OPENAI_PATH.into(),
+        credential_reference: crate::provider::managed_deepseek::DEEPSEEK_CREDENTIAL_REFERENCE
+            .into(),
+        request_schema_version: crate::provider::managed_deepseek::MANAGED_PROVIDER_CALL_SCHEMA
+            .into(),
+        response_schema_version:
+            crate::provider::managed_deepseek::MANAGED_PROVIDER_RESPONSE_SCHEMA.into(),
+        usage_parser_version: crate::provider::managed_deepseek::DEEPSEEK_USAGE_PARSER_VERSION
+            .into(),
+        pricing_identity: Some("deepseek-v4-usd-2026-07-31".into()),
+        cost_unavailable: false,
+        admitted_model: OPERATOR_ADMITTED_MODEL.into(),
+    }
+}
+
 /// Immutable descriptor for one frozen RWE campaign package.
 ///
 /// Binds provider, model, binary, corpus, protocol, schedule, target, and
@@ -60,6 +181,7 @@ pub struct FrozenCampaignPackage {
     pub schema_version: String,
     pub package_id: String,
     pub provider_kind: String,
+    pub provider_execution_binding: Option<FrozenProviderExecutionBinding>,
     pub admitted_model: String,
     pub planner_reviewer_model: String,
     pub admitted_binary_path: String,
@@ -86,6 +208,30 @@ pub struct FrozenCampaignPackage {
 }
 
 impl FrozenCampaignPackage {
+    /// Resolve the exact provider binding for one package-owned model role.
+    ///
+    /// A package may expose distinct implementer and planner/reviewer model
+    /// identities while sharing one frozen provider route.  The returned value
+    /// is still the package binding in every field; only the model is selected
+    /// from the package's admitted role identities.  Arbitrary caller strings
+    /// are never admitted here.
+    pub fn provider_execution_binding_for_model(
+        &self,
+        requested_model: &str,
+    ) -> Result<FrozenProviderExecutionBinding, String> {
+        let mut binding = self
+            .provider_execution_binding
+            .clone()
+            .ok_or("frozen campaign package lacks a direct provider binding")?;
+        if requested_model != self.admitted_model && requested_model != self.planner_reviewer_model
+        {
+            return Err("requested model is not an exact model identity admitted by the frozen campaign package".into());
+        }
+        binding.admitted_model = requested_model.to_string();
+        binding.validate()?;
+        Ok(binding)
+    }
+
     /// Strict validation of package invariants.
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != RWE_CAMPAIGN_PACKAGE_SCHEMA {
@@ -102,6 +248,21 @@ impl FrozenCampaignPackage {
         }
         if self.admitted_model.trim().is_empty() {
             return Err("admitted_model must not be empty".into());
+        }
+        match (
+            &self.provider_execution_binding,
+            self.provider_kind.as_str(),
+        ) {
+            (Some(binding), _) => {
+                binding.validate()?;
+                if binding.admitted_model != self.admitted_model {
+                    return Err("frozen provider binding model differs from package model".into());
+                }
+            }
+            (None, "agy") => {}
+            (None, _) => {
+                return Err("frozen campaign package lacks a direct provider binding".into())
+            }
         }
         if self.planner_reviewer_model.trim().is_empty() {
             return Err("planner_reviewer_model must not be empty".into());
@@ -181,6 +342,7 @@ impl FrozenCampaignPackage {
             "schema_version": self.schema_version,
             "package_id": self.package_id,
             "provider_kind": self.provider_kind,
+            "provider_execution_binding": self.provider_execution_binding,
             "admitted_model": self.admitted_model,
             "planner_reviewer_model": self.planner_reviewer_model,
             "admitted_binary_path": self.admitted_binary_path,
@@ -228,6 +390,7 @@ pub fn canonical_deepseek_v2_package() -> Result<FrozenCampaignPackage, String> 
         schema_version: RWE_CAMPAIGN_PACKAGE_SCHEMA.into(),
         package_id: RWE_DEEPSEEK_V2_PACKAGE_ID.into(),
         provider_kind: "managed_deepseek".into(),
+        provider_execution_binding: Some(canonical_deepseek_provider_binding()),
         admitted_model: OPERATOR_ADMITTED_MODEL.into(),
         planner_reviewer_model: OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL.into(),
         admitted_binary_path: OPERATOR_ADMITTED_BINARY_PATH.into(),
@@ -271,6 +434,7 @@ pub fn canonical_agy_v1_candidate_package() -> Result<FrozenCampaignPackage, Str
         schema_version: RWE_CAMPAIGN_PACKAGE_SCHEMA.into(),
         package_id: RWE_AGY_V1_PACKAGE_ID.into(),
         provider_kind: "agy".into(),
+        provider_execution_binding: None,
         admitted_model: "gemini-2.5-flash".into(),
         planner_reviewer_model: "gemini-2.5-pro".into(),
         admitted_binary_path: "/usr/local/bin/agy".into(),
@@ -299,6 +463,15 @@ pub fn canonical_agy_v1_candidate_package() -> Result<FrozenCampaignPackage, Str
     Ok(pkg)
 }
 
+/// Resolve a frozen campaign package by its canonical identifier.
+pub fn resolve_frozen_campaign_package(package_id: &str) -> Result<FrozenCampaignPackage, String> {
+    match package_id {
+        RWE_DEEPSEEK_V2_PACKAGE_ID => canonical_deepseek_v2_package(),
+        RWE_AGY_V1_PACKAGE_ID => canonical_agy_v1_candidate_package(),
+        other => Err(format!("unknown frozen campaign package id: {other}")),
+    }
+}
+
 /// Record an audit trail entry in LocalProductStore verifying and registering a campaign package.
 pub fn record_campaign_package_audit(
     store: &LocalProductStore,
@@ -312,6 +485,7 @@ pub fn record_campaign_package_audit(
         "package_id": package.package_id,
         "package_canonical_sha256": canonical_hash,
         "provider_kind": package.provider_kind,
+        "provider_execution_binding": package.provider_execution_binding,
         "admitted_model": package.admitted_model,
         "requires_owner_approval": package.requires_owner_approval,
         "live_authorization_required": package.live_authorization_required,
@@ -346,6 +520,26 @@ mod tests {
 
         let hash = pkg.canonical_sha256().expect("hash must compute");
         assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn package_model_binding_is_exact_and_rejects_arbitrary_models() {
+        let pkg = canonical_deepseek_v2_package().unwrap();
+        assert_eq!(
+            pkg.provider_execution_binding_for_model("deepseek-v4-pro")
+                .unwrap()
+                .admitted_model,
+            "deepseek-v4-pro"
+        );
+        assert_eq!(
+            pkg.provider_execution_binding_for_model("deepseek-v4-flash")
+                .unwrap()
+                .admitted_model,
+            "deepseek-v4-flash"
+        );
+        assert!(pkg
+            .provider_execution_binding_for_model("arbitrary-model")
+            .is_err());
     }
 
     #[test]

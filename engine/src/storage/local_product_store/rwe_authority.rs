@@ -389,6 +389,7 @@ pub struct RweAuthorizationV2IssueRequest {
     /// Not an RWE cell identity and not a per-cell delegated spend envelope.
     pub golden_path_prerequisite_product_task_id: String,
     pub expires_at: String,
+    pub campaign_package_id: Option<String>,
 }
 
 /// Stable owner-derived identity hash for the in-process managed_deepseek adapter.
@@ -931,27 +932,24 @@ impl LocalProductStore {
             .first()
             .map(|t| t.executor_identity.clone())
             .ok_or("frozen operator corpus missing executor_identity")?;
-        let model_identity = corpus
-            .tasks
-            .first()
-            .map(|t| t.model_identity.clone())
-            .ok_or("frozen operator corpus missing model_identity")?;
-
-        // Provider route pinned to managed_deepseek owner constants (never caller text).
-        let provider_kind = crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND;
-        let provider_base_url = crate::provider::managed_deepseek::DEEPSEEK_OPENAI_BASE_URL;
-        let provider_path = crate::provider::managed_deepseek::DEEPSEEK_OPENAI_PATH;
-        let provider_host = provider_base_url
-            .strip_prefix("https://")
-            .or_else(|| provider_base_url.strip_prefix("http://"))
-            .unwrap_or(provider_base_url)
-            .split('/')
-            .next()
-            .unwrap_or(provider_base_url);
+        let package_id = request
+            .campaign_package_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or(crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID);
+        let package = crate::rwe::campaign_package::resolve_frozen_campaign_package(package_id)?;
+        package.validate()?;
+        let provider_binding = package
+            .provider_execution_binding
+            .clone()
+            .ok_or("RWE campaign package lacks a direct provider execution binding")?;
+        provider_binding.validate()?;
+        let model_identity = package.admitted_model.clone();
 
         let body_json = sort_value(&json!({
             "schema_version": "rwe_run_authorization.v2",
             "authorization_id": request.authorization_id,
+            "campaign_package_id": package_id,
             "tenant_id": principal.tenant_id(),
             "accepted_main_sha": frozen.accepted_main_sha,
             "corpus_artifact_path": frozen.corpus_artifact_path,
@@ -970,10 +968,19 @@ impl LocalProductStore {
             "binary_path": crate::rwe::operator_corpus::OPERATOR_ADMITTED_BINARY_PATH,
             "binary_version": corpus.admitted_codex_version,
             "binary_sha256": operator_in_process_binary_sha256(),
-            "provider_kind": provider_kind,
-            "provider_host": provider_host,
-            "provider_base_url": provider_base_url,
-            "provider_path": provider_path,
+            "provider_execution_binding": provider_binding.to_json(),
+            "provider_identity": provider_binding.provider_identity,
+            "provider_kind": provider_binding.provider_kind,
+            "provider_protocol": provider_binding.protocol,
+            "provider_host": provider_binding.host,
+            "provider_base_url": provider_binding.base_url,
+            "provider_path": provider_binding.endpoint_path,
+            "provider_credential_reference": provider_binding.credential_reference,
+            "provider_request_schema_version": provider_binding.request_schema_version,
+            "provider_response_schema_version": provider_binding.response_schema_version,
+            "provider_usage_parser_version": provider_binding.usage_parser_version,
+            "provider_pricing_identity": provider_binding.pricing_identity,
+            "provider_cost_unavailable": provider_binding.cost_unavailable,
             "budget_point_ids": budget_point_ids,
             "target_repo": corpus.disposable_target_repo,
             "target_main_sha": target_main_sha,
@@ -3739,11 +3746,14 @@ pub(crate) fn validate_rwe_run_authorization_v2(
     }
     let auth_executor = required_string_field(body, "executor_identity")?;
     let auth_model = required_string_field(body, "model_identity")?;
-    for task in &corpus.tasks {
-        if auth_executor != task.executor_identity || auth_model != task.model_identity {
-            return Err(
-                "v2 executor/model identity does not match frozen corpus task identity".into(),
-            );
+    let package_id = body.get("campaign_package_id").and_then(Value::as_str);
+    if package_id.is_none() {
+        for task in &corpus.tasks {
+            if auth_executor != task.executor_identity || auth_model != task.model_identity {
+                return Err(
+                    "v2 executor/model identity does not match frozen corpus task identity".into(),
+                );
+            }
         }
     }
     if body.get("one_use").and_then(Value::as_bool) != Some(true) {
@@ -3800,14 +3810,69 @@ pub(crate) fn validate_rwe_run_authorization_v2(
     if observed_budget_points != canonical_budget_points {
         return Err("v2 budget_point_ids must exactly match frozen protocol budget points".into());
     }
-    // Provider route pinned to the frozen managed-deepseek route constants in
-    // the accepted codebase (provider::managed_deepseek).
-    if required_string_field(body, "provider_kind")? != "deepseek"
-        || required_string_field(body, "provider_host")? != "api.deepseek.com"
-        || required_string_field(body, "provider_base_url")? != "https://api.deepseek.com"
-        || required_string_field(body, "provider_path")? != "/chat/completions"
+    let expected_binding = match package_id {
+        Some(pkg_id) => {
+            let pkg = crate::rwe::campaign_package::resolve_frozen_campaign_package(pkg_id)?;
+            pkg.validate()?;
+            if required_string_field(body, "model_identity")? != pkg.admitted_model {
+                return Err("v2 model_identity does not match campaign package".into());
+            }
+            pkg.provider_execution_binding
+                .ok_or("v2 campaign package lacks a direct provider binding")?
+        }
+        None => crate::rwe::campaign_package::canonical_deepseek_provider_binding(),
+    };
+    expected_binding.validate()?;
+    let observed_binding = crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json(
+        body.get("provider_execution_binding")
+            .ok_or("v2 provider_execution_binding is required")?,
+    )?;
+    if observed_binding != expected_binding {
+        return Err("v2 provider execution binding does not match the frozen package".into());
+    }
+    for (field, expected) in [
+        (
+            "provider_identity",
+            expected_binding.provider_identity.as_str(),
+        ),
+        ("provider_kind", expected_binding.provider_kind.as_str()),
+        ("provider_protocol", expected_binding.protocol.as_str()),
+        ("provider_host", expected_binding.host.as_str()),
+        ("provider_base_url", expected_binding.base_url.as_str()),
+        ("provider_path", expected_binding.endpoint_path.as_str()),
+        (
+            "provider_credential_reference",
+            expected_binding.credential_reference.as_str(),
+        ),
+        (
+            "provider_request_schema_version",
+            expected_binding.request_schema_version.as_str(),
+        ),
+        (
+            "provider_response_schema_version",
+            expected_binding.response_schema_version.as_str(),
+        ),
+        (
+            "provider_usage_parser_version",
+            expected_binding.usage_parser_version.as_str(),
+        ),
+    ] {
+        if required_string_field(body, field)? != expected {
+            return Err(format!(
+                "v2 {field} does not match the frozen provider binding"
+            ));
+        }
+    }
+    if body
+        .get("provider_pricing_identity")
+        .and_then(Value::as_str)
+        != expected_binding.pricing_identity.as_deref()
+        || body
+            .get("provider_cost_unavailable")
+            .and_then(Value::as_bool)
+            != Some(expected_binding.cost_unavailable)
     {
-        return Err("v2 provider route does not match the frozen operator route".into());
+        return Err("v2 provider pricing identity does not match the frozen binding".into());
     }
     let cost_authority_value = body
         .get("cost_authority")
@@ -4052,10 +4117,19 @@ mod operator_v2_authority_tests {
             "binary_path": "in-process:managed_deepseek",
             "binary_version": frozen.corpus.admitted_codex_version,
             "binary_sha256": "0".repeat(64),
+            "provider_execution_binding": crate::rwe::campaign_package::canonical_deepseek_provider_binding().to_json(),
+            "provider_identity": "deepseek-managed-rwe",
             "provider_kind": "deepseek",
+            "provider_protocol": "openai_compatible",
             "provider_host": "api.deepseek.com",
             "provider_base_url": "https://api.deepseek.com",
             "provider_path": "/chat/completions",
+            "provider_credential_reference": "DEEPSEEK_API_KEY",
+            "provider_request_schema_version": "managed_provider_call.v1",
+            "provider_response_schema_version": "managed_provider_response.v1",
+            "provider_usage_parser_version": "deepseek_usage_parser.v1",
+            "provider_pricing_identity": "deepseek-v4-usd-2026-07-31",
+            "provider_cost_unavailable": false,
             "budget_point_ids": budget_point_ids,
             "target_repo": frozen.corpus.disposable_target_repo,
             "target_main_sha": frozen.corpus.tasks[0].source_commit,
@@ -4357,6 +4431,7 @@ mod operator_v2_authority_tests {
                     authorization_id: auth_id.into(),
                     golden_path_prerequisite_product_task_id: prereq.into(),
                     expires_at: "2026-08-07T00:00:00Z".into(),
+                    campaign_package_id: None,
                 },
             )
             .unwrap();
@@ -4398,6 +4473,7 @@ mod operator_v2_authority_tests {
                     authorization_id: auth_id.into(),
                     golden_path_prerequisite_product_task_id: prereq.into(),
                     expires_at: "2026-08-07T00:00:00Z".into(),
+                    campaign_package_id: None,
                 },
             )
             .unwrap();
@@ -4480,6 +4556,7 @@ mod operator_v2_authority_tests {
                 &RweAuthorizationV2IssueRequest {
                     authorization_id: "auth-missing-prereq".into(),
                     golden_path_prerequisite_product_task_id: prereq.into(),
+                    campaign_package_id: None,
                     expires_at: "2026-08-07T00:00:00Z".into(),
                 },
             )
@@ -4503,6 +4580,7 @@ mod operator_v2_authority_tests {
                 &RweAuthorizationV2IssueRequest {
                     authorization_id: "auth-fixture".into(),
                     golden_path_prerequisite_product_task_id: "ptask-ok".into(),
+                    campaign_package_id: None,
                     expires_at: "2026-08-07T00:00:00Z".into(),
                 },
             )
@@ -4519,6 +4597,7 @@ mod operator_v2_authority_tests {
                 &RweAuthorizationV2IssueRequest {
                     authorization_id: "auth-far".into(),
                     golden_path_prerequisite_product_task_id: "ptask-ok".into(),
+                    campaign_package_id: None,
                     expires_at: "9999-12-31T00:00:00Z".into(),
                 },
             )
@@ -4536,6 +4615,7 @@ mod operator_v2_authority_tests {
                 &RweAuthorizationV2IssueRequest {
                     authorization_id: "auth-expired".into(),
                     golden_path_prerequisite_product_task_id: "ptask-ok".into(),
+                    campaign_package_id: None,
                     expires_at: "2026-07-01T00:00:00Z".into(),
                 },
             )
@@ -4564,6 +4644,7 @@ mod operator_v2_authority_tests {
                 &RweAuthorizationV2IssueRequest {
                     authorization_id: auth_id.into(),
                     golden_path_prerequisite_product_task_id: "ptask-admit".into(),
+                    campaign_package_id: None,
                     expires_at: "2026-08-07T00:00:00Z".into(),
                 },
             )
@@ -4649,6 +4730,7 @@ mod operator_v2_authority_tests {
                 &RweAuthorizationV2IssueRequest {
                     authorization_id: "auth-xtenant".into(),
                     golden_path_prerequisite_product_task_id: prereq.into(),
+                    campaign_package_id: None,
                     expires_at: "2026-08-07T00:00:00Z".into(),
                 },
             )
@@ -4672,6 +4754,7 @@ mod operator_v2_authority_tests {
                 &RweAuthorizationV2IssueRequest {
                     authorization_id: "auth-owner-ok".into(),
                     golden_path_prerequisite_product_task_id: prereq.into(),
+                    campaign_package_id: None,
                     expires_at: "2026-08-07T00:00:00Z".into(),
                 },
             )
@@ -4697,6 +4780,7 @@ mod operator_v2_authority_tests {
                 &RweAuthorizationV2IssueRequest {
                     authorization_id: auth_id.into(),
                     golden_path_prerequisite_product_task_id: "ptask-env".into(),
+                    campaign_package_id: None,
                     expires_at: "2026-08-07T00:00:00Z".into(),
                 },
             )
@@ -4804,6 +4888,7 @@ mod operator_v2_authority_tests {
                 &RweAuthorizationV2IssueRequest {
                     authorization_id: auth_id.into(),
                     golden_path_prerequisite_product_task_id: "ptask-lease".into(),
+                    campaign_package_id: None,
                     expires_at: "2026-08-07T00:00:00Z".into(),
                 },
             )

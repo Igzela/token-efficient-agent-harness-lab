@@ -9193,6 +9193,7 @@ fn pg_rwe_v2_production_issue_admit_one_use_parity() {
         &RweAuthorizationV2IssueRequest {
             authorization_id: auth_id.clone(),
             golden_path_prerequisite_product_task_id: prereq.clone(),
+            campaign_package_id: None,
             expires_at: (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339(),
         },
     )
@@ -9310,6 +9311,7 @@ fn pg_rwe_v2_production_issue_admit_one_use_parity() {
             &RweAuthorizationV2IssueRequest {
                 authorization_id: format!("auth-xtenant-pg-{tag}"),
                 golden_path_prerequisite_product_task_id: prereq,
+                campaign_package_id: None,
                 expires_at: (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339(),
             },
         )

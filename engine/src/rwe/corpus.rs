@@ -17,6 +17,7 @@ pub fn default_corpus_fixture_root() -> PathBuf {
 pub struct RweTaskDefinition {
     pub task_id: String,
     pub class: String,
+    pub objective: String,
     pub definition_path: String,
     pub definition_sha256: String,
     pub objective_sha256: String,
@@ -205,6 +206,7 @@ pub(crate) fn freeze_rwe_corpus_from_root(
         tasks.push(RweTaskDefinition {
             task_id: required_str(&v, "task_id")?,
             class: required_str(&v, "class")?,
+            objective: objective.to_string(),
             definition_path: rel,
             definition_sha256,
             objective_sha256: sha256_hex(objective.as_bytes()),

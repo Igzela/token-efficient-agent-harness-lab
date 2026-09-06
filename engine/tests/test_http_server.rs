@@ -13716,6 +13716,7 @@ async fn axum_delegated_prepare_activate_and_revocation_terminal_are_provider_fr
             "output": "one_unmerged_acp_draft_pr_only"
         },
         "provider": {"protocol": "openai_compatible"},
+        "provider_execution_binding": engine::rwe::campaign_package::canonical_deepseek_provider_binding().to_json(),
         "role_models": {
             "planner": "deepseek-v4-pro",
             "implementer": "deepseek-v4-flash",
@@ -14203,6 +14204,7 @@ async fn axum_delegated_product_task_success_lifecycle_is_provider_free() {
             "output": "one_unmerged_acp_draft_pr_only"
         },
         "provider": {"protocol": "openai_compatible"},
+        "provider_execution_binding": engine::rwe::campaign_package::canonical_deepseek_provider_binding().to_json(),
         "role_models": {
             "planner": "deepseek-v4-pro",
             "implementer": "deepseek-v4-flash",

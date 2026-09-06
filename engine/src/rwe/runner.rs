@@ -927,6 +927,7 @@ mod tests {
             &RweAuthorizationV2IssueRequest {
                 authorization_id: auth_id.into(),
                 golden_path_prerequisite_product_task_id: prereq.into(),
+                campaign_package_id: None,
                 expires_at: "2026-08-07T00:00:00Z".into(),
             },
         )

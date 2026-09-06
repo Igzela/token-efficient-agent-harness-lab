@@ -471,6 +471,7 @@ impl ManagedDeepSeekNodeExecutor {
         };
         Ok(json!({
             "schema_version": "managed_deepseek_node_output.v1",
+            "provider_identity": response.provider_identity,
             "provider_kind": response.provider_kind,
             "protocol": response.protocol,
             "requested_model": response.requested_model,
@@ -734,11 +735,13 @@ mod tests {
 
     fn test_execution_contract() -> PersistedManagedExecutionContract {
         PersistedManagedExecutionContract {
+            provider_identity: crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_ID.into(),
             provider_kind: DEEPSEEK_PROVIDER_KIND.into(),
             protocol: DeepSeekProtocol::OpenAiCompatible,
             host: "api.deepseek.com".into(),
             base_url: DEEPSEEK_OPENAI_BASE_URL.into(),
             endpoint_path: DEEPSEEK_OPENAI_PATH.into(),
+            credential_reference: DEEPSEEK_CREDENTIAL_REFERENCE.into(),
             request_schema_version: MANAGED_PROVIDER_CALL_SCHEMA.into(),
             response_schema_version: MANAGED_PROVIDER_RESPONSE_SCHEMA.into(),
             usage_parser_version: DEEPSEEK_USAGE_PARSER_VERSION.into(),
