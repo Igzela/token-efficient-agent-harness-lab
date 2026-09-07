@@ -1564,15 +1564,28 @@ impl ManagedNodeProvider for CodexSubscriptionProviderAdapter {
         authority: &ManagedProviderCallAuthority,
         request: &ManagedProviderCallRequest,
     ) -> Result<ManagedProviderResponse, ManagedProviderCallError> {
-        LiveLedgerProviderAdapter::invoke(self, authority, request).map_err(|error| {
-            codex_error(
-                "provider_bridge",
-                error,
-                false,
-                ManagedFailureEffect::OutcomeUnknown,
-            )
-        })
+        LiveLedgerProviderAdapter::invoke(self, authority, request)
+            .map_err(codex_error_from_adapter_message)
     }
+}
+
+fn codex_error_from_adapter_message(error: String) -> ManagedProviderCallError {
+    let (domain, message) = error
+        .split_once(": ")
+        .map_or(("provider_bridge", error.as_str()), |(domain, message)| {
+            (domain, message)
+        });
+    let pre_send = domain == "provider_pre_send";
+    codex_error(
+        domain,
+        message,
+        pre_send,
+        if pre_send {
+            ManagedFailureEffect::PreSend
+        } else {
+            ManagedFailureEffect::OutcomeUnknown
+        },
+    )
 }
 
 fn codex_error(
@@ -6391,6 +6404,16 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tempfile::tempdir;
+
+    #[test]
+    fn codex_pre_send_adapter_error_preserves_retry_classification() {
+        let error = codex_error_from_adapter_message(
+            "provider_pre_send: loopback request was rejected before send".into(),
+        );
+        assert!(error.retryable);
+        assert_eq!(error.effect, ManagedFailureEffect::PreSend);
+        assert_eq!(error.domain, "provider_pre_send");
+    }
 
     #[test]
     fn codex_mx1_materialization_is_exact_two_cells_on_one_frozen_basis() {
