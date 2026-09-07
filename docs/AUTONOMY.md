@@ -1,6 +1,6 @@
 # Autonomy and Testing Contract
 
-Last updated: 2026-09-06.
+Last updated: 2026-09-07.
 
 This document defines the autonomy governance, lifecycle state machine, review convergence protocol, exact-head CI, and guarded merge contracts for the Autonomous Steward system.
 
@@ -23,6 +23,46 @@ Research Missions may use Steward for Stage decomposition and re-planning, but
 their evidence remains owned by the existing RWE/evaluation and
 Harness-Evolution boundaries. A successful candidate returns to the common
 evidence loop before any explicitly authorized adoption.
+
+### Research Execution Continuation Rule
+
+Repository-maintenance lifecycle and finite research execution are separate
+control paths. An operator or research execution of a finite, frozen,
+owner-authorized experiment does not depend on a Steward Mission, Stage, or
+WorkCard. In particular, `session_context` returning `NO_ACTIVE_STAGE` is a
+normal maintenance-route observation for this path, not a research execution
+blocker. The session-context capsule is a transport view and does not grant or
+remove provider, target, Store, or experiment authority.
+
+The existing owner-approved live authorization, frozen campaign package,
+provider binding, RWE budget, and Store/evidence gates remain mandatory. This
+rule grants none of those authorities and does not authorize a provider call,
+target write, release, deployment, or scientific claim by itself.
+
+When the owner has explicitly required a finite frozen experiment and a real
+live smoke exposes a missing composition seam between existing canonical
+owners, that seam is a bounded execution repair. The implementation agent may
+resolve it autonomously by reusing the existing Store, RWE, provider, budget,
+and evidence owners. The repair may use one focused Draft PR, its targeted and
+full tests, independent exact-head review, canonical CI, and the existing
+guarded merge owner. After accepted-main readback, the agent resumes the same
+frozen experiment without creating or requesting a new Mission, Stage, or
+WorkCard.
+
+This continuation rule does not permit:
+
+- adding or replacing an authority owner or a parallel runtime, scheduler,
+  Store, budget, evaluator, evidence, or approval owner;
+- changing the evaluator, corpus, scientific question, Strategy, seed,
+  comparability contract, provider/model set, call count, or budget envelope;
+- creating, rotating, disclosing, or persisting credentials;
+- destructive effects or a second attempt after an outcome whose external
+  effect cannot be safely reconciled.
+
+The agent pauses only for those boundary crossings, or for an unresolvable
+security/recovery conflict. The existence of a small amount of glue code
+between existing owners is not `PAUSED_FOR_OWNER` and is not a reason to
+recreate maintenance lifecycle state.
 
 ### Research Mainline: Testing, Review, and Merge Rules
 

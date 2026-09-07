@@ -30,6 +30,16 @@ If work needs to cross any boundary above, stop with `DECISION_REQUIRED` or `PAU
 
 Task execution is governed by `docs/AUTONOMY.md`: ordinary states are `READY_FOR_EXECUTION`, `IN_PROGRESS`, and `COMPLETE`. External-effect boundaries may use `T3_REQUIRED` as a non-executable authority gate. Execute only the active task and only its exact owners, allowed changes, ordered steps, verification, rollback, budgets, pause gates, and forbidden next actions. Review `PASS` satisfies one exact-head review gate; it is never task `COMPLETE`.
 
+## Research execution continuation
+
+For a finite owner-authorized experiment, use the
+[Research Execution Continuation Rule](docs/AUTONOMY.md#research-execution-continuation-rule)
+and [operator procedure](docs/RUNBOOK.md#research-execution-continuation-procedure).
+This path does not require a Steward Mission, Stage, or WorkCard;
+`NO_ACTIVE_STAGE` is normal. A smoke-exposed glue gap between existing owners
+is a bounded execution repair, not `PAUSED_FOR_OWNER`; pause only at the
+boundary conditions owned by `AUTONOMY.md`.
+
 ## Investigation Escalation (`ask_sol`)
 
 Routine work proceeds directly. For genuinely difficult uncertainty, contradictory evidence, cross-module ambiguity, or failed initial hypotheses, use the bounded read-only investigator:
