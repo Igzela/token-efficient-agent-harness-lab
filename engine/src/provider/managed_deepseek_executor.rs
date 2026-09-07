@@ -145,29 +145,24 @@ pub struct ManagedDeepSeekNodeExecutor {
 }
 
 impl ManagedDeepSeekNodeExecutor {
-    pub(crate) fn new(
-        planner: Arc<dyn ManagedNodeProvider>,
-        implementer: Arc<dyn ManagedNodeProvider>,
-        reviewer: Arc<dyn ManagedNodeProvider>,
+    pub fn new(
+        planner: Arc<ManagedDeepSeekProvider>,
+        implementer: Arc<ManagedDeepSeekProvider>,
+        reviewer: Arc<ManagedDeepSeekProvider>,
         source: Arc<dyn ManagedAuthoritySource>,
         config: ManagedDeepSeekExecutorConfig,
     ) -> Result<Self, String> {
-        let _ = super::managed_deepseek::ManagedBudgetLedger::new(config.limits.clone())?;
-        Ok(Self {
-            providers: ManagedDeepSeekProviders {
-                planner,
-                implementer,
-                reviewer,
-            },
-            single_model_sets: HashMap::new(),
+        Self::new_with_adapters(
+            planner,
+            implementer,
+            reviewer,
             source,
             config,
-            authorities: Mutex::new(HashMap::new()),
-            admitted_models: super::managed_deepseek::DEEPSEEK_MODELS
+            crate::provider::managed_deepseek::DEEPSEEK_MODELS
                 .iter()
                 .map(|model| (*model).to_string())
                 .collect(),
-        })
+        )
     }
 
     /// Build the existing route around a provider-neutral adapter and an
@@ -934,12 +929,16 @@ mod tests {
             sends: Arc::new(AtomicUsize::new(0)),
         });
         let p = providers(transport);
-        let executor = ManagedDeepSeekNodeExecutor::new(
+        let executor = ManagedDeepSeekNodeExecutor::new_with_adapters(
             p.planner,
             p.implementer,
             p.reviewer,
             source,
             ManagedDeepSeekExecutorConfig::default(),
+            crate::provider::managed_deepseek::DEEPSEEK_MODELS
+                .iter()
+                .map(|model| (*model).to_string())
+                .collect(),
         )
         .unwrap();
         let (request, role, _) = executor.request(&input("implementation")).unwrap();
@@ -982,12 +981,16 @@ mod tests {
             },
         });
         let p = providers(transport);
-        let executor = ManagedDeepSeekNodeExecutor::new(
+        let executor = ManagedDeepSeekNodeExecutor::new_with_adapters(
             p.planner,
             p.implementer,
             p.reviewer,
             source,
             ManagedDeepSeekExecutorConfig::default(),
+            crate::provider::managed_deepseek::DEEPSEEK_MODELS
+                .iter()
+                .map(|model| (*model).to_string())
+                .collect(),
         )
         .unwrap();
         let output = executor.execute_node(&input("deterministic_verification"));
@@ -1016,12 +1019,16 @@ mod tests {
             },
         });
         let p = providers(transport);
-        let executor = ManagedDeepSeekNodeExecutor::new(
+        let executor = ManagedDeepSeekNodeExecutor::new_with_adapters(
             p.planner,
             p.implementer,
             p.reviewer,
             source,
             ManagedDeepSeekExecutorConfig::default(),
+            crate::provider::managed_deepseek::DEEPSEEK_MODELS
+                .iter()
+                .map(|model| (*model).to_string())
+                .collect(),
         )
         .unwrap();
         let output = executor.execute_node(&input("planning"));
@@ -1053,12 +1060,16 @@ mod tests {
             },
         });
         let p = providers(transport);
-        let executor = ManagedDeepSeekNodeExecutor::new(
+        let executor = ManagedDeepSeekNodeExecutor::new_with_adapters(
             p.planner,
             p.implementer,
             p.reviewer,
             source,
             ManagedDeepSeekExecutorConfig::default(),
+            crate::provider::managed_deepseek::DEEPSEEK_MODELS
+                .iter()
+                .map(|model| (*model).to_string())
+                .collect(),
         )
         .unwrap();
         let output = executor.execute_node(&input("planning"));
@@ -1091,12 +1102,16 @@ mod tests {
             },
         });
         let p = providers(transport);
-        let executor = ManagedDeepSeekNodeExecutor::new(
+        let executor = ManagedDeepSeekNodeExecutor::new_with_adapters(
             p.planner,
             p.implementer,
             p.reviewer,
             source,
             ManagedDeepSeekExecutorConfig::default(),
+            crate::provider::managed_deepseek::DEEPSEEK_MODELS
+                .iter()
+                .map(|model| (*model).to_string())
+                .collect(),
         )
         .unwrap();
         let mut node = input("planning");
@@ -1168,12 +1183,16 @@ mod tests {
                 },
             });
             let p = providers(Arc::new(transport));
-            let executor = ManagedDeepSeekNodeExecutor::new(
+            let executor = ManagedDeepSeekNodeExecutor::new_with_adapters(
                 p.planner,
                 p.implementer,
                 p.reviewer,
                 source,
                 ManagedDeepSeekExecutorConfig::default(),
+                crate::provider::managed_deepseek::DEEPSEEK_MODELS
+                    .iter()
+                    .map(|model| (*model).to_string())
+                    .collect(),
             )
             .unwrap();
             let output = executor.execute_node(&input("planning"));
