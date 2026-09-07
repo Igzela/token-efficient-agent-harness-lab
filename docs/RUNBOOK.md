@@ -679,8 +679,11 @@ Review terminal states are explicit. The validator accepts only schema-valid exa
 ## Research Execution Continuation Procedure
 
 This procedure is for a finite, frozen, owner-authorized research execution.
-It is separate from repository-maintenance Steward lifecycle. The operator
-does not need an active Mission, Stage, or WorkCard. A
+It is separate from repository-maintenance Steward lifecycle. It does not
+create a new Mission, Stage, or WorkCard, and it does not require an active
+maintenance Stage as a live-execution precondition. Any existing research
+Mission remains responsible for direction and acceptance under `ROADMAP.md`,
+but it is not a live provider-spend gate. A
 `session_context` result of `NO_ACTIVE_STAGE` is therefore normal on this
 route and must not stop the experiment. The result is only a maintenance
 transport view; it is not live-effect authority.
@@ -704,7 +707,7 @@ The bounded route is:
    [Research Execution Continuation Rule](AUTONOMY.md#research-execution-continuation-rule).
    Keep the repair on one focused Draft PR and use the normal exact-head
    review, canonical CI, guarded merge, and accepted-main readback. Do not
-   create a Mission, Stage, or WorkCard for the repair.
+   create a maintenance Mission, Stage, or WorkCard for the repair.
 3. Revalidate the unchanged frozen experiment and execute the canonical
    `1x2x1`: one Harness, two frozen Matrix Models, one baseline Strategy, the
    same frozen tasks/evaluator/budget/seed/comparability rules. Save redacted

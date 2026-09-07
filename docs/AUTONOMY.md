@@ -27,12 +27,14 @@ evidence loop before any explicitly authorized adoption.
 ### Research Execution Continuation Rule
 
 Repository-maintenance lifecycle and finite research execution are separate
-control paths. An operator or research execution of a finite, frozen,
-owner-authorized experiment does not depend on a Steward Mission, Stage, or
-WorkCard. In particular, `session_context` returning `NO_ACTIVE_STAGE` is a
-normal maintenance-route observation for this path, not a research execution
-blocker. The session-context capsule is a transport view and does not grant or
-remove provider, target, Store, or experiment authority.
+control paths. A finite, frozen, owner-authorized operator run does not require
+creating a new Steward Mission, Stage, or WorkCard, or an active maintenance
+Stage as a live-execution precondition. Any existing research Mission remains
+the owner of research direction and acceptance under `ROADMAP.md`; it is not a
+live provider-spend gate. In particular, `session_context` returning
+`NO_ACTIVE_STAGE` is a normal maintenance-route observation for this path, not
+a research execution blocker. The session-context capsule is a transport view
+and does not grant or remove provider, target, Store, or experiment authority.
 
 The existing owner-approved live authorization, frozen campaign package,
 provider binding, RWE budget, and Store/evidence gates remain mandatory. This
@@ -46,8 +48,8 @@ resolve it autonomously by reusing the existing Store, RWE, provider, budget,
 and evidence owners. The repair may use one focused Draft PR, its targeted and
 full tests, independent exact-head review, canonical CI, and the existing
 guarded merge owner. After accepted-main readback, the agent resumes the same
-frozen experiment without creating or requesting a new Mission, Stage, or
-WorkCard.
+frozen experiment without creating or requesting a new maintenance Mission,
+Stage, or WorkCard.
 
 This continuation rule does not permit:
 

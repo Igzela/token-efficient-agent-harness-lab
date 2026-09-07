@@ -35,7 +35,8 @@ Task execution is governed by `docs/AUTONOMY.md`: ordinary states are `READY_FOR
 For a finite owner-authorized experiment, use the
 [Research Execution Continuation Rule](docs/AUTONOMY.md#research-execution-continuation-rule)
 and [operator procedure](docs/RUNBOOK.md#research-execution-continuation-procedure).
-This path does not require a Steward Mission, Stage, or WorkCard;
+This path does not create a new maintenance Mission, Stage, or WorkCard, nor
+require an active maintenance Stage as a live-execution precondition;
 `NO_ACTIVE_STAGE` is normal. A smoke-exposed glue gap between existing owners
 is a bounded execution repair, not `PAUSED_FOR_OWNER`; pause only at the
 boundary conditions owned by `AUTONOMY.md`.
