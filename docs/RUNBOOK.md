@@ -738,9 +738,12 @@ The bounded route is:
 This procedure itself creates no provider spend or target-write authority. It
 does not change the evaluator, corpus, scientific question, Strategy, seed,
 comparability contract, provider/model set, call count, or budget envelope.
-Only a new authority owner, boundary expansion, credential action, destructive
-effect, or unreconcilable outcome-unknown state is a pause condition. A small
-amount of glue code between existing owners is not a pause condition.
+For prerequisite recovery, a new authority owner, boundary expansion,
+credential action, destructive effect, or unreconcilable outcome-unknown state
+is a pause condition; the existing global stop taxonomy remains authoritative
+and has priority, including genuine emergency stops, material mission/time/
+effect boundaries, and unresolvable safety or external-uncertainty recovery.
+A small amount of glue code between existing owners is not a pause condition.
 
 The research milestone and advancement gates remain owned by
 `docs/ROADMAP.md`; architecture and authority by `docs/ARCHITECTURE.md`; and
