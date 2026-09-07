@@ -393,6 +393,7 @@ pub struct RweAuthorizationV2IssueRequest {
 }
 
 /// Stable owner-derived identity hash for the in-process managed adapter.
+#[cfg(test)]
 fn operator_in_process_binary_sha256() -> String {
     sha256_hex(
         format!(

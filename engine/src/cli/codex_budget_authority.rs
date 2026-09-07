@@ -199,9 +199,7 @@ impl CodexUpstreamAuth {
             std::env::var("CREDENTIALS_DIRECTORY")
                 .ok()
                 .map(|dir| Path::new(&dir).join("codex-auth")),
-            std::env::var("ACP_CODEX_AUTH_JSON")
-                .ok()
-                .map(|path| PathBuf::from(path)),
+            std::env::var("ACP_CODEX_AUTH_JSON").ok().map(PathBuf::from),
             std::env::var("CODEX_HOME")
                 .ok()
                 .map(|home| Path::new(&home).join("auth.json")),
@@ -1171,10 +1169,7 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
         CodexUpstreamAuth::ChatGptSubscription { .. }
     );
     if let Some(object) = body.as_object_mut() {
-        object.insert(
-            "stream".into(),
-            json!(if is_chatgpt_subscription { true } else { false }),
-        );
+        object.insert("stream".into(), json!(is_chatgpt_subscription));
     }
 
     let max_out = state.authority.max_output_tokens_per_request;

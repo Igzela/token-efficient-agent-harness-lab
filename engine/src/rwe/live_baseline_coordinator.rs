@@ -5186,7 +5186,7 @@ fn run_frozen_cells(
         }
     }
 
-    let stop_rules = stop_rules_from_schedule(&frozen);
+    let stop_rules = stop_rules_from_schedule(frozen);
     let mut stopped_by = reconstruct_stopped_by(&existing, &stop_rules);
 
     let mut cell_results = Vec::new();
@@ -5197,7 +5197,7 @@ fn run_frozen_cells(
 
     for cell in &cells {
         // Revalidate bindings before every cell effect.
-        revalidate_stored_v2_authorization(store, principal, authorization_id, &frozen)?;
+        revalidate_stored_v2_authorization(store, principal, authorization_id, frozen)?;
 
         let task_id = cell
             .get("task_id")
@@ -5263,15 +5263,8 @@ fn run_frozen_cells(
                 stopped_by.as_deref().unwrap_or("stop"),
                 &ids,
             );
-            let evidence = build_cell_evidence(
-                run_id,
-                authorization_id,
-                &frozen,
-                cell,
-                task,
-                &ids,
-                &outcome,
-            );
+            let evidence =
+                build_cell_evidence(run_id, authorization_id, frozen, cell, task, &ids, &outcome);
             // Skipped cells do not reserve budget; terminal accounting only.
             store.persist_rwe_task_attempt(
                 run_id,
@@ -5297,7 +5290,7 @@ fn run_frozen_cells(
                 let evidence = build_cell_evidence(
                     run_id,
                     authorization_id,
-                    &frozen,
+                    frozen,
                     cell,
                     task,
                     &ids,
@@ -5364,7 +5357,7 @@ fn run_frozen_cells(
                 let evidence = build_cell_evidence(
                     run_id,
                     authorization_id,
-                    &frozen,
+                    frozen,
                     cell,
                     task,
                     &ids,
@@ -5397,7 +5390,7 @@ fn run_frozen_cells(
         // After fence: catch execution errors and terminalize correctly.
         // outcome_unknown must not auto-retry or consume another authorization.
         let mut outcome = match driver
-            .execute_cell(store, principal, &frozen, run_id, &lease, cell, task, &ids)
+            .execute_cell(store, principal, frozen, run_id, &lease, cell, task, &ids)
         {
             Ok(o) => o,
             Err(e) => {
@@ -5522,15 +5515,8 @@ fn run_frozen_cells(
             outcome.cost_unknown = true;
         }
 
-        let evidence = build_cell_evidence(
-            run_id,
-            authorization_id,
-            &frozen,
-            cell,
-            task,
-            &ids,
-            &outcome,
-        );
+        let evidence =
+            build_cell_evidence(run_id, authorization_id, frozen, cell, task, &ids, &outcome);
         store.finalize_rwe_cell_dispatch(
             run_id,
             &lease,
@@ -5578,7 +5564,7 @@ fn run_frozen_cells(
         evaluate_store_owned_live_baseline_seal_for_cells(
             store,
             principal,
-            &frozen,
+            frozen,
             run_id,
             &stopped_by,
             &cells,
@@ -5588,7 +5574,7 @@ fn run_frozen_cells(
         evaluate_store_owned_live_baseline_seal(
             store,
             principal,
-            &frozen,
+            frozen,
             run_id,
             &stopped_by,
             &cell_results,
