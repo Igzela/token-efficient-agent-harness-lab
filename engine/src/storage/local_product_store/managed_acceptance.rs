@@ -939,6 +939,10 @@ pub fn confirm_delegated_artifact_output(
     let mut request_ids = std::collections::HashSet::new();
     let mut summed_request_cost_usd = 0.0;
     let mut summed_cumulative_tokens = 0_u64;
+    let max_cumulative_tokens = manifest
+        .pointer("/limits/max_cumulative_tokens")
+        .and_then(Value::as_u64)
+        .ok_or("delegated artifact confirmation token ceiling is missing")?;
     let requests_valid =
         provider_requests
             .iter()
@@ -995,15 +999,7 @@ pub fn confirm_delegated_artifact_output(
         && provider_execution
             .get("cumulative_tokens")
             .and_then(Value::as_u64)
-            .is_some_and(|tokens| {
-                // Docs envelope 24k; frozen RWE cell envelope uses schedule max_total_tokens.
-                let ceiling = if delegation.task_classes == ["rwe"] {
-                    16_000
-                } else {
-                    24_000
-                };
-                tokens <= ceiling && tokens > 0
-            })
+            .is_some_and(|tokens| tokens <= max_cumulative_tokens && tokens > 0)
         && if provider_binding.cost_unavailable {
             provider_execution.get("realized_cost_usd") == Some(&Value::Null)
                 && realized_cost_usd == 0.0
@@ -16015,6 +16011,52 @@ mod tests {
         )
         .unwrap_err()
         .contains("provider request"));
+
+        // The persisted manifest owns the envelope: a valid RWE package may
+        // exceed the legacy DeepSeek 16k ceiling (Codex uses 20,192).
+        let mut rwe_delegation = delegation.clone();
+        rwe_delegation.task_classes = vec!["rwe".into()];
+        rwe_delegation.allowed_paths =
+            crate::rwe::frozen_rwe_bindings::frozen_rwe_union_allowed_paths().unwrap();
+        let (max_changed_files, max_changed_lines) =
+            crate::rwe::frozen_rwe_bindings::frozen_rwe_max_patch_limits().unwrap();
+        rwe_delegation.max_changed_files = max_changed_files;
+        rwe_delegation.max_changed_lines = max_changed_lines;
+        let frozen = crate::rwe::operator_corpus::freeze_current_operator_contract_set().unwrap();
+        let cell_cost = frozen.schedule.body["cells"]
+            .as_array()
+            .and_then(|cells| cells.first())
+            .and_then(|cell| {
+                crate::rwe::frozen_rwe_bindings::frozen_schedule_cell_max_cost(cell).unwrap()
+            })
+            .unwrap();
+        rwe_delegation.max_cost_usd_per_run = cell_cost;
+        rwe_delegation.max_total_cost_usd = cell_cost;
+        let mut rwe_manifest = manifest.clone();
+        rwe_manifest["limits"]["max_input_tokens"] = json!(12_000);
+        rwe_manifest["limits"]["max_output_tokens"] = json!(8_192);
+        rwe_manifest["limits"]["max_cumulative_tokens"] = json!(20_000);
+        rwe_manifest["manifest_sha256"] =
+            json!(compute_attempt_manifest_sha256(&rwe_manifest).unwrap());
+        let mut rwe_artifact = artifact.clone();
+        rwe_artifact["changed_files"] = json!([rwe_delegation.allowed_paths[0].clone()]);
+        let mut high_usage = provider_execution.clone();
+        for request in high_usage["requests"].as_array_mut().unwrap() {
+            request["usage"]["cumulative_tokens"] = json!(6_000);
+        }
+        high_usage["cumulative_tokens"] = json!(18_000);
+        let accepted = confirm_delegated_artifact_output(
+            &rwe_delegation,
+            &rwe_manifest,
+            &rwe_artifact,
+            &verification,
+            &review,
+            &high_usage,
+            "6".repeat(40).as_str(),
+            0.01,
+        )
+        .unwrap();
+        assert_eq!(accepted["provider_execution"]["cumulative_tokens"], 18_000);
     }
 
     #[test]
