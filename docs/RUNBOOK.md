@@ -716,10 +716,14 @@ The bounded route is:
    evidence owners to create the smallest real prerequisite. Do not create a
    synthetic row, copy fixture evidence, edit a revision, hand-write terminal
    evidence, or bypass Store. A prerequisite is complete only when its
-   trustworthy terminal evidence, approval identity, artifact/output receipt,
+   trustworthy terminal evidence with `passed`, `accepted`, or
+   `evidence_recorded` verification status, an independent approval identity,
+   complete artifact/output/evidence receipts, managed
    executor/provider/model/binary identity, and non-fixture provenance are
    persisted by the canonical owners. The prerequisite is not a scientific
-   result.
+   result. The existing global stop taxonomy, including emergency stop,
+   material boundary crossing, and outcome-unknown recovery, remains
+   authoritative for this procedure.
 4. Revalidate the unchanged frozen experiment and execute the canonical
    `1x2x1`: one Harness, two frozen Matrix Models, one baseline Strategy, the
    same frozen tasks/evaluator/budget/seed/comparability rules. Save redacted

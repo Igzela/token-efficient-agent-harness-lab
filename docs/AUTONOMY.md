@@ -57,11 +57,14 @@ Prerequisite recovery must not create synthetic rows, alter a revision,
 copy fixture evidence, hand-write terminal evidence, or bypass Store
 transactions. Normal bounded execution required to acquire that prerequisite
 is part of this continuation path and is not by itself a pause condition. The
-agent pauses only if acquisition would expand the owner-authorized
-provider/model set, scientific question, experiment budget ceiling, target
-destructive effect, or credential boundary, or if an external effect reaches
-an unreconciled `OUTCOME_UNKNOWN` state. The prerequisite itself is never
-counted as the experiment's scientific result.
+prerequisite-specific pause conditions are only: acquisition would expand the
+owner-authorized provider/model set, scientific question, experiment budget
+ceiling, target destructive effect, or credential boundary, or an external
+effect reaches an unreconciled `OUTCOME_UNKNOWN` state. The global stop
+taxonomy, including a genuine emergency stop, material mission/time/effect
+boundary, and external uncertainty recovery rules, remains authoritative and
+has priority. The prerequisite itself is never counted as the experiment's
+scientific result.
 
 When the owner has explicitly required a finite frozen experiment and a real
 live smoke exposes a missing composition seam between existing canonical
@@ -83,11 +86,11 @@ This continuation rule does not permit:
 - destructive effects or a second attempt after an outcome whose external
   effect cannot be safely reconciled.
 
-The agent pauses only for those boundary crossings, an unreconcilable
-security/recovery conflict, or an unreconciled `OUTCOME_UNKNOWN`. The existence
-of a small amount of glue code or bounded prerequisite acquisition between
-existing owners is not `PAUSED_FOR_OWNER` and is not a reason to recreate
-maintenance lifecycle state.
+The agent pauses only under those boundary crossings or the existing global
+stop taxonomy, including an unreconcilable security/recovery conflict or an
+unreconciled `OUTCOME_UNKNOWN`. The existence of a small amount of glue code
+or bounded prerequisite acquisition between existing owners is not
+`PAUSED_FOR_OWNER` and is not a reason to recreate maintenance lifecycle state.
 
 ### Research Mainline: Testing, Review, and Merge Rules
 
