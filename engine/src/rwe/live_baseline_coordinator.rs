@@ -1570,20 +1570,22 @@ impl ManagedNodeProvider for CodexSubscriptionProviderAdapter {
 }
 
 fn codex_error_from_adapter_message(error: String) -> ManagedProviderCallError {
-    let (domain, message) = error
-        .split_once(": ")
-        .map_or(("provider_bridge", error.as_str()), |(domain, message)| {
-            (domain, message)
-        });
+    let (domain, message) = error.split_once(": ").map_or(
+        ("adapter_pre_gateway", error.as_str()),
+        |(domain, message)| (domain, message),
+    );
     let pre_send = domain == "provider_pre_send";
+    let provider_effect = domain.starts_with("provider_");
     codex_error(
         domain,
         message,
         pre_send,
         if pre_send {
             ManagedFailureEffect::PreSend
-        } else {
+        } else if provider_effect {
             ManagedFailureEffect::OutcomeUnknown
+        } else {
+            ManagedFailureEffect::NoExternalEffect
         },
     )
 }
@@ -6413,6 +6415,16 @@ mod tests {
         assert!(error.retryable);
         assert_eq!(error.effect, ManagedFailureEffect::PreSend);
         assert_eq!(error.domain, "provider_pre_send");
+    }
+
+    #[test]
+    fn codex_pre_gateway_adapter_error_does_not_claim_provider_effect() {
+        let error = codex_error_from_adapter_message(
+            "ChatGPT subscription credential is unavailable; API-key auth is not admitted".into(),
+        );
+        assert!(!error.retryable);
+        assert_eq!(error.effect, ManagedFailureEffect::NoExternalEffect);
+        assert_eq!(error.domain, "adapter_pre_gateway");
     }
 
     #[test]
