@@ -676,21 +676,59 @@ Before commit, the finalizer performs bounded structural validation only: it val
 
 Review terminal states are explicit. The validator accepts only schema-valid exact-head artifacts. Exact `PASS` is the only merge-authorizing review verdict under the Review Convergence Protocol in `docs/AUTONOMY.md`: it requires the complete bounded diff, no open blockers, and affirmative security and rollback gates; exact-head CI is verified independently from trusted GitHub state. Deferred non-blocking notes on `PASS` are allowed residual risk and do not force another head. `PASS_WITH_NOTES`, `BLOCKED`, `FAIL`, and `DECISION_REQUIRED` remain non-authorizing outcomes. Malformed, unavailable, oversized, or head-mismatched output is never recorded as a verdict. Merge additionally requires current review decision, effective human review, complete review-thread evidence, and all required canonical checks for the same head; unavailable or contradictory evidence fails closed.
 
-## Research Mainline Operator Boundary
+## Research Execution Continuation Procedure
 
-The owner-approved research Mission **`MISSION-RESEARCH-20260901`** and its
-accepted Stages run under the standard Steward lifecycle, testing, review, and
-merge rules in `docs/AUTONOMY.md`. This RUNBOOK owns only operator procedures
-that have actually been proved, and there is no proved live operator procedure
-for the research mainline here: operator runs are confined to finite frozen
-canonical experiments on the common RWE basis, and an operator must not run
-provider-backed experiments from this RUNBOOK.
+This procedure is for a finite, frozen, owner-authorized research execution.
+It is separate from repository-maintenance Steward lifecycle. It does not
+create a new Mission, Stage, or WorkCard, and it does not require an active
+maintenance Stage as a live-execution precondition. Any existing research
+Mission remains responsible for direction and acceptance under `ROADMAP.md`,
+but it is not a live provider-spend gate. A
+`session_context` result of `NO_ACTIVE_STAGE` is therefore normal on this
+route and must not stop the experiment. The result is only a maintenance
+transport view; it is not live-effect authority.
 
-The research mainline grants no provider spend, effect, target write, release,
-deployment, evaluator, or adoption authority by itself, and the emergency-stop
-control remains untouched. Milestone and advancement gates are owned by
-`docs/ROADMAP.md`, module and authority boundaries by `docs/ARCHITECTURE.md`,
-and autonomy, testing, review, and merge rules by `docs/AUTONOMY.md`.
+Before the first provider call, the operator must verify the accepted-main
+SHA, frozen corpus/protocol/schedule, exact campaign package and provider/model
+bindings, Store-owned live authorization, bounded budget, credential
+isolation, and the experiment's redacted evidence destination. Use the
+existing `CodexBudgetGateway` and Store/RWE owners. Do not use `codex exec` as
+an agent loop for a transport smoke, and do not persist credentials, raw
+prompts, raw outputs, or transcripts.
+
+The bounded route is:
+
+1. Run one minimal subscription smoke through the existing gateway. Record the
+   exact model, subscription usage/quota observation, gateway journal/effect
+   result, credential-isolation facts, and any operational failure. A smoke is
+   transport evidence only; it is not experimental evidence.
+2. If the smoke exposes a missing composition seam between existing owners,
+   repair that seam autonomously under the
+   [Research Execution Continuation Rule](AUTONOMY.md#research-execution-continuation-rule).
+   Keep the repair on one focused Draft PR and use the normal exact-head
+   review, canonical CI, guarded merge, and accepted-main readback. Do not
+   create a maintenance Mission, Stage, or WorkCard for the repair.
+3. Revalidate the unchanged frozen experiment and execute the canonical
+   `1x2x1`: one Harness, two frozen Matrix Models, one baseline Strategy, the
+   same frozen tasks/evaluator/budget/seed/comparability rules. Save redacted
+   model output evidence, token usage, latency, provider-call count, retries,
+   cost or explicit cost-unavailable state, missingness, verifier result, and
+   provenance. A provider operational failure or an unexecuted cell remains an
+   operational state; it must not be relabeled as scientific
+   `INCOMPARABLE`/`INSUFFICIENT`.
+4. Only after valid comparable evidence is sealed may the operator continue the
+   existing ladder: `1x2x1 -> 1x2x3 -> 2x2x3`.
+
+This procedure itself creates no provider spend or target-write authority. It
+does not change the evaluator, corpus, scientific question, Strategy, seed,
+comparability contract, provider/model set, call count, or budget envelope.
+Only a new authority owner, boundary expansion, credential action, destructive
+effect, or unreconcilable outcome-unknown state is a pause condition. A small
+amount of glue code between existing owners is not a pause condition.
+
+The research milestone and advancement gates remain owned by
+`docs/ROADMAP.md`; architecture and authority by `docs/ARCHITECTURE.md`; and
+autonomy, testing, review, and merge rules by `docs/AUTONOMY.md`.
 
 ## Release Upgrade and Rollback
 
@@ -806,14 +844,12 @@ new authority.
 7. **Link, do not duplicate** — the document references `docs/AUTONOMY.md` for
    autonomy, review, and merge rules instead of restating them.
 
-8. **Research-mainline operator boundary** — the document records the
-   operator-procedure boundary for `MISSION-RESEARCH-20260901`: it asserts this
-   RUNBOOK owns only procedures that have actually been proved, that there is
-   no proved live operator procedure for the research mainline here, that
-   operator runs are confined to finite frozen canonical experiments on the
-   common RWE basis, that no provider-backed experiment is run from this
-   RUNBOOK, and that the mainline grants no provider spend, effect, target
-   write, release, deployment, evaluator, or adoption authority by itself.
+8. **Research execution continuation** — the document records that finite
+   owner-authorized research execution does not require a Steward Mission,
+   Stage, or WorkCard; `NO_ACTIVE_STAGE` is normal on that route; the bounded
+   smoke/freeze/`1x2x1` procedure reuses existing authority owners; and this
+   RUNBOOK grants no provider spend, target write, release, deployment,
+   evaluator, or adoption authority by itself.
 
 Assertions 1-8 are bounded to this document and hold at the accepted head; the
 change is documentation-only and adds no new authority.
