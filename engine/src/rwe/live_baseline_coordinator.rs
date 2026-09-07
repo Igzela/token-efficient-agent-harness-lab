@@ -1604,6 +1604,33 @@ fn codex_error(
     }
 }
 
+fn codex_gateway_pre_call_code(reason: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(reason).ok()?;
+    let code = value.pointer("/error/code").and_then(Value::as_str)?;
+    matches!(
+        code,
+        "authority_expired"
+            | "session_unbound"
+            | "path_not_admitted"
+            | "malformed_body"
+            | "model_substitution"
+            | "output_limit_required"
+            | "output_limit_invalid"
+            | "output_limit_increase"
+            | "output_limit_unsupported"
+            | "budget_lock_poisoned"
+            | "journal_blocks_admit"
+            | "request_budget_exhausted"
+            | "retry_budget_exhausted"
+            | "input_budget_exhausted"
+            | "cumulative_budget_insufficient"
+            | "journal_reserve_failed"
+            | "journal_lock_poisoned"
+            | "journal_halted"
+    )
+    .then(|| code.to_string())
+}
+
 fn codex_http_error(error: HttpError) -> ManagedProviderCallError {
     match error {
         HttpError::PreSend(_) => codex_error(
@@ -1612,18 +1639,30 @@ fn codex_http_error(error: HttpError) -> ManagedProviderCallError {
             true,
             ManagedFailureEffect::PreSend,
         ),
-        HttpError::Http { status, .. } if status == 401 || status == 403 => codex_error(
-            "provider_auth",
-            "ChatGPT subscription authentication or route authorization failed",
-            false,
-            ManagedFailureEffect::OutcomeUnknown,
-        ),
-        HttpError::Http { status, .. } => codex_error(
-            "provider_error",
-            format!("ChatGPT subscription HTTP {status}"),
-            false,
-            ManagedFailureEffect::OutcomeUnknown,
-        ),
+        HttpError::Http { status, reason } => {
+            if let Some(code) = codex_gateway_pre_call_code(&reason) {
+                codex_error(
+                    "gateway_pre_call",
+                    code,
+                    false,
+                    ManagedFailureEffect::NoExternalEffect,
+                )
+            } else if status == 401 || status == 403 {
+                codex_error(
+                    "provider_auth",
+                    "ChatGPT subscription authentication or route authorization failed",
+                    false,
+                    ManagedFailureEffect::OutcomeUnknown,
+                )
+            } else {
+                codex_error(
+                    "provider_error",
+                    format!("ChatGPT subscription HTTP {status}"),
+                    false,
+                    ManagedFailureEffect::OutcomeUnknown,
+                )
+            }
+        }
         HttpError::Timeout(_) => codex_error(
             "provider_timeout",
             "ChatGPT subscription response timed out; outcome is unknown",
@@ -6425,6 +6464,31 @@ mod tests {
         assert!(!error.retryable);
         assert_eq!(error.effect, ManagedFailureEffect::NoExternalEffect);
         assert_eq!(error.domain, "adapter_pre_gateway");
+    }
+
+    #[test]
+    fn codex_gateway_pre_call_http_error_does_not_claim_provider_effect() {
+        let reason = serde_json::to_string(&json!({
+            "error": {"code": "request_budget_exhausted"}
+        }))
+        .unwrap();
+        let error = codex_http_error(HttpError::Http {
+            status: 429,
+            reason,
+        });
+        assert!(!error.retryable);
+        assert_eq!(error.effect, ManagedFailureEffect::NoExternalEffect);
+        assert_eq!(error.domain, "gateway_pre_call");
+
+        let upstream_reason = serde_json::to_string(&json!({
+            "error": {"code": "usage_unavailable"}
+        }))
+        .unwrap();
+        let upstream_error = codex_http_error(HttpError::Http {
+            status: 502,
+            reason: upstream_reason,
+        });
+        assert_eq!(upstream_error.effect, ManagedFailureEffect::OutcomeUnknown);
     }
 
     #[test]
