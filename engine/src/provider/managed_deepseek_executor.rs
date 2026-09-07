@@ -14,7 +14,7 @@ use super::managed_deepseek::{
     ManagedProviderCallAuthority, ManagedProviderCallError, ManagedProviderCallRequest,
     ManagedProviderResponse,
 };
-use super::transport::ReqwestTransport;
+use super::transport::{ProviderTransportProvenance, ReqwestTransport};
 use crate::node_executor::{
     CommandNodeExecutor, NodeExecutionInput, NodeExecutionOutput, NodeExecutor,
 };
@@ -49,15 +49,53 @@ fn managed_workspace_action_tool() -> super::managed_deepseek::ManagedTool {
     }
 }
 
+/// Provider invocation seam for the existing managed plan/implement/review
+/// route. Concrete adapters supply only an already-authorized call; this
+/// executor remains free of provider credential, budget, and journal ownership.
+pub(crate) trait ManagedNodeProvider: Send + Sync {
+    fn transport_provenance(&self) -> ProviderTransportProvenance;
+
+    fn invoke_with_authority(
+        &self,
+        authority: &ManagedProviderCallAuthority,
+        request: &ManagedProviderCallRequest,
+    ) -> Result<ManagedProviderResponse, ManagedProviderCallError>;
+}
+
+impl ManagedNodeProvider for ManagedDeepSeekProvider {
+    fn transport_provenance(&self) -> ProviderTransportProvenance {
+        ManagedDeepSeekProvider::transport_provenance(self)
+    }
+
+    fn invoke_with_authority(
+        &self,
+        authority: &ManagedProviderCallAuthority,
+        request: &ManagedProviderCallRequest,
+    ) -> Result<ManagedProviderResponse, ManagedProviderCallError> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| ManagedProviderCallError {
+                domain: "provider_runtime".to_string(),
+                message: format!("managed provider runtime unavailable: {error}"),
+                retryable: false,
+                effect: super::managed_deepseek::ManagedFailureEffect::NoExternalEffect,
+            })?;
+        runtime.block_on(ManagedDeepSeekProvider::invoke_with_authority(
+            self, authority, request,
+        ))
+    }
+}
+
 #[derive(Clone)]
 struct ManagedDeepSeekProviders {
-    planner: Arc<ManagedDeepSeekProvider>,
-    implementer: Arc<ManagedDeepSeekProvider>,
-    reviewer: Arc<ManagedDeepSeekProvider>,
+    planner: Arc<dyn ManagedNodeProvider>,
+    implementer: Arc<dyn ManagedNodeProvider>,
+    reviewer: Arc<dyn ManagedNodeProvider>,
 }
 
 impl ManagedDeepSeekProviders {
-    fn for_role(&self, role: ManagedModelRole) -> Arc<ManagedDeepSeekProvider> {
+    fn for_role(&self, role: ManagedModelRole) -> Arc<dyn ManagedNodeProvider> {
         match role {
             ManagedModelRole::Planner => Arc::clone(&self.planner),
             ManagedModelRole::Implementer => Arc::clone(&self.implementer),
@@ -103,6 +141,7 @@ pub struct ManagedDeepSeekNodeExecutor {
     source: Arc<dyn ManagedAuthoritySource>,
     config: ManagedDeepSeekExecutorConfig,
     authorities: Mutex<HashMap<String, Arc<ManagedProviderCallAuthority>>>,
+    admitted_models: Vec<String>,
 }
 
 impl ManagedDeepSeekNodeExecutor {
@@ -113,17 +152,51 @@ impl ManagedDeepSeekNodeExecutor {
         source: Arc<dyn ManagedAuthoritySource>,
         config: ManagedDeepSeekExecutorConfig,
     ) -> Result<Self, String> {
+        Self::new_with_adapters(
+            planner,
+            implementer,
+            reviewer,
+            source,
+            config,
+            crate::provider::managed_deepseek::DEEPSEEK_MODELS
+                .iter()
+                .map(|model| (*model).to_string())
+                .collect(),
+        )
+    }
+
+    /// Build the existing route around a provider-neutral adapter and an
+    /// exact allowlist of resolved model identities. Store admission remains
+    /// the authority for the provider binding and execution contract.
+    pub(crate) fn new_with_adapters(
+        planner: Arc<dyn ManagedNodeProvider>,
+        implementer: Arc<dyn ManagedNodeProvider>,
+        reviewer: Arc<dyn ManagedNodeProvider>,
+        source: Arc<dyn ManagedAuthoritySource>,
+        config: ManagedDeepSeekExecutorConfig,
+        admitted_models: Vec<String>,
+    ) -> Result<Self, String> {
         let _ = super::managed_deepseek::ManagedBudgetLedger::new(config.limits.clone())?;
+        if admitted_models.is_empty() || admitted_models.iter().any(|model| model.trim().is_empty())
+        {
+            return Err("managed route requires a nonempty exact model allowlist".into());
+        }
+        let providers = ManagedDeepSeekProviders {
+            planner,
+            implementer,
+            reviewer,
+        };
+        let mut single_model_sets = HashMap::new();
+        for model in &admitted_models {
+            single_model_sets.insert(model.clone(), providers.clone());
+        }
         Ok(Self {
-            providers: ManagedDeepSeekProviders {
-                planner,
-                implementer,
-                reviewer,
-            },
-            single_model_sets: HashMap::new(),
+            providers,
+            single_model_sets,
             source,
             config,
             authorities: Mutex::new(HashMap::new()),
+            admitted_models,
         })
     }
 
@@ -256,7 +329,11 @@ impl ManagedDeepSeekNodeExecutor {
         let single_model = match declaration.get("model") {
             None | Some(Value::Null) => None,
             Some(Value::String(model)) => {
-                if !super::managed_deepseek::DEEPSEEK_MODELS.contains(&model.as_str()) {
+                if !self
+                    .admitted_models
+                    .iter()
+                    .any(|admitted| admitted == model)
+                {
                     return Err(format!(
                         "managed DeepSeek node model is not an admitted identity: {model}"
                     ));
@@ -313,8 +390,44 @@ impl ManagedDeepSeekNodeExecutor {
             request.requested_model = model.clone();
             request.single_model_plan = true;
         }
-        request.limits = self.config.limits.clone();
-        request.price_profile = self.config.price_profile.clone();
+        // The graph carries only the route shape and an exact model descriptor.
+        // Resolve the provider contract from the Store before constructing the
+        // request so this executor can serve an admitted non-DeepSeek adapter
+        // without creating a second authority path.
+        let current = self
+            .source
+            .current_authority(&request.binding)
+            .map_err(|error| format!("managed execution authority unavailable: {error}"))?;
+        let contract = current
+            .execution_contract
+            .ok_or("managed execution authority lacks an immutable execution contract")?;
+        // The legacy DeepSeek route is configured with one immutable provider
+        // envelope.  Keep its existing drift guard while allowing the
+        // provider-neutral adapter route to take its exact limits from the
+        // Store-owned Codex subscription contract.
+        if contract.provider_kind == super::managed_deepseek::DEEPSEEK_PROVIDER_KIND
+            && (contract.protocol != self.config.protocol
+                || contract.limits != self.config.limits
+                || contract.price_profile != self.config.price_profile)
+        {
+            return Err("persisted managed authority is stale or mismatched".to_string());
+        }
+        request.provider_identity = contract.provider_identity;
+        request.provider_kind = contract.provider_kind;
+        request.protocol = contract.protocol;
+        request.host = contract.host;
+        request.base_url = contract.base_url;
+        request.endpoint_path = contract.endpoint_path;
+        request.credential_reference = contract.credential_reference;
+        request.schema_version = contract.request_schema_version;
+        request.response_schema_version = contract.response_schema_version;
+        request.usage_parser_version = contract.usage_parser_version;
+        request.requested_model = contract.requested_model;
+        if request.requested_model != role.default_model() {
+            request.single_model_plan = true;
+        }
+        request.limits = contract.limits;
+        request.price_profile = contract.price_profile;
         // Execution-path provenance: derived from the transport object that
         // will actually serve this role's request, never caller-supplied.
         request.transport_provenance = self.providers.for_role(role).transport_provenance();
@@ -377,29 +490,18 @@ impl ManagedDeepSeekNodeExecutor {
     }
 
     fn execute_blocking(
-        provider: Arc<ManagedDeepSeekProvider>,
+        provider: Arc<dyn ManagedNodeProvider>,
         authority: Arc<ManagedProviderCallAuthority>,
         request: ManagedProviderCallRequest,
     ) -> Result<ManagedProviderResponse, ManagedProviderCallError> {
-        std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|error| ManagedProviderCallError {
-                    domain: "provider_runtime".to_string(),
-                    message: format!("managed DeepSeek runtime unavailable: {error}"),
-                    retryable: false,
-                    effect: super::managed_deepseek::ManagedFailureEffect::NoExternalEffect,
-                })?;
-            runtime.block_on(provider.invoke_with_authority(&authority, &request))
-        })
-        .join()
-        .map_err(|_| ManagedProviderCallError {
-            domain: "provider_runtime".to_string(),
-            message: "managed DeepSeek runtime thread panicked".to_string(),
-            retryable: false,
-            effect: super::managed_deepseek::ManagedFailureEffect::OutcomeUnknown,
-        })?
+        std::thread::spawn(move || provider.invoke_with_authority(&authority, &request))
+            .join()
+            .map_err(|_| ManagedProviderCallError {
+                domain: "provider_runtime".to_string(),
+                message: "managed DeepSeek runtime thread panicked".to_string(),
+                retryable: false,
+                effect: super::managed_deepseek::ManagedFailureEffect::OutcomeUnknown,
+            })?
     }
 
     fn output(
@@ -827,12 +929,16 @@ mod tests {
             sends: Arc::new(AtomicUsize::new(0)),
         });
         let p = providers(transport);
-        let executor = ManagedDeepSeekNodeExecutor::new(
+        let executor = ManagedDeepSeekNodeExecutor::new_with_adapters(
             p.planner,
             p.implementer,
             p.reviewer,
             source,
             ManagedDeepSeekExecutorConfig::default(),
+            crate::provider::managed_deepseek::DEEPSEEK_MODELS
+                .iter()
+                .map(|model| (*model).to_string())
+                .collect(),
         )
         .unwrap();
         let (request, role, _) = executor.request(&input("implementation")).unwrap();
@@ -875,12 +981,16 @@ mod tests {
             },
         });
         let p = providers(transport);
-        let executor = ManagedDeepSeekNodeExecutor::new(
+        let executor = ManagedDeepSeekNodeExecutor::new_with_adapters(
             p.planner,
             p.implementer,
             p.reviewer,
             source,
             ManagedDeepSeekExecutorConfig::default(),
+            crate::provider::managed_deepseek::DEEPSEEK_MODELS
+                .iter()
+                .map(|model| (*model).to_string())
+                .collect(),
         )
         .unwrap();
         let output = executor.execute_node(&input("deterministic_verification"));
@@ -909,12 +1019,16 @@ mod tests {
             },
         });
         let p = providers(transport);
-        let executor = ManagedDeepSeekNodeExecutor::new(
+        let executor = ManagedDeepSeekNodeExecutor::new_with_adapters(
             p.planner,
             p.implementer,
             p.reviewer,
             source,
             ManagedDeepSeekExecutorConfig::default(),
+            crate::provider::managed_deepseek::DEEPSEEK_MODELS
+                .iter()
+                .map(|model| (*model).to_string())
+                .collect(),
         )
         .unwrap();
         let output = executor.execute_node(&input("planning"));
@@ -946,12 +1060,16 @@ mod tests {
             },
         });
         let p = providers(transport);
-        let executor = ManagedDeepSeekNodeExecutor::new(
+        let executor = ManagedDeepSeekNodeExecutor::new_with_adapters(
             p.planner,
             p.implementer,
             p.reviewer,
             source,
             ManagedDeepSeekExecutorConfig::default(),
+            crate::provider::managed_deepseek::DEEPSEEK_MODELS
+                .iter()
+                .map(|model| (*model).to_string())
+                .collect(),
         )
         .unwrap();
         let output = executor.execute_node(&input("planning"));
@@ -984,12 +1102,16 @@ mod tests {
             },
         });
         let p = providers(transport);
-        let executor = ManagedDeepSeekNodeExecutor::new(
+        let executor = ManagedDeepSeekNodeExecutor::new_with_adapters(
             p.planner,
             p.implementer,
             p.reviewer,
             source,
             ManagedDeepSeekExecutorConfig::default(),
+            crate::provider::managed_deepseek::DEEPSEEK_MODELS
+                .iter()
+                .map(|model| (*model).to_string())
+                .collect(),
         )
         .unwrap();
         let mut node = input("planning");
@@ -1061,12 +1183,16 @@ mod tests {
                 },
             });
             let p = providers(Arc::new(transport));
-            let executor = ManagedDeepSeekNodeExecutor::new(
+            let executor = ManagedDeepSeekNodeExecutor::new_with_adapters(
                 p.planner,
                 p.implementer,
                 p.reviewer,
                 source,
                 ManagedDeepSeekExecutorConfig::default(),
+                crate::provider::managed_deepseek::DEEPSEEK_MODELS
+                    .iter()
+                    .map(|model| (*model).to_string())
+                    .collect(),
             )
             .unwrap();
             let output = executor.execute_node(&input("planning"));

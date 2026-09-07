@@ -10,7 +10,9 @@
 //! - every forwarded provider request is bound to the active task execution;
 //! - model identity is pinned;
 //! - request count and cumulative tokens are tracked before further dispatch;
-//! - `max_output_tokens` is injected so the provider request itself is bounded;
+//! - `max_output_tokens` is injected for providers that support the field; the
+//!   ChatGPT subscription route uses pre-call reservation and cumulative journal
+//!   accounting because its Responses surface rejects that field;
 //! - input reservation uses a documented byte-upper-bound (UTF-8 bytes) that is
 //!   always ≥ token count for any tokenizer that emits at most one token per
 //!   input byte.
@@ -173,6 +175,44 @@ impl CodexUpstreamAuth {
             }
         }
         None
+    }
+
+    /// Resolve only the currently logged-in ChatGPT subscription credential.
+    ///
+    /// This route intentionally does not inspect `OPENAI_API_KEY` or
+    /// `ACP_CODEX_UPSTREAM_API_KEY`: a subscription campaign must fail closed
+    /// rather than silently switching to API-key billing.
+    pub(crate) fn resolve_parent_chatgpt_subscription() -> Option<Self> {
+        if let Ok(token) = std::env::var("ACP_CODEX_CHATGPT_ACCESS_TOKEN") {
+            if !token.trim().is_empty() {
+                let account_id = std::env::var("ACP_CODEX_CHATGPT_ACCOUNT_ID")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty());
+                return Some(Self::ChatGptSubscription {
+                    access_token: token,
+                    account_id,
+                });
+            }
+        }
+
+        let candidate_paths = [
+            std::env::var("CREDENTIALS_DIRECTORY")
+                .ok()
+                .map(|dir| Path::new(&dir).join("codex-auth")),
+            std::env::var("ACP_CODEX_AUTH_JSON").ok().map(PathBuf::from),
+            std::env::var("CODEX_HOME")
+                .ok()
+                .map(|home| Path::new(&home).join("auth.json")),
+            std::env::var("HOME")
+                .ok()
+                .map(|home| Path::new(&home).join(".codex").join("auth.json")),
+        ];
+        candidate_paths.into_iter().flatten().find_map(|path| {
+            match Self::from_auth_json_file(&path).ok() {
+                Some(auth @ Self::ChatGptSubscription { .. }) => Some(auth),
+                _ => None,
+            }
+        })
     }
 }
 
@@ -584,6 +624,10 @@ impl CodexGatewayStartPermit {
             execution_id: execution_id.to_string(),
             kind: CodexGatewayStartPermitKind::ProviderFreeFixture,
         }
+    }
+
+    pub(crate) fn execution_id(&self) -> &str {
+        &self.execution_id
     }
 
     fn validate_for(&self, authority: &CodexBudgetAuthority) -> Result<(), String> {
@@ -1115,79 +1159,101 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
         );
     }
 
-    // Force non-stream mediation so usage is always extractable before completion.
-    // Streaming would allow unbounded generation without a mid-stream hard stop that
-    // is still a pre-dispatch output ceiling; the provider-side max_output_tokens
-    // field is the during-call bound.
+    // OpenAI-compatible JSON endpoints can be mediated as a single JSON response,
+    // but the ChatGPT subscription Responses route is a streaming-only surface for
+    // Codex CLI. Preserve/require SSE there so the child receives the wire protocol
+    // it expects; subscription output is bounded by pre-call reservation and
+    // cumulative journal accounting because this route rejects max_output_tokens.
+    let is_chatgpt_subscription = matches!(
+        state.upstream_auth,
+        CodexUpstreamAuth::ChatGptSubscription { .. }
+    );
     if let Some(object) = body.as_object_mut() {
-        object.insert("stream".into(), json!(false));
+        object.insert("stream".into(), json!(is_chatgpt_subscription));
     }
 
     let max_out = state.authority.max_output_tokens_per_request;
-    // Reject explicit removal, zero, or increase of the provider-side output ceiling
-    // before injection. The gateway always re-injects the admitted cap for requests
-    // that omit the field.
-    if let Some(object) = body.as_object() {
-        let key = if is_responses {
-            "max_output_tokens"
-        } else {
-            "max_tokens"
-        };
-        match object.get(key) {
-            None => {}
-            Some(Value::Null) => {
-                state.record_reject(
-                    BudgetRejectClass::PreCall,
-                    "output token limit removal is not admitted".to_string(),
-                );
-                return json_error(
-                    403,
-                    "output_limit_required",
-                    "provider-side output token limit removal is not admitted",
-                );
+    if !is_chatgpt_subscription {
+        // Reject explicit removal, zero, or increase of the provider-side output
+        // ceiling before injection. The ChatGPT subscription Responses route does
+        // not support this OpenAI API field; it remains bounded by the pre-call
+        // reservation and cumulative journal accounting below.
+        if let Some(object) = body.as_object() {
+            let key = if is_responses {
+                "max_output_tokens"
+            } else {
+                "max_tokens"
+            };
+            match object.get(key) {
+                None => {}
+                Some(Value::Null) => {
+                    state.record_reject(
+                        BudgetRejectClass::PreCall,
+                        "output token limit removal is not admitted".to_string(),
+                    );
+                    return json_error(
+                        403,
+                        "output_limit_required",
+                        "provider-side output token limit removal is not admitted",
+                    );
+                }
+                Some(value) => match value.as_u64() {
+                    Some(0) => {
+                        state.record_reject(
+                            BudgetRejectClass::PreCall,
+                            "output token limit must be > 0".to_string(),
+                        );
+                        return json_error(
+                            403,
+                            "output_limit_invalid",
+                            "provider-side output token limit must be positive",
+                        );
+                    }
+                    Some(requested) if requested > max_out => {
+                        state.record_reject(
+                            BudgetRejectClass::PreCall,
+                            format!(
+                                "output token limit increase rejected: requested={requested} admitted={max_out}"
+                            ),
+                        );
+                        return json_error(
+                            403,
+                            "output_limit_increase",
+                            "raising the provider-side output token limit is not admitted",
+                        );
+                    }
+                    Some(_) => {}
+                    None => {
+                        state.record_reject(
+                            BudgetRejectClass::PreCall,
+                            "output token limit must be a positive integer".to_string(),
+                        );
+                        return json_error(
+                            403,
+                            "output_limit_invalid",
+                            "provider-side output token limit must be a positive integer",
+                        );
+                    }
+                },
             }
-            Some(value) => match value.as_u64() {
-                Some(0) => {
-                    state.record_reject(
-                        BudgetRejectClass::PreCall,
-                        "output token limit must be > 0".to_string(),
-                    );
-                    return json_error(
-                        403,
-                        "output_limit_invalid",
-                        "provider-side output token limit must be positive",
-                    );
-                }
-                Some(requested) if requested > max_out => {
-                    state.record_reject(
-                        BudgetRejectClass::PreCall,
-                        format!(
-                            "output token limit increase rejected: requested={requested} admitted={max_out}"
-                        ),
-                    );
-                    return json_error(
-                        403,
-                        "output_limit_increase",
-                        "raising the provider-side output token limit is not admitted",
-                    );
-                }
-                Some(_) => {}
-                None => {
-                    state.record_reject(
-                        BudgetRejectClass::PreCall,
-                        "output token limit must be a positive integer".to_string(),
-                    );
-                    return json_error(
-                        403,
-                        "output_limit_invalid",
-                        "provider-side output token limit must be a positive integer",
-                    );
-                }
-            },
         }
+        // Hard single-request bound for providers that support the field.
+        inject_max_output_tokens(&mut body, max_out, is_responses);
+    } else if body
+        .get("max_output_tokens")
+        .or_else(|| body.get("max_tokens"))
+        .is_some()
+    {
+        state.record_reject(
+            BudgetRejectClass::PreCall,
+            "ChatGPT subscription Responses route does not admit output limit fields".to_string(),
+        );
+        return json_error(
+            403,
+            "output_limit_unsupported",
+            "ChatGPT subscription Responses route does not support provider output limit fields",
+        );
     }
-    // Hard single-request bound: inject the admitted provider-side output ceiling.
-    inject_max_output_tokens(&mut body, max_out, is_responses);
 
     let reserved_input = conservative_input_token_upper_bound(
         &serde_json::to_vec(&body).unwrap_or_else(|_| request.body.clone()),
@@ -1315,6 +1381,83 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
     match forward_upstream(state, path, &body) {
         Ok((status, response_body)) => match extract_usage(&response_body) {
             Ok((input_tokens, output_tokens)) => {
+                // The ChatGPT subscription Responses route cannot carry a
+                // provider-side max_output_tokens field. Enforce the bound
+                // after the upstream response instead: an upstream response
+                // that exceeds its reservation is terminally uncertain and
+                // must never be returned as successful evidence.
+                let over_bound = {
+                    let mut journal = match state.journal.lock() {
+                        Ok(guard) => guard,
+                        Err(_) => {
+                            state.record_reject(
+                                BudgetRejectClass::OutcomeUnknown,
+                                "journal lock poisoned on usage bound check".to_string(),
+                            );
+                            state.stop.store(true, Ordering::SeqCst);
+                            return json_error(
+                                503,
+                                "journal_lock_poisoned",
+                                "usage bound journal lock failed; gateway halted",
+                            );
+                        }
+                    };
+                    let entry = journal.entry();
+                    let charged_input = entry.reserved_input_tokens.max(input_tokens);
+                    let charged_output = entry.reserved_output_tokens.max(output_tokens);
+                    let prior_total = entry
+                        .cumulative_input_tokens
+                        .saturating_add(entry.cumulative_output_tokens);
+                    let exceeds = output_tokens > entry.reserved_output_tokens
+                        || prior_total
+                            .saturating_add(input_tokens)
+                            .saturating_add(output_tokens)
+                            > state.authority.max_cumulative_tokens;
+                    if exceeds {
+                        let detail = format!(
+                            "upstream usage exceeded the reserved Codex subscription envelope: input={input_tokens} output={output_tokens}"
+                        );
+                        if let Err(error) = journal.mark_outcome_unknown_with_usage(
+                            input_tokens,
+                            output_tokens,
+                            &detail,
+                        ) {
+                            state.record_reject(
+                                BudgetRejectClass::OutcomeUnknown,
+                                format!("journal usage-bound commit failed: {error}"),
+                            );
+                            state.stop.store(true, Ordering::SeqCst);
+                            return json_error(
+                                503,
+                                "journal_commit_failed",
+                                "usage bound journal commit failed; gateway halted",
+                            );
+                        } else {
+                            Some((charged_input, charged_output))
+                        }
+                    } else {
+                        None
+                    }
+                };
+                if let Some((charged_input, charged_output)) = over_bound {
+                    state
+                        .cumulative_input_tokens
+                        .fetch_add(charged_input, Ordering::SeqCst);
+                    state
+                        .cumulative_output_tokens
+                        .fetch_add(charged_output, Ordering::SeqCst);
+                    state.record_reject(
+                        BudgetRejectClass::OutcomeUnknown,
+                        "upstream usage exceeded the reserved Codex subscription envelope"
+                            .to_string(),
+                    );
+                    state.stop.store(true, Ordering::SeqCst);
+                    return json_error(
+                        502,
+                        "usage_exceeded_envelope",
+                        "upstream usage exceeded the reserved Codex subscription envelope",
+                    );
+                }
                 state
                     .cumulative_input_tokens
                     .fetch_add(input_tokens, Ordering::SeqCst);
@@ -1358,11 +1501,22 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
                 HttpResponseParts {
                     status,
                     reason: reason_phrase(status),
-                    headers: vec![("Content-Type".into(), "application/json".into())],
+                    headers: vec![(
+                        "Content-Type".into(),
+                        if is_sse_body(&response_body) {
+                            "text/event-stream".into()
+                        } else {
+                            "application/json".into()
+                        },
+                    )],
                     body: response_body,
                 }
             }
             Err(error) => {
+                let error = format!(
+                    "upstream HTTP status {status}; {error}; {}",
+                    upstream_error_shape(&response_body)
+                );
                 // Charge reserved worst-case into both journal and gateway counters so
                 // ProductTask residual never under-accounts a possibly billed forward.
                 if let Ok(mut journal) = state.journal.lock() {
@@ -1401,8 +1555,22 @@ fn dispatch_request(state: &GatewayState, request: &HttpRequestParts) -> HttpRes
 }
 
 fn extract_response_id(body: &[u8]) -> Option<String> {
-    let value: Value = serde_json::from_slice(body).ok()?;
-    value.get("id").and_then(Value::as_str).map(str::to_string)
+    if let Ok(value) = serde_json::from_slice::<Value>(body) {
+        return value.get("id").and_then(Value::as_str).map(str::to_string);
+    }
+    for data in sse_data_values(body) {
+        let Ok(value) = serde_json::from_slice::<Value>(&data) else {
+            continue;
+        };
+        if let Some(id) = value
+            .get("id")
+            .or_else(|| value.pointer("/response/id"))
+            .and_then(Value::as_str)
+        {
+            return Some(id.to_string());
+        }
+    }
+    None
 }
 
 fn authorized(request: &HttpRequestParts, session_token: &str) -> bool {
@@ -1442,23 +1610,79 @@ fn inject_max_output_tokens(body: &mut Value, max_out: u64, is_responses: bool) 
 }
 
 fn extract_usage(body: &[u8]) -> Result<(u64, u64), String> {
-    let value: Value = serde_json::from_slice(body)
-        .map_err(|_| "upstream response is not valid JSON".to_string())?;
+    if let Ok(value) = serde_json::from_slice::<Value>(body) {
+        return usage_pair(&value)
+            .ok_or_else(|| "upstream usage is missing input_tokens/output_tokens".to_string());
+    }
+    sse_data_values(body)
+        .iter()
+        .filter_map(|data| serde_json::from_slice::<Value>(data).ok())
+        .find_map(|value| usage_pair(&value))
+        .ok_or_else(|| "upstream response is not valid JSON with usage".to_string())
+}
+
+fn usage_pair(value: &Value) -> Option<(u64, u64)> {
     let usage = value
         .get("usage")
-        .or_else(|| value.pointer("/response/usage"))
-        .ok_or_else(|| "upstream response is missing usage".to_string())?;
+        .or_else(|| value.pointer("/response/usage"))?;
     let input = usage
         .get("input_tokens")
         .or_else(|| usage.get("prompt_tokens"))
-        .and_then(Value::as_u64)
-        .ok_or_else(|| "upstream usage is missing input_tokens".to_string())?;
+        .and_then(Value::as_u64)?;
     let output = usage
         .get("output_tokens")
         .or_else(|| usage.get("completion_tokens"))
-        .and_then(Value::as_u64)
-        .ok_or_else(|| "upstream usage is missing output_tokens".to_string())?;
-    Ok((input, output))
+        .and_then(Value::as_u64)?;
+    Some((input, output))
+}
+
+fn sse_data_values(body: &[u8]) -> Vec<Vec<u8>> {
+    body.split(|byte| *byte == b'\n')
+        .filter_map(|line| {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            let data = line.strip_prefix(b"data:")?.trim_ascii();
+            if data.is_empty() || data == b"[DONE]" {
+                None
+            } else {
+                Some(data.to_vec())
+            }
+        })
+        .collect()
+}
+
+fn is_sse_body(body: &[u8]) -> bool {
+    body.split(|byte| *byte == b'\n').any(|line| {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        line.starts_with(b"data:") || line.starts_with(b"event:")
+    })
+}
+
+fn upstream_error_shape(body: &[u8]) -> String {
+    let Ok(value) = serde_json::from_slice::<Value>(body) else {
+        return "provider_error_shape=non_json".to_string();
+    };
+    let error = value.get("error").unwrap_or(&value);
+    let kind = error
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let code = error
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    format!("provider_error_type={kind}; provider_error_code={code}")
+}
+
+fn has_terminal_sse_event(body: &[u8]) -> bool {
+    sse_data_values(body).iter().any(|data| {
+        let Ok(value) = serde_json::from_slice::<Value>(data) else {
+            return false;
+        };
+        matches!(
+            value.get("type").and_then(Value::as_str),
+            Some("response.completed") | Some("response.failed") | Some("response.incomplete")
+        )
+    })
 }
 
 fn forward_upstream(
@@ -1505,21 +1729,57 @@ fn forward_upstream(
                 }
             }
         }
-        let response = req
+        if matches!(
+            state.upstream_auth,
+            CodexUpstreamAuth::ChatGptSubscription { .. }
+        ) {
+            // Match the first-party Codex Responses client identity when the
+            // gateway is the outbound HTTP owner for a subscription request.
+            req = req
+                .header("originator", "codex_cli_rs")
+                .header(
+                    "User-Agent",
+                    format!("codex_cli_rs/{}", state.authority.executable.binary_version),
+                )
+                .header("version", &state.authority.executable.binary_version)
+                .header("OAI-Product-Sku", "codex");
+        }
+        if body.get("stream").and_then(Value::as_bool) == Some(true) {
+            req = req.header("Accept", "text/event-stream");
+        }
+        let mut response = req
             .header("Content-Type", "application/json")
             .body(body_bytes)
             .send()
             .await
             .map_err(|error| format!("upstream request failed: {error}"))?;
         let status = response.status().as_u16();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| format!("upstream body read failed: {error}"))?;
-        if bytes.len() > 8 * 1024 * 1024 {
-            return Err("upstream response exceeds 8 MiB".to_string());
+        let mut bytes = Vec::new();
+        if body.get("stream").and_then(Value::as_bool) == Some(true) {
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|error| format!("upstream body read failed: {error}"))?
+            {
+                bytes.extend_from_slice(&chunk);
+                if bytes.len() > 8 * 1024 * 1024 {
+                    return Err("upstream response exceeds 8 MiB".to_string());
+                }
+                if has_terminal_sse_event(&bytes) {
+                    break;
+                }
+            }
+        } else {
+            bytes = response
+                .bytes()
+                .await
+                .map_err(|error| format!("upstream body read failed: {error}"))?
+                .to_vec();
+            if bytes.len() > 8 * 1024 * 1024 {
+                return Err("upstream response exceeds 8 MiB".to_string());
+            }
         }
-        Ok((status, bytes.to_vec()))
+        Ok((status, bytes))
     })
 }
 
@@ -1683,6 +1943,14 @@ mod tests {
     }
 
     fn spawn_fake_upstream(hits: Arc<AtomicUsize>, force_usage: bool) -> (String, JoinHandle<()>) {
+        spawn_fake_upstream_with_output(hits, force_usage, 5)
+    }
+
+    fn spawn_fake_upstream_with_output(
+        hits: Arc<AtomicUsize>,
+        force_usage: bool,
+        output_tokens: u64,
+    ) -> (String, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let _ = listener.set_nonblocking(true);
@@ -1697,8 +1965,10 @@ mod tests {
                         let _ = stream.read(&mut buf);
                         hits.fetch_add(1, AtomicOrdering::SeqCst);
                         let body = if force_usage {
-                            br#"{"id":"resp_1","usage":{"input_tokens":10,"output_tokens":5},"output":[]}"#
-                                .to_vec()
+                            format!(
+                                "{{\"id\":\"resp_1\",\"usage\":{{\"input_tokens\":10,\"output_tokens\":{output_tokens}}},\"output\":[]}}"
+                            )
+                            .into_bytes()
                         } else {
                             br#"{"id":"resp_1","output":[]}"#.to_vec()
                         };
@@ -2268,5 +2538,72 @@ mod tests {
             .find(|(k, _)| k.eq_ignore_ascii_case("chatgpt-account-id"))
             .map(|(_, v)| v.as_str());
         assert_eq!(acct_hdr, Some("test-account-uuid-456"));
+
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| { k.eq_ignore_ascii_case("originator") && v == "codex_cli_rs" }),
+            "headers={headers:?}"
+        );
+        assert!(
+            headers
+                .iter()
+                .any(|(k, v)| { k.eq_ignore_ascii_case("OAI-Product-Sku") && v == "codex" }),
+            "headers={headers:?}"
+        );
+    }
+
+    #[test]
+    fn chatgpt_subscription_overrun_is_outcome_unknown_and_halts_gateway() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let (upstream, join) = spawn_fake_upstream_with_output(Arc::clone(&hits), true, 200);
+        let mut authority = sample_authority_for_upstream(2, 50_000, 1, &upstream);
+        authority.max_output_tokens_per_request = 128;
+        let journal =
+            crate::cli::codex_usage_journal::parent_owned_journal_path(&authority.execution_id);
+        let _ = std::fs::remove_file(&journal);
+        let permit = CodexGatewayStartPermit::provider_free_fixture(&authority.execution_id);
+        let gateway = CodexBudgetGateway::start_with_chatgpt_subscription(
+            permit,
+            authority,
+            &upstream,
+            "test-access-token-xyz",
+            Some("test-account-uuid-456"),
+            journal.clone(),
+        )
+        .unwrap();
+
+        let body = br#"{"model":"gpt-test-model","input":"overrun"}"#;
+        let mut stream = TcpStream::connect(gateway.local_addr()).unwrap();
+        let req = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nContent-Type: application/json\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+            body.len(),
+            gateway.session_token()
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        stream.write_all(body).unwrap();
+        let mut resp = String::new();
+        stream.read_to_string(&mut resp).unwrap();
+        assert!(resp.contains("usage_exceeded_envelope"), "{resp}");
+        assert_eq!(hits.load(AtomicOrdering::SeqCst), 1);
+
+        let usage = gateway.shutdown();
+        assert_eq!(usage.provider_requests, 1);
+        assert!(usage.cumulative_input_tokens > 10);
+        assert_eq!(usage.cumulative_output_tokens, 200);
+        let _ = join.join();
+        let _ = std::fs::remove_file(&journal);
+    }
+
+    #[test]
+    fn extracts_usage_and_response_id_from_codex_sse() {
+        let body = br#"event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_sse","usage":{"input_tokens":17,"output_tokens":9,"total_tokens":26}}}
+
+data: [DONE]
+"#;
+        assert_eq!(extract_usage(body).unwrap(), (17, 9));
+        assert_eq!(extract_response_id(body).as_deref(), Some("resp_sse"));
+        assert!(is_sse_body(body));
     }
 }

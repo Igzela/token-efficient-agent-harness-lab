@@ -5,8 +5,9 @@
 
 use clap::{Parser, Subcommand};
 use engine::rwe::live_baseline_coordinator::{
-    issue_and_admit_v2, operator_preflight_read_only, project_first_baseline_evidence,
-    run_frozen_schedule, ProductGoldenPathCellDriver, RWE_LIVE_CELL_COMPOSITION_SEAM,
+    issue_and_admit_v2_with_package, operator_preflight_read_only, project_first_baseline_evidence,
+    run_frozen_mx1_1x2x1, run_frozen_schedule, ProductGoldenPathCellDriver,
+    RWE_LIVE_CELL_COMPOSITION_SEAM,
 };
 use engine::storage::local_product_store::LocalProductStore;
 use serde_json::json;
@@ -50,6 +51,9 @@ enum Commands {
         golden_path_prerequisite_product_task_id: String,
         #[arg(long)]
         expires_at: String,
+        /// Optional registered campaign package, e.g. the Codex subscription package.
+        #[arg(long)]
+        campaign_package_id: Option<String>,
     },
     /// Execute frozen 4-cell schedule under an admitted run.
     ///
@@ -78,6 +82,12 @@ enum Commands {
         /// when allow_live_provider_effects is true).
         #[arg(long)]
         cell_confirmer_key_id: Option<String>,
+        /// Execute the exact frozen MX1 1x2x1 matrix instead of the four-cell RWE schedule.
+        #[arg(long, default_value_t = false)]
+        mx1_1x2x1: bool,
+        /// Registered campaign package selected for the driver.
+        #[arg(long)]
+        campaign_package_id: Option<String>,
     },
 }
 
@@ -123,13 +133,15 @@ fn main() {
             run_id,
             golden_path_prerequisite_product_task_id,
             expires_at,
-        } => issue_and_admit_v2(
+            campaign_package_id,
+        } => issue_and_admit_v2_with_package(
             &store,
             &principal,
             &authorization_id,
             &run_id,
             &golden_path_prerequisite_product_task_id,
             &expires_at,
+            campaign_package_id.as_deref(),
         )
         .map(|admitted| {
             json!({
@@ -147,23 +159,45 @@ fn main() {
             allow_live_provider_effects,
             cell_executor_key_id,
             cell_confirmer_key_id,
+            mx1_1x2x1,
+            campaign_package_id,
         } => {
+            let campaign_package = campaign_package_id
+                .as_deref()
+                .map(engine::rwe::campaign_package::resolve_frozen_campaign_package)
+                .transpose()
+                .unwrap_or_else(|e| {
+                    eprintln!("campaign package resolution failed: {e}");
+                    std::process::exit(2);
+                });
             let driver = ProductGoldenPathCellDriver {
                 allow_live_provider_effects,
                 target_repo_path: target_repo_path.map(std::path::PathBuf::from),
                 fake_transport: None,
                 cell_executor_key_id,
                 cell_confirmer_key_id,
-                campaign_package: None,
+                campaign_package,
             };
-            run_frozen_schedule(
-                &store,
-                &principal,
-                &run_id,
-                &authorization_id,
-                &lease_token,
-                &driver,
-            )
+            let run = if mx1_1x2x1 {
+                run_frozen_mx1_1x2x1(
+                    &store,
+                    &principal,
+                    &run_id,
+                    &authorization_id,
+                    &lease_token,
+                    &driver,
+                )
+            } else {
+                run_frozen_schedule(
+                    &store,
+                    &principal,
+                    &run_id,
+                    &authorization_id,
+                    &lease_token,
+                    &driver,
+                )
+            };
+            run
             .map(|coord| {
                 let aggregate = coord.get("aggregate").cloned().unwrap_or(json!({}));
                 let provider_call_performed = coord

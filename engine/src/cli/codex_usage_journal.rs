@@ -450,19 +450,38 @@ impl CodexUsageJournal {
     }
 
     pub fn mark_outcome_unknown(&mut self, detail: &str) -> Result<(), String> {
+        self.mark_outcome_unknown_with_usage(
+            self.entry.reserved_input_tokens,
+            self.entry.reserved_output_tokens,
+            detail,
+        )
+    }
+
+    /// Charge the larger of the reservation and observed usage when a
+    /// response violates the reserved envelope. This preserves the
+    /// fail-closed outcome while avoiding under-accounting an over-limit
+    /// upstream response.
+    pub fn mark_outcome_unknown_with_usage(
+        &mut self,
+        observed_input_tokens: u64,
+        observed_output_tokens: u64,
+        detail: &str,
+    ) -> Result<(), String> {
         let _ = detail;
         if self.is_halted() {
             return Err("usage journal is halted".to_string());
         }
-        // Charge reserved worst-case so the attempt never regains that budget.
+        // Charge reserved worst-case, or the observed usage when it exceeds
+        // the reservation, so the attempt never regains that budget.
         self.entry.cumulative_input_tokens = self
             .entry
             .cumulative_input_tokens
-            .saturating_add(self.entry.reserved_input_tokens);
-        self.entry.cumulative_output_tokens = self
-            .entry
-            .cumulative_output_tokens
-            .saturating_add(self.entry.reserved_output_tokens);
+            .saturating_add(self.entry.reserved_input_tokens.max(observed_input_tokens));
+        self.entry.cumulative_output_tokens = self.entry.cumulative_output_tokens.saturating_add(
+            self.entry
+                .reserved_output_tokens
+                .max(observed_output_tokens),
+        );
         self.entry.reserved_input_tokens = 0;
         self.entry.reserved_output_tokens = 0;
         self.entry.state = JournalRequestState::OutcomeUnknown;

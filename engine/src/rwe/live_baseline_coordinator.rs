@@ -27,6 +27,10 @@ use super::operator_corpus::{
 use super::runner::{
     persist_rwe_run_authorization_v2, RWE_RUN_AUTH_V2_SCHEMA, RWE_RUN_EVIDENCE_SCHEMA,
 };
+use crate::cli::codex_budget_authority::{
+    CodexBudgetAuthority, CodexBudgetGateway, CodexExecutableIdentity, CodexProviderIdentity,
+    CodexUpstreamAuth, CODEX_BUDGET_AUTHORITY_SCHEMA,
+};
 use crate::harness_evolution::{
     ControllerAction, EffectReceiptDisposition, LedgerController, LedgerOrchestrator,
     LedgerOrchestratorConfig, LedgerTaskRecord, LedgerTaskStatus, LedgerTerminalDisposition,
@@ -40,13 +44,16 @@ use crate::provider::config::{CredentialRef, ProviderConfig};
 use crate::provider::credential::CredentialBoundary;
 use crate::provider::managed_deepseek::{
     DeepSeekProtocol, ManagedAuthoritySource, ManagedCallBinding, ManagedCallLimits,
-    ManagedDeepSeekProvider, ManagedMessage, ManagedModelRole, ManagedProviderCallAuthority,
-    ManagedProviderCallRequest, DEEPSEEK_CREDENTIAL_REFERENCE, DEEPSEEK_OPENAI_BASE_URL,
-    DEEPSEEK_OPENAI_PATH, DEEPSEEK_PROVIDER_KIND,
+    ManagedDeepSeekProvider, ManagedFailureEffect, ManagedFunctionCall, ManagedMessage,
+    ManagedModelRole, ManagedProviderCallAuthority, ManagedProviderCallError,
+    ManagedProviderCallRequest, ManagedProviderResponse, ManagedToolCall, ManagedUsage,
+    DEEPSEEK_CREDENTIAL_REFERENCE, DEEPSEEK_OPENAI_BASE_URL, DEEPSEEK_OPENAI_PATH,
+    DEEPSEEK_PROVIDER_KIND,
 };
 use crate::provider::managed_deepseek_executor::{
-    ManagedDeepSeekExecutorConfig, ManagedDeepSeekNodeExecutor,
+    ManagedDeepSeekExecutorConfig, ManagedDeepSeekNodeExecutor, ManagedNodeProvider,
 };
+use crate::provider::transport::{HttpError, HttpRequest, HttpTransport};
 use crate::storage::local_product_store::{
     compute_attempt_manifest_sha256, AuthenticatedPrincipal, DelegationContract, LocalProductStore,
     RweAuthorizationV2IssueRequest, DELEGATION_SCHEMA_VERSION,
@@ -461,6 +468,21 @@ impl CellDriver for ProductGoldenPathCellDriver {
                 return Err(
                     "live RWE cell for agy provider requires explicit Store live authorization and owner approval".into(),
                 );
+            } else if pkg.provider_kind
+                == crate::cli::codex_budget_authority::CODEX_PROVIDER_KIND_CHATGPT_SUBSCRIPTION
+            {
+                if self.fake_transport.is_some() {
+                    return Err(
+                        "live Codex subscription execution cannot use an injected transport".into(),
+                    );
+                }
+                if crate::cli::codex_budget_authority::CodexUpstreamAuth::resolve_parent_chatgpt_subscription()
+                    .is_none()
+                {
+                    return Err(
+                        "live RWE cell requires a current ChatGPT subscription session".into(),
+                    );
+                }
             }
             if self.target_repo_path.is_none() {
                 return Err("live RWE cell requires target_repo_path matching frozen SHA".into());
@@ -496,7 +518,19 @@ impl CellDriver for ProductGoldenPathCellDriver {
                 store, principal, frozen, run_id, cell, task, ids, target,
             );
         }
-        let intake = build_rwe_cell_product_intake(principal, frozen, task, ids, target)?;
+        let matrix_binding = if cell.get("matrix_plan_id").is_some() {
+            Some(matrix_binding_from_frozen_cell(cell, ids, task)?)
+        } else {
+            None
+        };
+        let intake = build_rwe_cell_product_intake_with_matrix(
+            principal,
+            frozen,
+            task,
+            ids,
+            target,
+            matrix_binding.clone(),
+        )?;
         // Product gate must be on for store-owned intake.
         let admitted = store
             .admit_product_task(&intake, principal.principal_id())
@@ -602,6 +636,8 @@ impl CellDriver for ProductGoldenPathCellDriver {
             task,
             ids,
             &product_task_id,
+            matrix_binding.as_ref(),
+            target,
             &self.fake_transport,
         )
     }
@@ -1127,7 +1163,15 @@ pub fn resolve_matrix_model_to_raw(model_id: &str) -> &str {
 fn resolve_frozen_matrix_model(
     binding: &ProductHarnessMatrixBinding,
 ) -> Result<crate::harness_evolution::Mx1ModelPlanDescriptor, String> {
-    let manifest = crate::harness_evolution::sample_mx1_descriptor_manifest_with_ledger_harness();
+    let manifest = if matches!(
+        binding.model_id.as_str(),
+        crate::harness_evolution::MX1_CODEX_LUNA_MODEL_ID
+            | crate::harness_evolution::MX1_CODEX_TERRA_MODEL_ID
+    ) {
+        crate::harness_evolution::sample_mx1_descriptor_manifest_with_codex_subscription_models()
+    } else {
+        crate::harness_evolution::sample_mx1_descriptor_manifest_with_ledger_harness()
+    };
     crate::harness_evolution::validate_mx1_descriptor_manifest(&manifest).map_err(|error| {
         format!(
             "MX1 descriptor manifest validation failed for matrix model: {}",
@@ -1355,6 +1399,636 @@ impl LiveLedgerProviderAdapter for OpenAiCompatibleProviderAdapter {
         .join()
         .map_err(|_| "live ledger provider runtime thread panicked".to_string())?
     }
+}
+
+/// Store-bound adapter for the ChatGPT subscription Responses surface.
+///
+/// The existing `ManagedProviderCallAuthority` remains the sole ProductTask
+/// claim/reconcile owner.  This adapter only translates the already-authorized
+/// managed request to the loopback `CodexBudgetGateway`; the gateway owns the
+/// parent subscription credential and its separate durable quota journal.
+struct CodexSubscriptionProviderAdapter {
+    store: std::sync::Arc<LocalProductStore>,
+    provider_id: String,
+    provider_kind: String,
+    base_url: String,
+    endpoint_path: String,
+    credential_reference: String,
+    transport: std::sync::Arc<dyn HttpTransport>,
+    worktree: std::path::PathBuf,
+    package_id: String,
+}
+
+impl CodexSubscriptionProviderAdapter {
+    fn new(
+        store: std::sync::Arc<LocalProductStore>,
+        provider_binding: &crate::rwe::campaign_package::FrozenProviderExecutionBinding,
+        transport: std::sync::Arc<dyn HttpTransport>,
+        worktree: std::path::PathBuf,
+        package_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            store,
+            provider_id: provider_binding.provider_identity.clone(),
+            provider_kind: provider_binding.provider_kind.clone(),
+            base_url: provider_binding.base_url.clone(),
+            endpoint_path: provider_binding.endpoint_path.clone(),
+            credential_reference: provider_binding.credential_reference.clone(),
+            transport,
+            worktree,
+            package_id: package_id.into(),
+        }
+    }
+}
+
+impl LiveLedgerProviderAdapter for CodexSubscriptionProviderAdapter {
+    fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+
+    fn provider_kind(&self) -> &str {
+        &self.provider_kind
+    }
+
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    fn endpoint_path(&self) -> &str {
+        &self.endpoint_path
+    }
+
+    fn credential_reference(&self) -> &str {
+        &self.credential_reference
+    }
+
+    fn transport(&self) -> &std::sync::Arc<dyn HttpTransport> {
+        &self.transport
+    }
+
+    fn requested_model(&self) -> Option<&str> {
+        None
+    }
+
+    fn invoke(
+        &self,
+        authority: &ManagedProviderCallAuthority,
+        request: &ManagedProviderCallRequest,
+    ) -> Result<ManagedProviderResponse, String> {
+        if request.provider_kind
+            != crate::cli::codex_budget_authority::CODEX_PROVIDER_KIND_CHATGPT_SUBSCRIPTION
+        {
+            return Err("Codex subscription adapter received a non-subscription request".into());
+        }
+        let permit = self
+            .store
+            .codex_gateway_start_permit_for_delegated_attempt(&request.binding)?;
+        let execution_id = permit.execution_id().to_string();
+        let package =
+            crate::rwe::campaign_package::resolve_frozen_campaign_package(&self.package_id)?;
+        package.validate()?;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "system clock is before UNIX epoch".to_string())?
+            .as_millis() as u64;
+        let executable = CodexExecutableIdentity {
+            binary_path: std::path::PathBuf::from(&package.admitted_binary_path),
+            binary_version: package.admitted_binary_version.clone(),
+            binary_sha256: package.admitted_binary_sha256.clone(),
+        };
+        let provider = CodexProviderIdentity::chatgpt_subscription(&request.base_url)?;
+        let codex_authority = CodexBudgetAuthority {
+            schema_version: CODEX_BUDGET_AUTHORITY_SCHEMA.into(),
+            task_id: request.binding.product_task_id.clone(),
+            workflow_node_id: request.binding.node_id.clone(),
+            execution_id: execution_id.clone(),
+            executable,
+            provider,
+            model: request.requested_model.clone(),
+            // This gateway instance is scoped to exactly one manifest-bound
+            // role call. The Store-owned ManagedProviderCallAuthority retains
+            // the frozen three-call-per-cell budget across planner,
+            // implementer, and reviewer.
+            max_provider_requests: 1,
+            max_retries: request.limits.max_retries,
+            max_input_tokens_per_request: request.limits.max_input_tokens,
+            max_output_tokens_per_request: request.limits.max_output_tokens,
+            max_cumulative_tokens: request.limits.max_cumulative_tokens,
+            max_cost_usd: None,
+            timeout_ms: request.limits.timeout_ms,
+            worktree: self.worktree.clone(),
+            expires_unix_ms: now_ms.saturating_add(24 * 60 * 60 * 1000),
+        };
+        let upstream_auth = CodexUpstreamAuth::resolve_parent_chatgpt_subscription().ok_or(
+            "ChatGPT subscription credential is unavailable; API-key auth is not admitted",
+        )?;
+        let journal_path =
+            crate::cli::codex_usage_journal::parent_owned_journal_path(&execution_id);
+        let gateway = CodexBudgetGateway::start_with_auth(
+            permit,
+            codex_authority,
+            &self.base_url,
+            upstream_auth,
+            journal_path,
+        )?;
+        let loopback_url = format!(
+            "{}/{}",
+            gateway.base_url().trim_end_matches('/'),
+            request.endpoint_path.trim_start_matches('/')
+        );
+        let transport = std::sync::Arc::clone(&self.transport);
+        let request_clone = request.clone();
+        let authority_clone = std::sync::Arc::new(authority.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("Codex subscription runtime unavailable: {error}"))?;
+        let gateway_ref = &gateway;
+        let gateway_result = runtime
+            .block_on(authority_clone.invoke_with_retry(&request_clone, || {
+                codex_responses_wire(gateway_ref, &transport, &loopback_url, &request_clone)
+            }))
+            .map_err(|error| format!("{}: {}", error.domain, error.message));
+        let _gateway_usage = gateway.shutdown();
+        gateway_result
+    }
+}
+
+impl ManagedNodeProvider for CodexSubscriptionProviderAdapter {
+    fn transport_provenance(&self) -> crate::provider::transport::ProviderTransportProvenance {
+        crate::provider::transport::production_transport_provenance(&self.transport)
+    }
+
+    fn invoke_with_authority(
+        &self,
+        authority: &ManagedProviderCallAuthority,
+        request: &ManagedProviderCallRequest,
+    ) -> Result<ManagedProviderResponse, ManagedProviderCallError> {
+        LiveLedgerProviderAdapter::invoke(self, authority, request)
+            .map_err(codex_error_from_adapter_message)
+    }
+}
+
+fn codex_error_from_adapter_message(error: String) -> ManagedProviderCallError {
+    let (domain, message) = error.split_once(": ").map_or(
+        ("adapter_pre_gateway", error.as_str()),
+        |(domain, message)| (domain, message),
+    );
+    let pre_send = domain == "provider_pre_send";
+    let provider_effect = domain.starts_with("provider_");
+    codex_error(
+        domain,
+        message,
+        pre_send,
+        if pre_send {
+            ManagedFailureEffect::PreSend
+        } else if provider_effect {
+            ManagedFailureEffect::OutcomeUnknown
+        } else {
+            ManagedFailureEffect::NoExternalEffect
+        },
+    )
+}
+
+fn codex_error(
+    domain: &str,
+    message: impl Into<String>,
+    retryable: bool,
+    effect: ManagedFailureEffect,
+) -> ManagedProviderCallError {
+    ManagedProviderCallError {
+        domain: domain.into(),
+        message: message.into(),
+        retryable,
+        effect,
+    }
+}
+
+fn codex_gateway_pre_call_code(reason: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(reason).ok()?;
+    let code = value.pointer("/error/code").and_then(Value::as_str)?;
+    matches!(
+        code,
+        "authority_expired"
+            | "session_unbound"
+            | "path_not_admitted"
+            | "malformed_body"
+            | "model_substitution"
+            | "output_limit_required"
+            | "output_limit_invalid"
+            | "output_limit_increase"
+            | "output_limit_unsupported"
+            | "budget_lock_poisoned"
+            | "journal_blocks_admit"
+            | "request_budget_exhausted"
+            | "retry_budget_exhausted"
+            | "input_budget_exhausted"
+            | "cumulative_budget_insufficient"
+            | "journal_reserve_failed"
+            | "journal_lock_poisoned"
+            | "journal_halted"
+    )
+    .then(|| code.to_string())
+}
+
+fn codex_http_error(error: HttpError) -> ManagedProviderCallError {
+    match error {
+        HttpError::PreSend(_) => codex_error(
+            "provider_pre_send",
+            "Codex subscription request was rejected before the loopback send",
+            true,
+            ManagedFailureEffect::PreSend,
+        ),
+        HttpError::Http { status, reason } => {
+            if let Some(code) = codex_gateway_pre_call_code(&reason) {
+                codex_error(
+                    "gateway_pre_call",
+                    code,
+                    false,
+                    ManagedFailureEffect::NoExternalEffect,
+                )
+            } else if status == 401 || status == 403 {
+                codex_error(
+                    "provider_auth",
+                    "ChatGPT subscription authentication or route authorization failed",
+                    false,
+                    ManagedFailureEffect::OutcomeUnknown,
+                )
+            } else {
+                codex_error(
+                    "provider_error",
+                    format!("ChatGPT subscription HTTP {status}"),
+                    false,
+                    ManagedFailureEffect::OutcomeUnknown,
+                )
+            }
+        }
+        HttpError::Timeout(_) => codex_error(
+            "provider_timeout",
+            "ChatGPT subscription response timed out; outcome is unknown",
+            false,
+            ManagedFailureEffect::OutcomeUnknown,
+        ),
+        HttpError::Connection(_) => codex_error(
+            "provider_connection",
+            "ChatGPT subscription connection outcome is unknown",
+            false,
+            ManagedFailureEffect::OutcomeUnknown,
+        ),
+        HttpError::Parse(_) => codex_error(
+            "provider_response",
+            "ChatGPT subscription response transport was malformed",
+            false,
+            ManagedFailureEffect::OutcomeUnknown,
+        ),
+    }
+}
+
+fn codex_sse_events(body: &[u8]) -> Vec<Value> {
+    body.split(|byte| *byte == b'\n')
+        .filter_map(|line| {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            let data = line.strip_prefix(b"data:")?.trim_ascii();
+            if data.is_empty() || data == b"[DONE]" {
+                None
+            } else {
+                serde_json::from_slice::<Value>(data).ok()
+            }
+        })
+        .collect()
+}
+
+fn codex_response_value(body: &[u8], events: &[Value]) -> Option<Value> {
+    if let Ok(value) = serde_json::from_slice::<Value>(body) {
+        return Some(value);
+    }
+    events.iter().find_map(|event| {
+        (event.get("type").and_then(Value::as_str) == Some("response.completed"))
+            .then(|| event.get("response").cloned())
+            .flatten()
+    })
+}
+
+fn append_codex_output_text(value: &Value, output: &mut String) {
+    let Some(items) = value.get("output").and_then(Value::as_array) else {
+        return;
+    };
+    for item in items {
+        if item.get("type").and_then(Value::as_str) == Some("message") {
+            if let Some(content) = item.get("content").and_then(Value::as_array) {
+                for part in content {
+                    if matches!(
+                        part.get("type").and_then(Value::as_str),
+                        Some("output_text") | Some("text")
+                    ) {
+                        if let Some(text) = part.get("text").and_then(Value::as_str) {
+                            output.push_str(text);
+                        }
+                    }
+                }
+            }
+        } else if item.get("type").and_then(Value::as_str) == Some("output_text") {
+            if let Some(text) = item.get("text").and_then(Value::as_str) {
+                output.push_str(text);
+            }
+        }
+    }
+}
+
+fn codex_output_text(body: &[u8], events: &[Value], response: &Value) -> String {
+    let mut deltas = String::new();
+    let mut completed_text = None;
+    for event in events {
+        match event.get("type").and_then(Value::as_str) {
+            Some("response.output_text.delta") => {
+                if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+                    deltas.push_str(delta);
+                }
+            }
+            Some("response.output_text.done") => {
+                completed_text = event
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+            }
+            _ => {}
+        }
+    }
+    if !deltas.is_empty() {
+        return deltas;
+    }
+    if let Some(text) = completed_text {
+        return text;
+    }
+    if let Some(text) = response.get("output_text").and_then(Value::as_str) {
+        return text.to_string();
+    }
+    let mut output = String::new();
+    append_codex_output_text(response, &mut output);
+    if output.is_empty() && events.is_empty() {
+        if let Ok(value) = serde_json::from_slice::<Value>(body) {
+            append_codex_output_text(&value, &mut output);
+        }
+    }
+    output
+}
+
+fn codex_tool_calls(response: &Value) -> Vec<ManagedToolCall> {
+    response
+        .get("output")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
+        .filter_map(|item| {
+            let id = item
+                .get("call_id")
+                .or_else(|| item.get("id"))
+                .and_then(Value::as_str)?;
+            let name = item.get("name").and_then(Value::as_str)?;
+            let arguments = item.get("arguments").and_then(Value::as_str)?;
+            Some(ManagedToolCall {
+                id: id.to_string(),
+                call_type: "function".into(),
+                function: ManagedFunctionCall {
+                    name: name.to_string(),
+                    arguments: arguments.to_string(),
+                },
+            })
+        })
+        .collect()
+}
+
+fn codex_responses_body(request: &ManagedProviderCallRequest) -> Value {
+    let input = request
+        .messages
+        .iter()
+        .map(|message| {
+            let mut value = json!({
+                "role": message.role,
+                "content": message.content,
+            });
+            if let Some(tool_call_id) = &message.tool_call_id {
+                value["call_id"] = json!(tool_call_id);
+            }
+            value
+        })
+        .collect::<Vec<_>>();
+    let mut body = json!({
+        "model": request.requested_model,
+        "input": input,
+        "store": false,
+        "stream": true,
+    });
+    if let Some(system) = &request.system {
+        body["instructions"] = json!(system);
+    }
+    if request.thinking.mode == "enabled" {
+        if let Some(effort) = &request.thinking.reasoning_effort {
+            body["reasoning"] = json!({"effort": effort});
+        }
+    }
+    if !request.tools.is_empty() {
+        body["tools"] = serde_json::to_value(
+            request
+                .tools
+                .iter()
+                .map(|tool| {
+                    json!({
+                        "type": "function",
+                        "name": tool.function.name,
+                        "description": tool.function.description,
+                        "parameters": tool.function.parameters,
+                        "strict": tool.strict,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or(Value::Null);
+    }
+    if let Some(choice) = &request.tool_choice {
+        // The managed route stores the Chat Completions-shaped choice for the
+        // existing DeepSeek adapter. Responses uses the equivalent flat
+        // function choice; translate only this wire representation at the
+        // Codex boundary.
+        if choice.get("type").and_then(Value::as_str) == Some("function") {
+            if let Some(name) = choice.pointer("/function/name").and_then(Value::as_str) {
+                body["tool_choice"] = json!({"type": "function", "name": name});
+            } else {
+                body["tool_choice"] = choice.clone();
+            }
+        } else {
+            body["tool_choice"] = choice.clone();
+        }
+    }
+    body
+}
+
+async fn codex_responses_wire(
+    gateway: &CodexBudgetGateway,
+    transport: &std::sync::Arc<dyn HttpTransport>,
+    url: &str,
+    request: &ManagedProviderCallRequest,
+) -> Result<ManagedProviderResponse, ManagedProviderCallError> {
+    let body = codex_responses_body(request);
+    let response = transport
+        .send(&HttpRequest {
+            url: url.to_string(),
+            method: "POST".into(),
+            headers: vec![
+                (
+                    "Authorization".into(),
+                    format!("Bearer {}", gateway.session_token()),
+                ),
+                ("Content-Type".into(), "application/json".into()),
+                ("Accept".into(), "text/event-stream".into()),
+            ],
+            body: Some(serde_json::to_vec(&body).map_err(|_| {
+                codex_error(
+                    "provider_request",
+                    "Codex subscription request could not be encoded",
+                    false,
+                    ManagedFailureEffect::NoExternalEffect,
+                )
+            })?),
+            timeout_secs: Some(request.limits.timeout_ms as f64 / 1000.0),
+        })
+        .await
+        .map_err(codex_http_error)?;
+    let events = codex_sse_events(&response.body);
+    let response_value = codex_response_value(&response.body, &events).ok_or_else(|| {
+        codex_error(
+            "provider_response",
+            "Codex subscription response lacked a completed Responses object",
+            false,
+            ManagedFailureEffect::OutcomeUnknown,
+        )
+    })?;
+    if !events.is_empty()
+        && !events
+            .iter()
+            .any(|event| event.get("type").and_then(Value::as_str) == Some("response.completed"))
+    {
+        return Err(codex_error(
+            "provider_response",
+            "Codex subscription SSE stream lacked response.completed",
+            false,
+            ManagedFailureEffect::OutcomeUnknown,
+        ));
+    }
+    let protocol_usage = if events.is_empty() {
+        crate::execution_usage::protocol_usage::from_openai_responses_body(&response_value)
+    } else {
+        crate::execution_usage::protocol_usage::from_openai_responses_stream_events(&events)
+    }
+    .ok_or_else(|| {
+        codex_error(
+            "provider_response",
+            "Codex subscription response lacked complete token usage",
+            false,
+            ManagedFailureEffect::OutcomeUnknown,
+        )
+    })?;
+    let model = protocol_usage.model.clone().ok_or_else(|| {
+        codex_error(
+            "provider_identity",
+            "Codex subscription response model identity is missing",
+            false,
+            ManagedFailureEffect::OutcomeUnknown,
+        )
+    })?;
+    let request_id = protocol_usage
+        .message_or_response_id
+        .clone()
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| {
+            codex_error(
+                "provider_identity",
+                "Codex subscription response id is missing",
+                false,
+                ManagedFailureEffect::OutcomeUnknown,
+            )
+        })?;
+    if model != request.requested_model {
+        return Err(codex_error(
+            "provider_identity",
+            "Codex subscription response model conflicts with the frozen request",
+            false,
+            ManagedFailureEffect::OutcomeUnknown,
+        ));
+    }
+    let buckets = protocol_usage.try_to_canonical_buckets().map_err(|_| {
+        codex_error(
+            "provider_response",
+            "Codex subscription usage counters are contradictory",
+            false,
+            ManagedFailureEffect::OutcomeUnknown,
+        )
+    })?;
+    let usage = ManagedUsage {
+        input_tokens: protocol_usage.input_tokens,
+        output_tokens: protocol_usage.output_tokens,
+        cache_read_tokens: protocol_usage.cache_read_tokens,
+        cache_creation_tokens: protocol_usage.cache_creation_tokens,
+        reasoning_output_tokens: protocol_usage.reasoning_output_tokens,
+        fresh_input_tokens: buckets.fresh_input,
+        cumulative_tokens: buckets.billable_token_total(),
+        model: model.clone(),
+        request_id: request_id.clone(),
+    };
+    let gateway_usage = gateway.usage();
+    if gateway_usage.provider_requests != 1
+        || gateway_usage.cumulative_input_tokens != usage.input_tokens
+        || gateway_usage.cumulative_output_tokens != usage.output_tokens
+    {
+        return Err(codex_error(
+            "provider_reconciliation",
+            "Codex gateway usage disagrees with the Responses usage record",
+            false,
+            ManagedFailureEffect::OutcomeUnknown,
+        ));
+    }
+    let ownership = gateway.journal_ownership_facts().map_err(|_| {
+        codex_error(
+            "provider_reconciliation",
+            "Codex gateway parent journal ownership could not be verified",
+            false,
+            ManagedFailureEffect::OutcomeUnknown,
+        )
+    })?;
+    if !ownership.parent_owned_for_attempt || !ownership.durable_and_current {
+        return Err(codex_error(
+            "provider_reconciliation",
+            "Codex gateway parent journal is not current for this attempt",
+            false,
+            ManagedFailureEffect::OutcomeUnknown,
+        ));
+    }
+    let stop_reason = response_value
+        .get("status")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            response_value
+                .pointer("/incomplete_details/reason")
+                .and_then(Value::as_str)
+        })
+        .unwrap_or("completed")
+        .to_string();
+    Ok(ManagedProviderResponse {
+        schema_version: request.response_schema_version.clone(),
+        provider_identity: request.provider_identity.clone(),
+        provider_kind: request.provider_kind.clone(),
+        protocol: DeepSeekProtocol::OpenAiCompatible,
+        requested_model: request.requested_model.clone(),
+        resolved_model: model,
+        request_id,
+        output_text: codex_output_text(&response.body, &events, &response_value),
+        tool_calls: codex_tool_calls(&response_value),
+        stop_reason,
+        usage,
+        estimated_cost_usd: None,
+        stream: true,
+    })
 }
 
 /// Live worker for ledger-orchestrated cells: exactly one delegated
@@ -3240,6 +3914,18 @@ pub fn revalidate_stored_v2_authorization(
     if body.get("schema_version").and_then(Value::as_str) != Some(RWE_RUN_AUTH_V2_SCHEMA) {
         return Err("live baseline requires rwe_run_authorization.v2".into());
     }
+    let package = body
+        .get("campaign_package_id")
+        .and_then(Value::as_str)
+        .map(crate::rwe::campaign_package::resolve_frozen_campaign_package)
+        .transpose()?
+        .unwrap_or(crate::rwe::campaign_package::canonical_deepseek_v2_package()?);
+    package.validate()?;
+    let provider_binding = package
+        .provider_execution_binding
+        .clone()
+        .ok_or("stored v2 authorization package lacks a provider binding")?;
+    provider_binding.validate()?;
     // Bindings must match current freeze owners (not caller text).
     let checks = [
         (
@@ -3270,32 +3956,32 @@ pub fn revalidate_stored_v2_authorization(
         (
             "provider_kind",
             body.get("provider_kind").and_then(Value::as_str),
-            Some(DEEPSEEK_PROVIDER_KIND),
+            Some(provider_binding.provider_kind.as_str()),
         ),
         (
             "provider_base_url",
             body.get("provider_base_url").and_then(Value::as_str),
-            Some(DEEPSEEK_OPENAI_BASE_URL),
+            Some(provider_binding.base_url.as_str()),
         ),
         (
             "provider_path",
             body.get("provider_path").and_then(Value::as_str),
-            Some(DEEPSEEK_OPENAI_PATH),
+            Some(provider_binding.endpoint_path.as_str()),
         ),
         (
             "model_identity",
             body.get("model_identity").and_then(Value::as_str),
-            Some(OPERATOR_ADMITTED_MODEL),
+            Some(package.admitted_model.as_str()),
         ),
         (
             "binary_path",
             body.get("binary_path").and_then(Value::as_str),
-            Some(OPERATOR_ADMITTED_BINARY_PATH),
+            Some(package.admitted_binary_path.as_str()),
         ),
         (
             "binary_version",
             body.get("binary_version").and_then(Value::as_str),
-            Some(OPERATOR_ADMITTED_BINARY_VERSION),
+            Some(package.admitted_binary_version.as_str()),
         ),
         (
             "principal_id",
@@ -3614,21 +4300,73 @@ pub fn issue_and_admit_v2(
     golden_path_prerequisite_product_task_id: &str,
     expires_at: &str,
 ) -> Result<Value, String> {
-    let pre = operator_preflight(
+    issue_and_admit_v2_with_package(
         store,
         principal,
+        authorization_id,
+        run_id,
+        golden_path_prerequisite_product_task_id,
+        expires_at,
         None,
-        Some(golden_path_prerequisite_product_task_id),
-    )?;
-    // One-use live authority must not be consumed unless the complete runnable
-    // seam and all pre-effect prerequisites are ready: composition seam, Golden
-    // Path prerequisite, non-CI environment, and credential symbol present.
-    // A run that cannot genuinely execute cells never consumes the authority.
-    if pre.get("ready").and_then(Value::as_bool) != Some(true) {
-        return Err(format!(
-            "fail closed before RWE authority consumption: {}",
-            pre.get("blockers").cloned().unwrap_or(json!([]))
-        ));
+    )
+}
+
+/// Issue/admit the existing v2 run envelope for one frozen campaign package.
+/// The package argument only selects an already-registered binding; all
+/// authorization, budget, corpus, and prerequisite state remains Store-owned.
+pub fn issue_and_admit_v2_with_package(
+    store: &LocalProductStore,
+    principal: &AuthenticatedPrincipal,
+    authorization_id: &str,
+    run_id: &str,
+    golden_path_prerequisite_product_task_id: &str,
+    expires_at: &str,
+    campaign_package_id: Option<&str>,
+) -> Result<Value, String> {
+    if let Some(package_id) = campaign_package_id {
+        let package = crate::rwe::campaign_package::resolve_frozen_campaign_package(package_id)?;
+        package.validate()?;
+        if package.provider_kind
+            == crate::cli::codex_budget_authority::CODEX_PROVIDER_KIND_CHATGPT_SUBSCRIPTION
+        {
+            if std::env::var("CI").ok().as_deref() == Some("true") {
+                return Err("live RWE is forbidden in CI".into());
+            }
+            if std::env::var(RWE_OPERATOR_LIVE_RUN_TOKEN).ok().as_deref() != Some("1") {
+                return Err(format!(
+                    "live RWE requires the operator live-run token {RWE_OPERATOR_LIVE_RUN_TOKEN}=1"
+                ));
+            }
+            if CodexUpstreamAuth::resolve_parent_chatgpt_subscription().is_none() {
+                return Err("ChatGPT subscription session is unavailable".into());
+            }
+            rwe_composition_seam_ready()?;
+            let prereq = store
+                .get_product_task_for_tenant(
+                    golden_path_prerequisite_product_task_id,
+                    principal.tenant_id(),
+                )?
+                .ok_or("Golden Path prerequisite is missing for the authenticated tenant")?;
+            let _ = prereq;
+            let evidence = store
+                .get_product_task_terminal_evidence(golden_path_prerequisite_product_task_id)?;
+            if evidence.get("task_status").and_then(Value::as_str) != Some("completed") {
+                return Err("Golden Path prerequisite lacks a completed terminal seal".into());
+            }
+        }
+    } else {
+        let pre = operator_preflight(
+            store,
+            principal,
+            None,
+            Some(golden_path_prerequisite_product_task_id),
+        )?;
+        if pre.get("ready").and_then(Value::as_bool) != Some(true) {
+            return Err(format!(
+                "fail closed before RWE authority consumption: {}",
+                pre.get("blockers").cloned().unwrap_or(json!([]))
+            ));
+        }
     }
 
     let _issued = persist_rwe_run_authorization_v2(
@@ -3638,7 +4376,7 @@ pub fn issue_and_admit_v2(
             authorization_id: authorization_id.into(),
             golden_path_prerequisite_product_task_id: golden_path_prerequisite_product_task_id
                 .into(),
-            campaign_package_id: None,
+            campaign_package_id: campaign_package_id.map(str::to_string),
             expires_at: expires_at.into(),
         },
     )?;
@@ -3714,7 +4452,11 @@ fn build_cell_evidence(
             "corpus_sha256": frozen.corpus.corpus_sha256,
             "protocol_sha256": frozen.protocol.body_sha256,
             "schedule_sha256": frozen.schedule.schedule_sha256,
-            "model": OPERATOR_ADMITTED_MODEL,
+            "model": cell
+                .get("matrix_model_id")
+                .or_else(|| cell.get("model_identity"))
+                .cloned()
+                .unwrap_or_else(|| json!(OPERATOR_ADMITTED_MODEL)),
             "target_repo": OPERATOR_TARGET_REPO,
             "cell": cell,
         },
@@ -3741,6 +4483,26 @@ fn evaluate_store_owned_live_baseline_seal(
         Some(c) if !c.is_empty() => c,
         _ => return false,
     };
+    evaluate_store_owned_live_baseline_seal_for_cells(
+        store,
+        principal,
+        frozen,
+        run_id,
+        stopped_by,
+        cells,
+        cell_results,
+    )
+}
+
+fn evaluate_store_owned_live_baseline_seal_for_cells(
+    store: &LocalProductStore,
+    principal: &AuthenticatedPrincipal,
+    frozen: &OperatorFrozenContractSet,
+    run_id: &str,
+    stopped_by: &Option<String>,
+    cells: &[Value],
+    cell_results: &[Value],
+) -> bool {
     let stop_rules = stop_rules_from_schedule(frozen);
     let mut executed = 0usize;
     let mut any_skipped = false;
@@ -4234,6 +4996,84 @@ fn cell_reservation_limits(cell: &Value) -> Result<RweCellBudgetEnvelope, String
     RweCellBudgetEnvelope::from_schedule_cell(cell)
 }
 
+fn frozen_codex_mx1_cells(frozen: &OperatorFrozenContractSet) -> Result<Vec<Value>, String> {
+    let task = frozen
+        .corpus
+        .tasks
+        .first()
+        .ok_or("frozen operator corpus has no task for MX1")?;
+    let base_cell = frozen
+        .schedule
+        .body
+        .get("cells")
+        .and_then(Value::as_array)
+        .and_then(|cells| cells.first())
+        .cloned()
+        .ok_or("frozen schedule has no budget cell for MX1")?;
+    let manifest =
+        crate::harness_evolution::sample_mx1_descriptor_manifest_with_codex_subscription_models();
+    crate::harness_evolution::validate_mx1_descriptor_manifest(&manifest)
+        .map_err(|error| format!("Codex MX1 manifest is invalid: {}", error.message))?;
+    let common_basis = sort_value(&json!({
+        "schema_version": "mx1_common_basis.v1",
+        "corpus_sha256": frozen.corpus.corpus_sha256,
+        "protocol_sha256": frozen.protocol.body_sha256,
+        "schedule_sha256": frozen.schedule.schedule_sha256,
+        "task_id": task.task_id,
+        "repetition": base_cell.get("repetition"),
+        "seed": base_cell.get("seed"),
+        "budget_point_id": base_cell.get("budget_point_id"),
+        "verifier": crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY,
+        "allowed_paths": task.allowed_mutable_paths,
+        "comparison": current_comparison_manifest()?.to_json(),
+    }));
+    let common_basis_sha256 = sha256_hex(common_basis.to_string().as_bytes());
+    let plan = crate::harness_evolution::build_mx1_matrix_plan(
+        &manifest,
+        crate::harness_evolution::Mx1MatrixRung::OneByTwoByOne,
+        &task.task_id,
+        base_cell
+            .get("repetition")
+            .and_then(Value::as_u64)
+            .ok_or("MX1 base cell repetition is missing")? as u32,
+        &common_basis_sha256,
+    )
+    .map_err(|error| format!("Codex MX1 plan construction failed: {}", error.message))?;
+    crate::harness_evolution::validate_mx1_matrix_plan(&manifest, &plan)
+        .map_err(|error| format!("Codex MX1 plan validation failed: {}", error.message))?;
+    let mut cells = Vec::with_capacity(plan.cells.len());
+    for (index, matrix_cell) in plan.cells.iter().enumerate() {
+        if matrix_cell.disposition != crate::harness_evolution::Mx1MatrixCellDisposition::Admitted {
+            return Err(format!(
+                "Codex MX1 1x2x1 selected an incomparable cell: {}",
+                matrix_cell.cell_id
+            ));
+        }
+        let mut cell = base_cell.clone();
+        cell["cell_id"] = json!(matrix_cell.cell_id);
+        cell["task_id"] = json!(matrix_cell.identity.task_id);
+        cell["harness_id"] = json!(matrix_cell.identity.harness_id);
+        cell["strategy_id"] = json!(matrix_cell.identity.strategy_id);
+        cell["matrix_plan_id"] = json!(plan.plan_id);
+        cell["matrix_manifest_sha256"] = json!(plan.manifest_sha256);
+        cell["matrix_common_basis_sha256"] = json!(plan.common_basis_sha256);
+        cell["matrix_rung"] = json!(plan.rung.as_str());
+        cell["matrix_repetition"] = json!(plan.repetition);
+        cell["matrix_cell_descriptor_sha256"] = json!(matrix_cell.descriptor_digest);
+        cell["matrix_model_id"] = json!(matrix_cell.identity.model_id);
+        cell["matrix_strategy_id"] = json!(matrix_cell.identity.strategy_id);
+        cell["sequential_order"] = json!((index + 1) as u64);
+        cells.push(cell);
+    }
+    if cells.len() != 2 {
+        return Err(format!(
+            "Codex MX1 1x2x1 must materialize exactly two cells, got {}",
+            cells.len()
+        ));
+    }
+    Ok(cells)
+}
+
 /// Run the frozen schedule under an admitted authorization and injectable driver.
 pub fn run_frozen_schedule(
     store: &std::sync::Arc<LocalProductStore>,
@@ -4247,7 +5087,75 @@ pub fn run_frozen_schedule(
 
     let frozen = freeze_current_operator_contract_set()?;
     revalidate_stored_v2_authorization(store, principal, authorization_id, &frozen)?;
+    let cells = frozen
+        .schedule
+        .body
+        .get("cells")
+        .and_then(Value::as_array)
+        .ok_or("frozen schedule cells missing")?;
+    if cells.len() != 4 {
+        return Err(format!(
+            "Minimum First RWE schedule must have exactly 4 cells, got {}",
+            cells.len()
+        ));
+    }
+    run_frozen_cells(
+        store,
+        principal,
+        &frozen,
+        run_id,
+        authorization_id,
+        lease_token,
+        cells.to_vec(),
+        driver,
+    )
+}
 
+/// Execute the minimal real Codex subscription matrix rung: one admitted H0
+/// harness, two exact subscription Models, one frozen baseline Strategy, one
+/// repetition. It reuses the normal RWE coordinator and Store owners.
+pub fn run_frozen_mx1_1x2x1(
+    store: &std::sync::Arc<LocalProductStore>,
+    principal: &AuthenticatedPrincipal,
+    run_id: &str,
+    authorization_id: &str,
+    lease_token: &str,
+    driver: &dyn CellDriver,
+) -> Result<Value, String> {
+    driver.ensure_effects_ready()?;
+    let frozen = freeze_current_operator_contract_set()?;
+    let auth = revalidate_stored_v2_authorization(store, principal, authorization_id, &frozen)?;
+    if auth
+        .get("body_json")
+        .and_then(|body| body.get("campaign_package_id"))
+        .and_then(Value::as_str)
+        != Some(crate::rwe::campaign_package::RWE_CODEX_SUBSCRIPTION_V1_PACKAGE_ID)
+    {
+        return Err("MX1 1x2x1 requires the frozen Codex subscription campaign package".into());
+    }
+    let cells = frozen_codex_mx1_cells(&frozen)?;
+    run_frozen_cells(
+        store,
+        principal,
+        &frozen,
+        run_id,
+        authorization_id,
+        lease_token,
+        cells,
+        driver,
+    )
+}
+
+fn run_frozen_cells(
+    store: &std::sync::Arc<LocalProductStore>,
+    principal: &AuthenticatedPrincipal,
+    frozen: &OperatorFrozenContractSet,
+    run_id: &str,
+    authorization_id: &str,
+    lease_token: &str,
+    cells: Vec<Value>,
+    driver: &dyn CellDriver,
+) -> Result<Value, String> {
     let mut lease = lease_token.to_string();
     if lease.is_empty() {
         let auth = store
@@ -4269,19 +5177,6 @@ pub fn run_frozen_schedule(
             .to_string();
     }
 
-    let cells = frozen
-        .schedule
-        .body
-        .get("cells")
-        .and_then(Value::as_array)
-        .ok_or("frozen schedule cells missing")?;
-    if cells.len() != 4 {
-        return Err(format!(
-            "Minimum First RWE schedule must have exactly 4 cells, got {}",
-            cells.len()
-        ));
-    }
-
     let existing = store.list_rwe_task_attempts_for_run(run_id)?;
     let mut existing_by_attempt: std::collections::BTreeMap<String, Value> =
         std::collections::BTreeMap::new();
@@ -4291,7 +5186,7 @@ pub fn run_frozen_schedule(
         }
     }
 
-    let stop_rules = stop_rules_from_schedule(&frozen);
+    let stop_rules = stop_rules_from_schedule(frozen);
     let mut stopped_by = reconstruct_stopped_by(&existing, &stop_rules);
 
     let mut cell_results = Vec::new();
@@ -4300,9 +5195,9 @@ pub fn run_frozen_schedule(
     let mut any_live_provider = false;
     let mut any_injected_provider = false;
 
-    for cell in cells {
+    for cell in &cells {
         // Revalidate bindings before every cell effect.
-        revalidate_stored_v2_authorization(store, principal, authorization_id, &frozen)?;
+        revalidate_stored_v2_authorization(store, principal, authorization_id, frozen)?;
 
         let task_id = cell
             .get("task_id")
@@ -4368,15 +5263,8 @@ pub fn run_frozen_schedule(
                 stopped_by.as_deref().unwrap_or("stop"),
                 &ids,
             );
-            let evidence = build_cell_evidence(
-                run_id,
-                authorization_id,
-                &frozen,
-                cell,
-                task,
-                &ids,
-                &outcome,
-            );
+            let evidence =
+                build_cell_evidence(run_id, authorization_id, frozen, cell, task, &ids, &outcome);
             // Skipped cells do not reserve budget; terminal accounting only.
             store.persist_rwe_task_attempt(
                 run_id,
@@ -4402,7 +5290,7 @@ pub fn run_frozen_schedule(
                 let evidence = build_cell_evidence(
                     run_id,
                     authorization_id,
-                    &frozen,
+                    frozen,
                     cell,
                     task,
                     &ids,
@@ -4469,7 +5357,7 @@ pub fn run_frozen_schedule(
                 let evidence = build_cell_evidence(
                     run_id,
                     authorization_id,
-                    &frozen,
+                    frozen,
                     cell,
                     task,
                     &ids,
@@ -4502,7 +5390,7 @@ pub fn run_frozen_schedule(
         // After fence: catch execution errors and terminalize correctly.
         // outcome_unknown must not auto-retry or consume another authorization.
         let mut outcome = match driver
-            .execute_cell(store, principal, &frozen, run_id, &lease, cell, task, &ids)
+            .execute_cell(store, principal, frozen, run_id, &lease, cell, task, &ids)
         {
             Ok(o) => o,
             Err(e) => {
@@ -4627,15 +5515,8 @@ pub fn run_frozen_schedule(
             outcome.cost_unknown = true;
         }
 
-        let evidence = build_cell_evidence(
-            run_id,
-            authorization_id,
-            &frozen,
-            cell,
-            task,
-            &ids,
-            &outcome,
-        );
+        let evidence =
+            build_cell_evidence(run_id, authorization_id, frozen, cell, task, &ids, &outcome);
         store.finalize_rwe_cell_dispatch(
             run_id,
             &lease,
@@ -4675,14 +5556,30 @@ pub fn run_frozen_schedule(
         return Err("run cannot terminalize while a cell dispatch fence is open".into());
     }
 
-    let live_baseline_sealed = evaluate_store_owned_live_baseline_seal(
-        store,
-        principal,
-        &frozen,
-        run_id,
-        &stopped_by,
-        &cell_results,
-    );
+    let live_baseline_sealed = if cells
+        .first()
+        .and_then(|cell| cell.get("matrix_plan_id"))
+        .is_some()
+    {
+        evaluate_store_owned_live_baseline_seal_for_cells(
+            store,
+            principal,
+            frozen,
+            run_id,
+            &stopped_by,
+            &cells,
+            &cell_results,
+        )
+    } else {
+        evaluate_store_owned_live_baseline_seal(
+            store,
+            principal,
+            frozen,
+            run_id,
+            &stopped_by,
+            &cell_results,
+        )
+    };
 
     // Store-owned transport provenance classification for the whole run.
     // `external` requires every journaled provider request to have been served
@@ -4799,6 +5696,8 @@ fn execute_armed_delegated_rwe_cell(
     task: &RweTaskDefinition,
     ids: &CellIdentities,
     product_task_id: &str,
+    matrix_binding: Option<&ProductHarnessMatrixBinding>,
+    target_repo_path: &std::path::Path,
     transport: &Option<std::sync::Arc<dyn crate::provider::transport::HttpTransport>>,
 ) -> Result<CellOutcome, String> {
     let product_task_id = product_task_id.to_string();
@@ -4815,11 +5714,45 @@ fn execute_armed_delegated_rwe_cell(
     let cell_cost = crate::rwe::frozen_rwe_bindings::frozen_schedule_cell_max_cost(cell)?
         .ok_or("frozen RWE cell monetary ceiling required for delegated spend")?;
     let union_paths = crate::rwe::frozen_rwe_bindings::frozen_rwe_union_allowed_paths()?;
-    let role_models = json!({
-        "planner": OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL,
-        "implementer": OPERATOR_ADMITTED_MODEL,
-        "reviewer": OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL,
-    });
+    let package = match matrix_binding {
+        Some(binding) => {
+            if binding.rung != "1x2x1"
+                || binding.harness_id != crate::harness_evolution::MX1_ARM_ZERO_HARNESS_ID
+                || binding.strategy_id != crate::harness_evolution::MX1_NO_PROJECTION_STRATEGY_ID
+            {
+                return Err(
+                    "Codex live H0 route requires the frozen MX1 1x2x1 arm-zero/no-projection cell"
+                        .into(),
+                );
+            }
+            crate::rwe::campaign_package::canonical_codex_subscription_v1_package()?
+        }
+        None => crate::rwe::campaign_package::canonical_deepseek_v2_package()?,
+    };
+    package.validate()?;
+    let is_codex = package.provider_kind
+        == crate::cli::codex_budget_authority::CODEX_PROVIDER_KIND_CHATGPT_SUBSCRIPTION;
+    let role_model = if let Some(binding) = matrix_binding {
+        resolve_frozen_matrix_model(binding)?.resolved_model_id
+    } else if is_codex {
+        package.admitted_model.clone()
+    } else {
+        OPERATOR_ADMITTED_MODEL.to_string()
+    };
+    let provider_binding = package.provider_execution_binding_for_model(&role_model)?;
+    let role_models = if is_codex {
+        json!({
+            "planner": role_model,
+            "implementer": role_model,
+            "reviewer": role_model,
+        })
+    } else {
+        json!({
+            "planner": OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL,
+            "implementer": OPERATOR_ADMITTED_MODEL,
+            "reviewer": OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL,
+        })
+    };
 
     // 1. Delegation contract under the existing delegated authority owner.
     let contract = DelegationContract {
@@ -4835,7 +5768,7 @@ fn execute_armed_delegated_rwe_cell(
         max_changed_lines: max_lines,
         max_cost_usd_per_run: cell_cost,
         max_total_cost_usd: cell_cost,
-        protocol: "openai_compatible".into(),
+        protocol: provider_binding.protocol.clone(),
         models: role_models.clone(),
         output: json!({
             "draft_pr_only": true,
@@ -4864,7 +5797,17 @@ fn execute_armed_delegated_rwe_cell(
         "mutable_paths": task.allowed_mutable_paths,
         "max_cost_usd": Value::Null,
         "verifier": crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY,
-        "provider_execution_binding": crate::rwe::campaign_package::canonical_deepseek_provider_binding().to_json(),
+        "provider_execution_binding": provider_binding.to_json(),
+        "campaign_package_id": if is_codex {
+            json!(package.package_id)
+        } else {
+            Value::Null
+        },
+        "matrix_model_descriptor_id": if is_codex {
+            matrix_binding.map(|binding| binding.model_id.clone())
+        } else {
+            None
+        },
     });
     let proposal_sha = compute_attempt_manifest_sha256(&proposal)?;
     proposal["manifest_sha256"] = json!(proposal_sha);
@@ -4968,13 +5911,14 @@ fn execute_armed_delegated_rwe_cell(
             .pointer("/limits/max_cost_usd")
             .and_then(Value::as_f64),
     };
-    let manifest_price_profile = serde_json::from_value(
-        manifest
-            .pointer("/provider/price_profile")
-            .cloned()
-            .ok_or("delegated manifest price profile missing")?,
-    )
-    .map_err(|_| "delegated manifest price profile malformed")?;
+    let manifest_price_profile = match manifest.pointer("/provider/price_profile") {
+        Some(Value::Null) if is_codex => {
+            crate::provider::managed_deepseek::DeepSeekPriceProfile::default()
+        }
+        Some(value) => serde_json::from_value(value.clone())
+            .map_err(|_| "delegated manifest price profile malformed")?,
+        None => return Err("delegated manifest price profile missing".into()),
+    };
     let source: std::sync::Arc<dyn crate::provider::managed_deepseek::ManagedAuthoritySource> =
         store.clone();
     // The injectable seam can never be the canonical production boundary: any
@@ -4989,80 +5933,108 @@ fn execute_armed_delegated_rwe_cell(
             std::sync::Arc::clone(tx),
         )) as std::sync::Arc<dyn crate::provider::transport::HttpTransport>
     });
-    let executor = match serving_transport {
-        Some(tx) => {
-            let mk = |model: &str| -> Result<std::sync::Arc<ManagedDeepSeekProvider>, String> {
-                let config = ProviderConfig::new(
-                    "deepseek-managed-rwe",
-                    "openai_compatible",
-                    DEEPSEEK_OPENAI_BASE_URL,
-                    model,
-                    DEEPSEEK_CREDENTIAL_REFERENCE,
-                    "2026-07-30T00:00:00Z",
-                );
-                let credential = CredentialRef::new(
-                    DEEPSEEK_CREDENTIAL_REFERENCE,
-                    "env",
-                    "***",
-                    "provider:deepseek",
-                    "2026-07-30T00:00:00Z",
-                );
-                Ok(std::sync::Arc::new(ManagedDeepSeekProvider::new_openai(
-                    config,
-                    CredentialBoundary::new("env")
-                        .map_err(|e| format!("managed credential boundary failed: {e}"))?,
-                    credential,
-                    std::sync::Arc::clone(&tx),
-                )))
-            };
-            ManagedDeepSeekNodeExecutor::new(
-                mk(OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL)?,
-                mk(OPERATOR_ADMITTED_MODEL)?,
-                mk(OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL)?,
-                source,
-                ManagedDeepSeekExecutorConfig {
-                    protocol: DeepSeekProtocol::OpenAiCompatible,
-                    limits: manifest_limits,
-                    price_profile: manifest_price_profile,
-                },
-            )?
+    let executor = if is_codex {
+        if serving_transport.is_some() {
+            return Err(
+                "live Codex subscription execution cannot use an injected transport".into(),
+            );
         }
-        None => {
-            let mk = |model: &str| -> Result<std::sync::Arc<ManagedDeepSeekProvider>, String> {
-                let config = ProviderConfig::new(
-                    "deepseek-managed-rwe",
-                    "openai_compatible",
-                    DEEPSEEK_OPENAI_BASE_URL,
-                    model,
-                    DEEPSEEK_CREDENTIAL_REFERENCE,
-                    "2026-07-30T00:00:00Z",
-                );
-                let credential = CredentialRef::new(
-                    DEEPSEEK_CREDENTIAL_REFERENCE,
-                    "env",
-                    "***",
-                    "provider:deepseek",
-                    "2026-07-30T00:00:00Z",
-                );
-                Ok(std::sync::Arc::new(ManagedDeepSeekProvider::new_openai(
-                    config,
-                    CredentialBoundary::new("env")
-                        .map_err(|e| format!("managed credential boundary failed: {e}"))?,
-                    credential,
-                    std::sync::Arc::new(crate::provider::transport::ReqwestTransport::new()),
-                )))
-            };
-            ManagedDeepSeekNodeExecutor::new(
-                mk(OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL)?,
-                mk(OPERATOR_ADMITTED_MODEL)?,
-                mk(OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL)?,
-                source,
-                ManagedDeepSeekExecutorConfig {
-                    protocol: DeepSeekProtocol::OpenAiCompatible,
-                    limits: manifest_limits,
-                    price_profile: manifest_price_profile,
-                },
-            )?
+        let adapter: std::sync::Arc<dyn ManagedNodeProvider> =
+            std::sync::Arc::new(CodexSubscriptionProviderAdapter::new(
+                std::sync::Arc::clone(store),
+                &provider_binding,
+                std::sync::Arc::new(crate::provider::transport::ReqwestTransport::new()),
+                target_repo_path.to_path_buf(),
+                package.package_id.clone(),
+            ));
+        ManagedDeepSeekNodeExecutor::new_with_adapters(
+            std::sync::Arc::clone(&adapter),
+            std::sync::Arc::clone(&adapter),
+            adapter,
+            source,
+            ManagedDeepSeekExecutorConfig {
+                protocol: DeepSeekProtocol::OpenAiCompatible,
+                limits: manifest_limits,
+                price_profile: manifest_price_profile,
+            },
+            vec![role_model.clone()],
+        )?
+    } else {
+        match serving_transport {
+            Some(tx) => {
+                let mk = |model: &str| -> Result<std::sync::Arc<ManagedDeepSeekProvider>, String> {
+                    let config = ProviderConfig::new(
+                        "deepseek-managed-rwe",
+                        "openai_compatible",
+                        DEEPSEEK_OPENAI_BASE_URL,
+                        model,
+                        DEEPSEEK_CREDENTIAL_REFERENCE,
+                        "2026-07-30T00:00:00Z",
+                    );
+                    let credential = CredentialRef::new(
+                        DEEPSEEK_CREDENTIAL_REFERENCE,
+                        "env",
+                        "***",
+                        "provider:deepseek",
+                        "2026-07-30T00:00:00Z",
+                    );
+                    Ok(std::sync::Arc::new(ManagedDeepSeekProvider::new_openai(
+                        config,
+                        CredentialBoundary::new("env")
+                            .map_err(|e| format!("managed credential boundary failed: {e}"))?,
+                        credential,
+                        std::sync::Arc::clone(&tx),
+                    )))
+                };
+                ManagedDeepSeekNodeExecutor::new(
+                    mk(OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL)?,
+                    mk(OPERATOR_ADMITTED_MODEL)?,
+                    mk(OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL)?,
+                    source,
+                    ManagedDeepSeekExecutorConfig {
+                        protocol: DeepSeekProtocol::OpenAiCompatible,
+                        limits: manifest_limits,
+                        price_profile: manifest_price_profile,
+                    },
+                )?
+            }
+            None => {
+                let mk = |model: &str| -> Result<std::sync::Arc<ManagedDeepSeekProvider>, String> {
+                    let config = ProviderConfig::new(
+                        "deepseek-managed-rwe",
+                        "openai_compatible",
+                        DEEPSEEK_OPENAI_BASE_URL,
+                        model,
+                        DEEPSEEK_CREDENTIAL_REFERENCE,
+                        "2026-07-30T00:00:00Z",
+                    );
+                    let credential = CredentialRef::new(
+                        DEEPSEEK_CREDENTIAL_REFERENCE,
+                        "env",
+                        "***",
+                        "provider:deepseek",
+                        "2026-07-30T00:00:00Z",
+                    );
+                    Ok(std::sync::Arc::new(ManagedDeepSeekProvider::new_openai(
+                        config,
+                        CredentialBoundary::new("env")
+                            .map_err(|e| format!("managed credential boundary failed: {e}"))?,
+                        credential,
+                        std::sync::Arc::new(crate::provider::transport::ReqwestTransport::new()),
+                    )))
+                };
+                ManagedDeepSeekNodeExecutor::new(
+                    mk(OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL)?,
+                    mk(OPERATOR_ADMITTED_MODEL)?,
+                    mk(OPERATOR_ADMITTED_PLANNER_REVIEWER_MODEL)?,
+                    source,
+                    ManagedDeepSeekExecutorConfig {
+                        protocol: DeepSeekProtocol::OpenAiCompatible,
+                        limits: manifest_limits,
+                        price_profile: manifest_price_profile,
+                    },
+                )?
+            }
         }
     };
     let mut terminal_reached = false;
@@ -5459,6 +6431,139 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tempfile::tempdir;
+
+    #[test]
+    fn codex_pre_send_adapter_error_preserves_retry_classification() {
+        let error = codex_error_from_adapter_message(
+            "provider_pre_send: loopback request was rejected before send".into(),
+        );
+        assert!(error.retryable);
+        assert_eq!(error.effect, ManagedFailureEffect::PreSend);
+        assert_eq!(error.domain, "provider_pre_send");
+    }
+
+    #[test]
+    fn codex_pre_gateway_adapter_error_does_not_claim_provider_effect() {
+        let error = codex_error_from_adapter_message(
+            "ChatGPT subscription credential is unavailable; API-key auth is not admitted".into(),
+        );
+        assert!(!error.retryable);
+        assert_eq!(error.effect, ManagedFailureEffect::NoExternalEffect);
+        assert_eq!(error.domain, "adapter_pre_gateway");
+    }
+
+    #[test]
+    fn codex_gateway_pre_call_http_error_does_not_claim_provider_effect() {
+        let reason = serde_json::to_string(&json!({
+            "error": {"code": "request_budget_exhausted"}
+        }))
+        .unwrap();
+        let error = codex_http_error(HttpError::Http {
+            status: 429,
+            reason,
+        });
+        assert!(!error.retryable);
+        assert_eq!(error.effect, ManagedFailureEffect::NoExternalEffect);
+        assert_eq!(error.domain, "gateway_pre_call");
+
+        let upstream_reason = serde_json::to_string(&json!({
+            "error": {"code": "usage_unavailable"}
+        }))
+        .unwrap();
+        let upstream_error = codex_http_error(HttpError::Http {
+            status: 502,
+            reason: upstream_reason,
+        });
+        assert_eq!(upstream_error.effect, ManagedFailureEffect::OutcomeUnknown);
+    }
+
+    #[test]
+    fn codex_mx1_materialization_is_exact_two_cells_on_one_frozen_basis() {
+        let frozen = freeze_current_operator_contract_set().unwrap();
+        let cells = frozen_codex_mx1_cells(&frozen).unwrap();
+
+        assert_eq!(cells.len(), 2);
+        let plan_id = cells[0]
+            .get("matrix_plan_id")
+            .and_then(Value::as_str)
+            .unwrap();
+        let common_basis = cells[0]
+            .get("matrix_common_basis_sha256")
+            .and_then(Value::as_str)
+            .unwrap();
+        assert!(!plan_id.is_empty());
+        assert_eq!(common_basis.len(), 64);
+        assert!(cells.iter().all(|cell| {
+            cell.get("matrix_rung").and_then(Value::as_str) == Some("1x2x1")
+                && cell.get("harness_id").and_then(Value::as_str)
+                    == Some(crate::harness_evolution::MX1_ARM_ZERO_HARNESS_ID)
+                && cell.get("strategy_id").and_then(Value::as_str)
+                    == Some(crate::harness_evolution::MX1_NO_PROJECTION_STRATEGY_ID)
+                && cell
+                    .get("matrix_common_basis_sha256")
+                    .and_then(Value::as_str)
+                    == Some(common_basis)
+        }));
+        let model_ids = cells
+            .iter()
+            .map(|cell| cell.get("matrix_model_id").and_then(Value::as_str).unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            model_ids,
+            std::collections::BTreeSet::from([
+                crate::harness_evolution::MX1_CODEX_LUNA_MODEL_ID,
+                crate::harness_evolution::MX1_CODEX_TERRA_MODEL_ID,
+            ])
+        );
+    }
+
+    #[test]
+    fn codex_responses_body_translates_managed_tool_choice_and_omits_output_ceiling() {
+        let binding = crate::provider::managed_deepseek::ManagedCallBinding {
+            product_task_id: "pt-codex-body".into(),
+            workflow_id: "wf-codex-body".into(),
+            node_id: "wf-codex-body-implementation".into(),
+            attempt_id: "attempt-codex-body".into(),
+            spend_authorization_id: "spend-codex-body".into(),
+            attempt_lease_id: "lease-codex-body".into(),
+        };
+        let mut request = ManagedProviderCallRequest::for_role(
+            crate::provider::managed_deepseek::ManagedModelRole::Implementer,
+            crate::provider::managed_deepseek::DeepSeekProtocol::OpenAiCompatible,
+            binding,
+        );
+        request.provider_kind =
+            crate::cli::codex_budget_authority::CODEX_PROVIDER_KIND_CHATGPT_SUBSCRIPTION.into();
+        request.schema_version = "codex_responses_api.v1".into();
+        request.requested_model =
+            crate::rwe::campaign_package::CODEX_SUBSCRIPTION_LUNA_MODEL.into();
+        request.messages = vec![ManagedMessage::text("user", "bounded")];
+        request.tools = vec![crate::provider::managed_deepseek::ManagedTool {
+            tool_type: "function".into(),
+            function: crate::provider::managed_deepseek::ManagedToolFunction {
+                name: "apply_workspace_action".into(),
+                description: "bounded".into(),
+                parameters: json!({"type": "object"}),
+            },
+            strict: true,
+        }];
+        request.tool_choice = Some(json!({
+            "type": "function",
+            "function": {"name": "apply_workspace_action"}
+        }));
+
+        let body = codex_responses_body(&request);
+        assert_eq!(body["stream"], json!(true));
+        assert_eq!(
+            body["tool_choice"],
+            json!({
+                "type": "function",
+                "name": "apply_workspace_action"
+            })
+        );
+        assert!(body.get("max_output_tokens").is_none());
+        assert_eq!(body["tools"][0]["type"], json!("function"));
+    }
 
     #[test]
     fn failed_cell_journal_usage_is_projected_without_false_zeroes() {
