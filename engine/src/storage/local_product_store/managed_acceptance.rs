@@ -11788,11 +11788,12 @@ impl LocalProductStore {
         &self,
         binding: &crate::provider::managed_deepseek::ManagedCallBinding,
     ) -> Result<crate::cli::codex_budget_authority::CodexGatewayStartPermit, String> {
-        if !binding.node_id.contains("implementer")
-            && binding.node_id != format!("{}-implementation", binding.workflow_id)
-        {
-            return Err("Codex gateway permit requires the delegated implementer node".into());
-        }
+        // `current_delegated_provider_authority` below admits only the three
+        // provider positions in the frozen four-stage route (planner,
+        // implementer, and reviewer); the deterministic verifier is rejected
+        // by `delegated_execution_contract`. Do not narrow this capability to
+        // the implementer: the H0 route makes one managed provider call for
+        // each of those three roles.
         self.current_delegated_provider_authority(binding)?
             .ok_or("delegated provider authority is missing")?;
         let lease_token = self.current_attempt_lease_token(&binding.attempt_id)?;
@@ -11806,8 +11807,12 @@ impl LocalProductStore {
             "codex-attempt-{}",
             &sha256_hex(
                 format!(
-                    "codex-gateway-execution.v1|{}|{}|{}",
-                    binding.product_task_id, binding.attempt_id, binding.attempt_lease_id
+                    "codex-gateway-execution.v2|{}|{}|{}|{}|{}",
+                    binding.product_task_id,
+                    binding.workflow_id,
+                    binding.node_id,
+                    binding.attempt_id,
+                    binding.attempt_lease_id
                 )
                 .as_bytes()
             )[..32]

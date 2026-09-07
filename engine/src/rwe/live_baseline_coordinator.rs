@@ -1505,7 +1505,11 @@ impl LiveLedgerProviderAdapter for CodexSubscriptionProviderAdapter {
             executable,
             provider,
             model: request.requested_model.clone(),
-            max_provider_requests: request.limits.max_requests,
+            // This gateway instance is scoped to exactly one manifest-bound
+            // role call. The Store-owned ManagedProviderCallAuthority retains
+            // the frozen three-call-per-cell budget across planner,
+            // implementer, and reviewer.
+            max_provider_requests: 1,
             max_retries: request.limits.max_retries,
             max_input_tokens_per_request: request.limits.max_input_tokens,
             max_output_tokens_per_request: request.limits.max_output_tokens,
