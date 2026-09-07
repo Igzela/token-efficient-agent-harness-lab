@@ -5387,6 +5387,12 @@ impl LocalProductStore {
             .ok_or("delegated output manifest attempt_id missing")?;
         let provider_journal =
             self.delegated_provider_request_journal(delegation_id, attempt_id)?;
+        let provider_binding = manifest
+            .get("provider_execution_binding")
+            .map(crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json)
+            .transpose()?
+            .unwrap_or_else(crate::rwe::campaign_package::canonical_deepseek_provider_binding);
+        let cost_unavailable = provider_binding.cost_unavailable;
         let review = super::managed_acceptance::managed_deepseek_stage_receipt(
             run,
             &format!("{workflow_id}-review"),
@@ -5410,13 +5416,25 @@ impl LocalProductStore {
             return Err("delegated output manifest route is not exact".into());
         }
         let price_profile: crate::provider::managed_deepseek::DeepSeekPriceProfile =
-            serde_json::from_value(
-                manifest
-                    .pointer("/provider/price_profile")
-                    .cloned()
-                    .ok_or("delegated output price profile missing")?,
-            )
-            .map_err(|_| "delegated output price profile is malformed")?;
+            match manifest.pointer("/provider/price_profile") {
+                Some(Value::Null) if cost_unavailable => {
+                    crate::provider::managed_deepseek::DeepSeekPriceProfile::default()
+                }
+                Some(value) => serde_json::from_value(value.clone())
+                    .map_err(|_| "delegated output price profile is malformed")?,
+                None => return Err("delegated output price profile missing".into()),
+            };
+        let expected_models = [
+            manifest.pointer("/models/planner").and_then(Value::as_str),
+            manifest
+                .pointer("/models/implementer")
+                .and_then(Value::as_str),
+            manifest.pointer("/models/reviewer").and_then(Value::as_str),
+        ];
+        if expected_models.iter().any(Option::is_none) {
+            return Err("delegated output model bindings are missing".into());
+        }
+        let expected_models = expected_models.map(Option::unwrap);
         let mut request_ids = std::collections::HashSet::new();
         let mut request_sha256s = std::collections::HashSet::new();
         let mut provider_requests = Vec::with_capacity(3);
@@ -5424,9 +5442,9 @@ impl LocalProductStore {
         let mut cumulative_tokens = 0_u64;
         let mut seen_transport_provenance: Option<String> = None;
         for (index, (stage, role, model)) in [
-            ("planning", "planner", "deepseek-v4-pro"),
-            ("implementation", "implementer", "deepseek-v4-flash"),
-            ("review", "reviewer", "deepseek-v4-pro"),
+            ("planning", "planner", expected_models[0]),
+            ("implementation", "implementer", expected_models[1]),
+            ("review", "reviewer", expected_models[2]),
         ]
         .into_iter()
         .enumerate()
@@ -5470,15 +5488,20 @@ impl LocalProductStore {
                     .ok_or("delegated provider usage receipt missing")?,
             )
             .map_err(|_| "delegated provider usage receipt is malformed")?;
-            let observed_cost = result
-                .get("estimated_cost")
-                .and_then(Value::as_f64)
-                .ok_or("delegated provider realized cost missing")?;
-            let receipt_cost = output
-                .get("estimated_cost_usd")
-                .and_then(Value::as_f64)
-                .ok_or("delegated provider receipt cost missing")?;
-            let recomputed_cost = price_profile.estimate_usd(model, &usage)?;
+            let observed_cost = result.get("estimated_cost").and_then(Value::as_f64);
+            let receipt_cost = output.get("estimated_cost_usd").and_then(Value::as_f64);
+            let cost_ok = if cost_unavailable {
+                result.get("estimated_cost") == Some(&Value::Null)
+                    && output.get("estimated_cost_usd") == Some(&Value::Null)
+            } else {
+                observed_cost.is_some_and(|cost| cost.is_finite() && cost >= 0.0)
+                    && receipt_cost.is_some_and(|cost| cost.is_finite() && cost >= 0.0)
+            };
+            let recomputed_cost = if cost_unavailable {
+                None
+            } else {
+                Some(price_profile.estimate_usd(model, &usage)?)
+            };
             let input_tokens = result
                 .get("input_tokens")
                 .and_then(Value::as_i64)
@@ -5491,7 +5514,8 @@ impl LocalProductStore {
                 .ok_or("delegated provider output usage missing")?;
             if output.get("schema_version").and_then(Value::as_str)
                 != Some("managed_deepseek_node_output.v1")
-                || output.get("provider_kind").and_then(Value::as_str) != Some("deepseek")
+                || output.get("provider_kind").and_then(Value::as_str)
+                    != Some(provider_binding.provider_kind.as_str())
                 || output.get("protocol").and_then(Value::as_str) != Some("open_ai_compatible")
                 || output.get("route_stage").and_then(Value::as_str) != Some(role)
                 || output.get("requested_model").and_then(Value::as_str) != Some(model)
@@ -5511,8 +5535,10 @@ impl LocalProductStore {
                         .and_then(Value::as_u64)
                         .unwrap_or(4_000)
                 || !request_ids.insert(request_id.to_string())
-                || (observed_cost - receipt_cost).abs() > 1e-12
-                || (observed_cost - recomputed_cost).abs() > 1e-12
+                || !cost_ok
+                || (!cost_unavailable
+                    && ((observed_cost.unwrap() - receipt_cost.unwrap()).abs() > 1e-12
+                        || (observed_cost.unwrap() - recomputed_cost.unwrap()).abs() > 1e-12))
             {
                 return Err(
                     "delegated provider request, usage, or cost identity mismatched".into(),
@@ -5570,17 +5596,23 @@ impl LocalProductStore {
                 || journal_entry
                     .get("effective_cost_usd")
                     .and_then(Value::as_f64)
-                    .is_none_or(|cost| (cost - observed_cost).abs() > 1e-12)
+                    .is_none_or(|cost| {
+                        observed_cost.is_none_or(|observed| (cost - observed).abs() > 1e-12)
+                    })
+                    && !cost_unavailable
                 || journal_entry
                     .get("conservative_reserved_cost_usd")
                     .and_then(Value::as_f64)
-                    .is_none_or(|reserved| reserved + 1e-12 < observed_cost)
+                    .is_none_or(|reserved| {
+                        observed_cost.is_none_or(|observed| reserved + 1e-12 < observed)
+                    })
+                    && !cost_unavailable
             {
                 return Err(
                     "delegated provider node receipt conflicts with the durable journal".into(),
                 );
             }
-            realized_cost_usd += observed_cost;
+            realized_cost_usd += observed_cost.unwrap_or(0.0);
             cumulative_tokens = cumulative_tokens
                 .checked_add(usage.cumulative_tokens)
                 .ok_or("delegated provider cumulative usage overflow")?;
@@ -5589,6 +5621,7 @@ impl LocalProductStore {
                 "stage": stage,
                 "role": role,
                 "protocol": "openai_compatible",
+                "provider_kind": provider_binding.provider_kind,
                 "requested_model": model,
                 "resolved_model": model,
                 "request_id": request_id,
@@ -5614,11 +5647,13 @@ impl LocalProductStore {
         }
         let provider_execution = json!({
             "schema_version": "managed_deepseek_execution_evidence.v1",
+            "provider_identity": provider_binding.provider_identity,
+            "provider_kind": provider_binding.provider_kind,
             "provider_request_count": provider_requests.len(),
             "transport_provenance": provider_transport_provenance,
             "requests": provider_requests,
             "cumulative_tokens": cumulative_tokens,
-            "realized_cost_usd": realized_cost_usd,
+            "realized_cost_usd": if cost_unavailable { Value::Null } else { json!(realized_cost_usd) },
         });
         let source_revision = evidence
             .pointer("/binding/source_revision")

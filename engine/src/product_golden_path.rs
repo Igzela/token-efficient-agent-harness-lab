@@ -1912,22 +1912,33 @@ pub fn compile_product_executable_graph(
         .get("source_revision")
         .and_then(Value::as_str)
         .ok_or_else(|| "workspace_binding missing source_revision".to_string())?;
-    let managed_model_plan: Option<(String, String)> = task
-        .get("intake")
-        .and_then(|intake| intake.get("managed_model_plan"))
+    let intake = task.get("intake").cloned().unwrap_or(json!({}));
+    let managed_model_plan: Option<(String, String)> = intake
+        .get("managed_model_plan")
+        .or_else(|| intake.pointer("/matrix_binding/model_id"))
         .and_then(Value::as_str)
         .map(|plan| {
             if plan != crate::harness_evolution::MX1_ARM_ZERO_MODEL_ID
                 && plan != crate::harness_evolution::MX1_SECOND_MODEL_ID
+                && plan != crate::harness_evolution::MX1_CODEX_LUNA_MODEL_ID
+                && plan != crate::harness_evolution::MX1_CODEX_TERRA_MODEL_ID
             {
                 return Err(format!("unsupported managed model plan: {plan}"));
             }
-            let model = plan.split(':').next().unwrap_or_default().to_string();
+            let model = match plan {
+                crate::harness_evolution::MX1_CODEX_LUNA_MODEL_ID => {
+                    crate::rwe::campaign_package::CODEX_SUBSCRIPTION_LUNA_MODEL
+                }
+                crate::harness_evolution::MX1_CODEX_TERRA_MODEL_ID => {
+                    crate::rwe::campaign_package::CODEX_SUBSCRIPTION_TERRA_MODEL
+                }
+                _ => plan.split(':').next().unwrap_or_default(),
+            }
+            .to_string();
             Ok((plan.to_string(), model))
         })
         .transpose()?;
     let allowed_paths = binding.get("allowed_paths").cloned().unwrap_or(json!([]));
-    let intake = task.get("intake").cloned().unwrap_or(json!({}));
     let objective_preview = intake
         .get("objective_preview")
         .cloned()

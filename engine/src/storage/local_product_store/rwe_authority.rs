@@ -392,7 +392,7 @@ pub struct RweAuthorizationV2IssueRequest {
     pub campaign_package_id: Option<String>,
 }
 
-/// Stable owner-derived identity hash for the in-process managed_deepseek adapter.
+/// Stable owner-derived identity hash for the in-process managed adapter.
 fn operator_in_process_binary_sha256() -> String {
     sha256_hex(
         format!(
@@ -965,9 +965,9 @@ impl LocalProductStore {
             "max_wall_time_ms": max_wall_time_ms,
             "cost_authority": cost_authority.to_json(),
             "per_task_budgets": per_task_budgets,
-            "binary_path": crate::rwe::operator_corpus::OPERATOR_ADMITTED_BINARY_PATH,
-            "binary_version": corpus.admitted_codex_version,
-            "binary_sha256": operator_in_process_binary_sha256(),
+            "binary_path": package.admitted_binary_path,
+            "binary_version": package.admitted_binary_version,
+            "binary_sha256": package.admitted_binary_sha256,
             "provider_execution_binding": provider_binding.to_json(),
             "provider_identity": provider_binding.provider_identity,
             "provider_kind": provider_binding.provider_kind,
@@ -3779,12 +3779,21 @@ pub(crate) fn validate_rwe_run_authorization_v2(
         .filter(|s| !s.is_empty())
         .ok_or("v2 expires_at required")?;
     require_finite_rwe_expiry(expires_at)?;
+    let package = match package_id {
+        Some(package_id) => {
+            let package =
+                crate::rwe::campaign_package::resolve_frozen_campaign_package(package_id)?;
+            package.validate()?;
+            package
+        }
+        None => crate::rwe::campaign_package::canonical_deepseek_v2_package()?,
+    };
     let binary_path = required_string_field(body, "binary_path")?;
     let binary_sha256 = required_string_field(body, "binary_sha256")?;
-    if binary_path != crate::rwe::operator_corpus::OPERATOR_ADMITTED_BINARY_PATH
-        || binary_sha256.len() != 64
+    if binary_path != package.admitted_binary_path
+        || binary_sha256 != package.admitted_binary_sha256
     {
-        return Err("v2 binary_path/binary_sha256 must bind the admitted executor binary".into());
+        return Err("v2 binary_path/binary_sha256 must bind the campaign package executor".into());
     }
     let budget_point_ids = body
         .get("budget_point_ids")
@@ -4074,6 +4083,7 @@ mod operator_v2_authority_tests {
     }
 
     fn valid_v2_body(frozen: &OperatorFrozenContractSet) -> Value {
+        let package = crate::rwe::campaign_package::canonical_deepseek_v2_package().unwrap();
         let task_ids: Vec<Value> = frozen
             .corpus
             .tasks
@@ -4114,9 +4124,9 @@ mod operator_v2_authority_tests {
             "max_wall_time_ms": frozen.schedule.body["run_level_budget"]["max_wall_time_ms"].as_u64().unwrap(),
             "cost_authority": CostAuthority::CostUnavailable.to_json(),
             "per_task_budgets": budgets,
-            "binary_path": "in-process:managed_deepseek",
-            "binary_version": frozen.corpus.admitted_codex_version,
-            "binary_sha256": "0".repeat(64),
+            "binary_path": package.admitted_binary_path,
+            "binary_version": package.admitted_binary_version,
+            "binary_sha256": package.admitted_binary_sha256,
             "provider_execution_binding": crate::rwe::campaign_package::canonical_deepseek_provider_binding().to_json(),
             "provider_identity": "deepseek-managed-rwe",
             "provider_kind": "deepseek",

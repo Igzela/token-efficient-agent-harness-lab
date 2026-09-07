@@ -20,6 +20,7 @@ use uuid::Uuid;
 use super::{append_audit_locked, DatabaseConnection, LocalProductStore};
 use crate::infrastructure::auth::{LOCAL_BOOTSTRAP_API_KEY_ID, LOCAL_BOOTSTRAP_TENANT_ID};
 use crate::node_executor::ProcessOutcome;
+use crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_KIND;
 use crate::provider::redaction::contains_sensitive_patterns;
 
 /// Required scopes for managed-acceptance authority operations.
@@ -557,6 +558,16 @@ impl DelegationContract {
             "implementer": "deepseek-v4-flash",
             "reviewer": "deepseek-v4-pro"
         });
+        let codex_luna = crate::rwe::campaign_package::CODEX_SUBSCRIPTION_LUNA_MODEL;
+        let codex_terra = crate::rwe::campaign_package::CODEX_SUBSCRIPTION_TERRA_MODEL;
+        let valid_codex_models = [codex_luna, codex_terra].iter().any(|model| {
+            self.models
+                == json!({
+                    "planner": model,
+                    "implementer": model,
+                    "reviewer": model
+                })
+        });
         let valid_models = self.models == default_models
             || ["deepseek-v4-pro", "deepseek-v4-flash"]
                 .iter()
@@ -568,6 +579,7 @@ impl DelegationContract {
                             "reviewer": model
                         })
                 });
+        let valid_models = valid_models || valid_codex_models;
         if !valid_models
             || self.output
                 != json!({
@@ -801,11 +813,18 @@ pub fn derive_final_execution_manifest(
             } else {
                 8_000
             },
-            "max_output_tokens": 4_000,
+            "max_output_tokens": if !is_deepseek
+                && execution.get("verifier").and_then(Value::as_str)
+                    == Some(crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY)
+            {
+                8_192
+            } else {
+                4_000
+            },
             "max_cumulative_tokens": if execution.get("verifier").and_then(Value::as_str)
                 == Some(crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY)
             {
-                16_000
+                if is_deepseek { 16_000 } else { 20_192 }
             } else {
                 24_000
             },
@@ -871,6 +890,27 @@ pub fn confirm_delegated_artifact_output(
     {
         return Err("artifact confirmation target or manifest hash is stale".into());
     }
+    let provider_binding = manifest
+        .get("provider_execution_binding")
+        .map(crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json)
+        .transpose()?
+        .unwrap_or_else(crate::rwe::campaign_package::canonical_deepseek_provider_binding);
+    let expected_models = [
+        manifest.pointer("/models/planner").and_then(Value::as_str),
+        manifest
+            .pointer("/models/implementer")
+            .and_then(Value::as_str),
+        manifest.pointer("/models/reviewer").and_then(Value::as_str),
+    ];
+    if expected_models.iter().any(Option::is_none) {
+        return Err("delegated artifact confirmation model bindings are missing".into());
+    }
+    let expected_models = expected_models.map(Option::unwrap);
+    let expected_provider_schema = if provider_binding.cost_unavailable {
+        provider_binding.provider_kind.as_str()
+    } else {
+        DEEPSEEK_PROVIDER_KIND
+    };
     if verification.get("status").and_then(Value::as_str) != Some("succeeded")
         || verification
             .get("verification_sha256")
@@ -883,7 +923,7 @@ pub fn confirm_delegated_artifact_output(
             .get("material_objection_count")
             .and_then(Value::as_u64)
             != Some(0)
-        || review.get("resolved_model").and_then(Value::as_str) != Some("deepseek-v4-pro")
+        || review.get("resolved_model").and_then(Value::as_str) != Some(expected_models[2])
     {
         return Err("deterministic verification and bounded Pro review are required".into());
     }
@@ -892,9 +932,9 @@ pub fn confirm_delegated_artifact_output(
         .and_then(Value::as_array)
         .ok_or("provider execution requests are required")?;
     let expected_route = [
-        ("planning", "planner", "deepseek-v4-pro"),
-        ("implementation", "implementer", "deepseek-v4-flash"),
-        ("review", "reviewer", "deepseek-v4-pro"),
+        ("planning", "planner", expected_models[0]),
+        ("implementation", "implementer", expected_models[1]),
+        ("review", "reviewer", expected_models[2]),
     ];
     let mut request_ids = std::collections::HashSet::new();
     let mut summed_request_cost_usd = 0.0;
@@ -915,23 +955,28 @@ pub fn confirm_delegated_artifact_output(
                 else {
                     return false;
                 };
-                let Some(request_cost) = request
-                    .get("realized_cost_usd")
-                    .and_then(Value::as_f64)
-                    .filter(|cost| cost.is_finite() && *cost >= 0.0)
-                else {
-                    return false;
+                let request_cost = request.get("realized_cost_usd").and_then(Value::as_f64);
+                let cost_ok = if provider_binding.cost_unavailable {
+                    request.get("realized_cost_usd") == Some(&Value::Null)
+                } else {
+                    request_cost.is_some_and(|cost| cost.is_finite() && cost >= 0.0)
                 };
+                if !cost_ok {
+                    return false;
+                }
                 let Some(new_cumulative_tokens) =
                     summed_cumulative_tokens.checked_add(usage.cumulative_tokens)
                 else {
                     return false;
                 };
                 summed_cumulative_tokens = new_cumulative_tokens;
-                summed_request_cost_usd += request_cost;
+                summed_request_cost_usd += request_cost.unwrap_or(0.0);
                 request.get("stage").and_then(Value::as_str) == Some(stage)
                     && request.get("role").and_then(Value::as_str) == Some(role)
                     && request.get("protocol").and_then(Value::as_str) == Some("openai_compatible")
+                    && (!provider_binding.cost_unavailable
+                        || request.get("provider_kind").and_then(Value::as_str)
+                            == Some(expected_provider_schema))
                     && request.get("requested_model").and_then(Value::as_str) == Some(model)
                     && request.get("resolved_model").and_then(Value::as_str) == Some(model)
                     && usage.model == model
@@ -957,17 +1002,23 @@ pub fn confirm_delegated_artifact_output(
                 } else {
                     24_000
                 };
-                tokens <= ceiling
+                tokens <= ceiling && tokens > 0
             })
-        && provider_execution
-            .get("realized_cost_usd")
-            .and_then(Value::as_f64)
-            .is_some_and(|cost| (cost - realized_cost_usd).abs() <= 1e-12)
+        && if provider_binding.cost_unavailable {
+            provider_execution.get("realized_cost_usd") == Some(&Value::Null)
+                && realized_cost_usd == 0.0
+        } else {
+            provider_execution
+                .get("realized_cost_usd")
+                .and_then(Value::as_f64)
+                .is_some_and(|cost| (cost - realized_cost_usd).abs() <= 1e-12)
+        }
         && provider_execution
             .get("cumulative_tokens")
             .and_then(Value::as_u64)
             == Some(summed_cumulative_tokens)
-        && (summed_request_cost_usd - realized_cost_usd).abs() <= 1e-12
+        && (provider_binding.cost_unavailable
+            || (summed_request_cost_usd - realized_cost_usd).abs() <= 1e-12)
         && requests_valid;
     if !provider_identity_valid {
         return Err("exact provider request, usage, and cost evidence is required".into());
@@ -1211,8 +1262,8 @@ fn validate_delegated_manifest_policy(manifest: &Value) -> Result<&str, String> 
             let rwe_limits = req == Some(3)
                 && retries == Some(0)
                 && input == Some(12_000)
-                && output == Some(4_000)
-                && cum == Some(16_000)
+                && ((is_deepseek && output == Some(4_000) && cum == Some(16_000))
+                    || (!is_deepseek && output == Some(8_192) && cum == Some(20_192)))
                 && timeout == Some(900_000);
             (docs_policy && docs_limits) || (rwe_policy && rwe_limits)
         }
@@ -1254,13 +1305,17 @@ fn delegated_execution_contract(
         .pointer(&format!("/models/{model_key}"))
         .and_then(Value::as_str)
         .ok_or("delegated manifest model binding is missing")?;
-    let price_profile = serde_json::from_value(
-        manifest
-            .pointer("/provider/price_profile")
-            .cloned()
-            .ok_or("delegated manifest price profile is missing")?,
-    )
-    .map_err(|_| "delegated manifest price profile is malformed")?;
+    // The managed execution contract retains the existing typed price-profile
+    // slot for authority equality.  Subscription bindings deliberately carry
+    // JSON null there: no USD quote is claimed or used for accounting.
+    let price_profile = match manifest.pointer("/provider/price_profile") {
+        Some(Value::Null) if provider_binding.cost_unavailable => {
+            crate::provider::managed_deepseek::DeepSeekPriceProfile::default()
+        }
+        Some(value) => serde_json::from_value(value.clone())
+            .map_err(|_| "delegated manifest price profile is malformed")?,
+        None => return Err("delegated manifest price profile is missing".into()),
+    };
     Ok(
         crate::provider::managed_deepseek::PersistedManagedExecutionContract {
             provider_identity: provider_binding.provider_identity,
@@ -11723,6 +11778,46 @@ impl LocalProductStore {
                 )?),
             },
         ))
+    }
+
+    /// Mint the opaque Codex gateway start capability from the current
+    /// delegated attempt lease.  The raw lease token never leaves this Store
+    /// owner; callers receive only a capability whose execution identity is
+    /// derived from the exact persisted attempt/lease binding.
+    pub(crate) fn codex_gateway_start_permit_for_delegated_attempt(
+        &self,
+        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+    ) -> Result<crate::cli::codex_budget_authority::CodexGatewayStartPermit, String> {
+        if !binding.node_id.contains("implementer")
+            && binding.node_id != format!("{}-implementation", binding.workflow_id)
+        {
+            return Err("Codex gateway permit requires the delegated implementer node".into());
+        }
+        self.current_delegated_provider_authority(binding)?
+            .ok_or("delegated provider authority is missing")?;
+        let lease_token = self.current_attempt_lease_token(&binding.attempt_id)?;
+        if lease_token.trim().is_empty()
+            || crate::provider::managed_deepseek::managed_attempt_lease_id(&lease_token)
+                != binding.attempt_lease_id
+        {
+            return Err("delegated attempt lease is stale or mismatched".into());
+        }
+        let execution_id = format!(
+            "codex-attempt-{}",
+            &sha256_hex(
+                format!(
+                    "codex-gateway-execution.v1|{}|{}|{}",
+                    binding.product_task_id, binding.attempt_id, binding.attempt_lease_id
+                )
+                .as_bytes()
+            )[..32]
+        );
+        Ok(
+            crate::cli::codex_budget_authority::CodexGatewayStartPermit::managed_store_lease(
+                &execution_id,
+                &lease_token,
+            ),
+        )
     }
 }
 

@@ -32,9 +32,10 @@ pub use frozen_rwe_bindings::{
     FROZEN_RWE_TARGET_MAIN_SHA, FROZEN_RWE_VERIFIER_IDENTITY,
 };
 pub use live_baseline_coordinator::{
-    build_rwe_cell_product_intake, cell_identities_for, issue_and_admit_v2, operator_preflight,
-    project_first_baseline_evidence, revalidate_stored_v2_authorization, run_frozen_schedule,
-    CellDriver, CellIdentities, CellOutcome, CountingCellDriver, InjectedCellDriver,
+    build_rwe_cell_product_intake, cell_identities_for, issue_and_admit_v2,
+    issue_and_admit_v2_with_package, operator_preflight, project_first_baseline_evidence,
+    revalidate_stored_v2_authorization, run_frozen_mx1_1x2x1, run_frozen_schedule, CellDriver,
+    CellIdentities, CellOutcome, CountingCellDriver, InjectedCellDriver,
     ProductGoldenPathCellDriver, RWE_CELL_ATTEMPT_EVIDENCE_SCHEMA,
     RWE_LIVE_BASELINE_COORDINATOR_SCHEMA, RWE_LIVE_CELL_COMPOSITION_SEAM,
 };

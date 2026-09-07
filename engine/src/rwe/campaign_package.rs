@@ -24,8 +24,21 @@ use crate::storage::local_product_store::{AuthenticatedPrincipal, LocalProductSt
 pub const RWE_CAMPAIGN_PACKAGE_SCHEMA: &str = "rwe_campaign_package.v1";
 pub const RWE_DEEPSEEK_V2_PACKAGE_ID: &str = "rwe-campaign-deepseek-v2";
 pub const RWE_AGY_V1_PACKAGE_ID: &str = "rwe-campaign-agy-v1";
+pub const RWE_CODEX_SUBSCRIPTION_V1_PACKAGE_ID: &str = "rwe-campaign-codex-subscription-v1";
 pub const FROZEN_PROVIDER_EXECUTION_BINDING_SCHEMA: &str =
     "rwe_frozen_provider_execution_binding.v1";
+
+const CODEX_SUBSCRIPTION_PROVIDER_IDENTITY: &str = "chatgpt-codex-subscription";
+const CODEX_SUBSCRIPTION_PROVIDER_KIND: &str = "chatgpt_subscription";
+const CODEX_SUBSCRIPTION_HOST: &str = "chatgpt.com";
+const CODEX_SUBSCRIPTION_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const CODEX_SUBSCRIPTION_ENDPOINT_PATH: &str = "/responses";
+const CODEX_SUBSCRIPTION_CREDENTIAL_REFERENCE: &str = "CHATGPT_CODEX_SUBSCRIPTION";
+const CODEX_SUBSCRIPTION_REQUEST_SCHEMA: &str = "codex_responses_api.v1";
+const CODEX_SUBSCRIPTION_RESPONSE_SCHEMA: &str = "codex_responses_sse.v1";
+const CODEX_SUBSCRIPTION_USAGE_PARSER: &str = "codex_budget_gateway_sse.v1";
+pub const CODEX_SUBSCRIPTION_LUNA_MODEL: &str = "gpt-5.6-luna";
+pub const CODEX_SUBSCRIPTION_TERRA_MODEL: &str = "gpt-5.6-terra";
 
 fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
@@ -169,6 +182,30 @@ pub fn canonical_deepseek_provider_binding() -> FrozenProviderExecutionBinding {
         pricing_identity: Some("deepseek-v4-usd-2026-07-31".into()),
         cost_unavailable: false,
         admitted_model: OPERATOR_ADMITTED_MODEL.into(),
+    }
+}
+
+/// The frozen subscription route for the Codex Responses surface.  Pricing is
+/// deliberately unavailable: subscription quota is measured by the existing
+/// CodexBudgetGateway, not converted into a provider-dollar estimate.
+pub fn canonical_codex_subscription_provider_binding(
+    admitted_model: &str,
+) -> FrozenProviderExecutionBinding {
+    FrozenProviderExecutionBinding {
+        schema_version: FROZEN_PROVIDER_EXECUTION_BINDING_SCHEMA.into(),
+        provider_identity: CODEX_SUBSCRIPTION_PROVIDER_IDENTITY.into(),
+        provider_kind: CODEX_SUBSCRIPTION_PROVIDER_KIND.into(),
+        protocol: "openai_compatible".into(),
+        host: CODEX_SUBSCRIPTION_HOST.into(),
+        base_url: CODEX_SUBSCRIPTION_BASE_URL.into(),
+        endpoint_path: CODEX_SUBSCRIPTION_ENDPOINT_PATH.into(),
+        credential_reference: CODEX_SUBSCRIPTION_CREDENTIAL_REFERENCE.into(),
+        request_schema_version: CODEX_SUBSCRIPTION_REQUEST_SCHEMA.into(),
+        response_schema_version: CODEX_SUBSCRIPTION_RESPONSE_SCHEMA.into(),
+        usage_parser_version: CODEX_SUBSCRIPTION_USAGE_PARSER.into(),
+        pricing_identity: None,
+        cost_unavailable: true,
+        admitted_model: admitted_model.into(),
     }
 }
 
@@ -463,11 +500,53 @@ pub fn canonical_agy_v1_candidate_package() -> Result<FrozenCampaignPackage, Str
     Ok(pkg)
 }
 
+/// The minimal Codex subscription package for the existing operator corpus and
+/// schedule.  Its two exact model identities are reused as the MX1 Model
+/// factor; the package itself retains the existing four-cell corpus schedule.
+pub fn canonical_codex_subscription_v1_package() -> Result<FrozenCampaignPackage, String> {
+    let frozen = freeze_current_operator_contract_set()?;
+    let binary_sha256 = sha256_hex(b"rwe.codex_subscription_gateway.v1:codex-cli:0.153.4");
+    let pkg = FrozenCampaignPackage {
+        schema_version: RWE_CAMPAIGN_PACKAGE_SCHEMA.into(),
+        package_id: RWE_CODEX_SUBSCRIPTION_V1_PACKAGE_ID.into(),
+        provider_kind: CODEX_SUBSCRIPTION_PROVIDER_KIND.into(),
+        provider_execution_binding: Some(canonical_codex_subscription_provider_binding(
+            CODEX_SUBSCRIPTION_LUNA_MODEL,
+        )),
+        admitted_model: CODEX_SUBSCRIPTION_LUNA_MODEL.into(),
+        planner_reviewer_model: CODEX_SUBSCRIPTION_TERRA_MODEL.into(),
+        admitted_binary_path: "in-process:codex_budget_gateway".into(),
+        admitted_binary_version: "0.153.4".into(),
+        admitted_binary_sha256: binary_sha256,
+        target_repo: OPERATOR_TARGET_REPO.into(),
+        target_main_sha: FROZEN_RWE_TARGET_MAIN_SHA.into(),
+        corpus_id: OPERATOR_CORPUS_ID.into(),
+        corpus_sha256: frozen.corpus.corpus_sha256,
+        protocol_sha256: frozen.protocol.body_sha256,
+        schedule_sha256: frozen.schedule.schedule_sha256,
+        cell_count: 4,
+        auto_merge_disabled: true,
+        draft_pr_only: true,
+        requires_owner_approval: false,
+        live_authorization_required: true,
+        max_provider_requests_per_cell: 3,
+        max_total_tokens_per_cell: 20_192,
+        timeout_ms_per_cell: 900_000,
+        max_cost_usd_per_cell: None,
+        rollback_reference: format!("accepted-main:{}", frozen.accepted_main_sha),
+        rollback_strategy: "restore_target_main".into(),
+        notes: "Minimal Codex subscription transport freeze for MX1 1x2x1; reuses the canonical v2 corpus, evaluator, strategy, seed, budget, and comparability rules. Subscription cost remains unavailable; gateway usage is authoritative.".into(),
+    };
+    pkg.validate()?;
+    Ok(pkg)
+}
+
 /// Resolve a frozen campaign package by its canonical identifier.
 pub fn resolve_frozen_campaign_package(package_id: &str) -> Result<FrozenCampaignPackage, String> {
     match package_id {
         RWE_DEEPSEEK_V2_PACKAGE_ID => canonical_deepseek_v2_package(),
         RWE_AGY_V1_PACKAGE_ID => canonical_agy_v1_candidate_package(),
+        RWE_CODEX_SUBSCRIPTION_V1_PACKAGE_ID => canonical_codex_subscription_v1_package(),
         other => Err(format!("unknown frozen campaign package id: {other}")),
     }
 }
@@ -596,5 +675,24 @@ mod tests {
         let json = pkg.to_json();
         let restored = FrozenCampaignPackage::from_json(&json).expect("from_json must succeed");
         assert_eq!(pkg, restored);
+    }
+
+    #[test]
+    fn codex_subscription_v1_package_freezes_two_exact_models() {
+        let pkg = canonical_codex_subscription_v1_package().unwrap();
+        assert_eq!(pkg.package_id, RWE_CODEX_SUBSCRIPTION_V1_PACKAGE_ID);
+        assert_eq!(pkg.provider_kind, "chatgpt_subscription");
+        assert_eq!(pkg.admitted_model, CODEX_SUBSCRIPTION_LUNA_MODEL);
+        assert_eq!(pkg.planner_reviewer_model, CODEX_SUBSCRIPTION_TERRA_MODEL);
+        assert!(pkg.max_cost_usd_per_cell.is_none());
+        assert!(pkg
+            .provider_execution_binding_for_model(CODEX_SUBSCRIPTION_LUNA_MODEL)
+            .is_ok());
+        assert!(pkg
+            .provider_execution_binding_for_model(CODEX_SUBSCRIPTION_TERRA_MODEL)
+            .is_ok());
+        assert_eq!(pkg.corpus_id, OPERATOR_CORPUS_ID);
+        assert_eq!(pkg.cell_count, 4);
+        assert!(pkg.canonical_sha256().unwrap().len() == 64);
     }
 }

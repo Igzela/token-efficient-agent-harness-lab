@@ -509,7 +509,10 @@ impl ManagedProviderCallRequest {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema_version != MANAGED_PROVIDER_CALL_SCHEMA {
+        let canonical_schema = self.schema_version == MANAGED_PROVIDER_CALL_SCHEMA;
+        let codex_subscription_schema = self.provider_kind == "chatgpt_subscription"
+            && self.schema_version == "codex_responses_api.v1";
+        if !canonical_schema && !codex_subscription_schema {
             return Err("managed provider call schema version is not canonical".to_string());
         }
         if self.provider_identity.trim().is_empty()

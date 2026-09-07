@@ -65,12 +65,22 @@ pub const MX1_ARM_ZERO_MODEL_ID: &str = "deepseek-v4-pro:single-model-three-role
 pub const MX1_SECOND_HARNESS_ID: &str = "confined-subprocess-adapter:provider-free:v1";
 pub const LEDGER_ORCHESTRATED_HARNESS_ID: &str = "ledger-orchestrated:provider-independent:v1";
 pub const MX1_SECOND_MODEL_ID: &str = "deepseek-v4-flash:single-model-three-role:v1";
+pub const MX1_CODEX_LUNA_MODEL_ID: &str = "gpt-5.6-luna:single-model-three-role:v1";
+pub const MX1_CODEX_TERRA_MODEL_ID: &str = "gpt-5.6-terra:single-model-three-role:v1";
 pub const MX1_NO_PROJECTION_STRATEGY_ID: &str =
     "single-pass-plan-implement-review:no-projection:v1";
 pub const MX1_MEMORY_ONLY_STRATEGY_ID: &str = "single-pass-plan-implement-review:memory-only:v1";
 pub const MX1_SKILL_ONLY_STRATEGY_ID: &str = "single-pass-plan-implement-review:skill-only:v1";
 const MX1_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT: &str = "https://api.deepseek.com/chat/completions";
 const MX1_DEEPSEEK_CREDENTIAL_REFERENCE: &str = "DEEPSEEK_API_KEY";
+const MX1_CODEX_RESPONSES_ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
+const MX1_CODEX_CREDENTIAL_REFERENCE: &str = "CHATGPT_CODEX_SUBSCRIPTION";
+const MX1_CODEX_TOKENIZER_IDENTITY: &str = "codex-subscription-provider-token-usage";
+const MX1_CODEX_USAGE_MAPPING: &str = "codex-budget-gateway-usage";
+const MX1_CODEX_PRICING_CURRENCY: &str = "UNAVAILABLE";
+const MX1_CODEX_PRICING_UNIT: &str = "subscription_quota";
+const MX1_CODEX_PRICING_DATE: &str = "2026-09-07";
+const MX1_CODEX_COST_MAPPING: &str = "subscription-usage-cost-unavailable";
 // Versioned compatibility identity for serialized pre-ledger MX1 manifests.
 // New H1 manifests use the current source-unit identity below; v1 records are
 // accepted only against this exact frozen predecessor identity.
@@ -675,29 +685,86 @@ fn mx1_expected_model_evidence_digest(evidence_kind: &str, descriptor_id: &str) 
 fn mx1_validate_frozen_model_identity(
     descriptor: &Mx1ModelPlanDescriptor,
 ) -> Result<(), EvolutionAdmissionError> {
-    let expected_model = match descriptor.descriptor_id.as_str() {
-        MX1_ARM_ZERO_MODEL_ID => "deepseek-v4-pro",
-        MX1_SECOND_MODEL_ID => "deepseek-v4-flash",
+    let (
+        expected_model,
+        expected_provider,
+        expected_endpoint,
+        expected_credential,
+        expected_tokenizer,
+        expected_usage,
+        expected_pricing_currency,
+        expected_pricing_unit,
+        expected_pricing_date,
+        expected_cost_mapping,
+    ) = match descriptor.descriptor_id.as_str() {
+        MX1_ARM_ZERO_MODEL_ID => (
+            "deepseek-v4-pro",
+            "deepseek",
+            MX1_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT,
+            MX1_DEEPSEEK_CREDENTIAL_REFERENCE,
+            "deepseek-tokenizer-current",
+            "existing-execution-usage-owner",
+            "USD",
+            "per-token",
+            "2026-08-24",
+            "existing-product-usage-and-cost-owners",
+        ),
+        MX1_SECOND_MODEL_ID => (
+            "deepseek-v4-flash",
+            "deepseek",
+            MX1_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT,
+            MX1_DEEPSEEK_CREDENTIAL_REFERENCE,
+            "deepseek-tokenizer-current",
+            "existing-execution-usage-owner",
+            "USD",
+            "per-token",
+            "2026-08-24",
+            "existing-product-usage-and-cost-owners",
+        ),
+        MX1_CODEX_LUNA_MODEL_ID => (
+            crate::rwe::campaign_package::CODEX_SUBSCRIPTION_LUNA_MODEL,
+            "chatgpt_subscription",
+            MX1_CODEX_RESPONSES_ENDPOINT,
+            MX1_CODEX_CREDENTIAL_REFERENCE,
+            MX1_CODEX_TOKENIZER_IDENTITY,
+            MX1_CODEX_USAGE_MAPPING,
+            MX1_CODEX_PRICING_CURRENCY,
+            MX1_CODEX_PRICING_UNIT,
+            MX1_CODEX_PRICING_DATE,
+            MX1_CODEX_COST_MAPPING,
+        ),
+        MX1_CODEX_TERRA_MODEL_ID => (
+            crate::rwe::campaign_package::CODEX_SUBSCRIPTION_TERRA_MODEL,
+            "chatgpt_subscription",
+            MX1_CODEX_RESPONSES_ENDPOINT,
+            MX1_CODEX_CREDENTIAL_REFERENCE,
+            MX1_CODEX_TOKENIZER_IDENTITY,
+            MX1_CODEX_USAGE_MAPPING,
+            MX1_CODEX_PRICING_CURRENCY,
+            MX1_CODEX_PRICING_UNIT,
+            MX1_CODEX_PRICING_DATE,
+            MX1_CODEX_COST_MAPPING,
+        ),
         _ => {
             return Err(mx1_error(
                 "mx1_model_identity",
-                "Model descriptor is not one of the two frozen MX1 plans",
+                "Model descriptor is not one of the frozen MX1 plans",
             ));
         }
     };
     if descriptor.requested_model_id != expected_model
         || descriptor.resolved_model_id != expected_model
-        || descriptor.provider != "deepseek"
+        || descriptor.provider != expected_provider
         || descriptor.protocol != "openai_compatible"
-        || descriptor.endpoint != MX1_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT
-        || descriptor.endpoint_allowlist != vec![MX1_DEEPSEEK_CHAT_COMPLETIONS_ENDPOINT.to_string()]
-        || descriptor.credential_reference_name != MX1_DEEPSEEK_CREDENTIAL_REFERENCE
-        || descriptor.tokenizer_identity != "deepseek-tokenizer-current"
-        || descriptor.usage_mapping != "existing-execution-usage-owner"
-        || descriptor.pricing_currency != "USD"
-        || descriptor.pricing_unit != "per-token"
-        || descriptor.pricing_effective_date != "2026-08-24"
-        || descriptor.lifecycle_cost_mapping != "existing-product-usage-and-cost-owners"
+        || descriptor.endpoint != expected_endpoint
+        || descriptor.endpoint_allowlist != vec![expected_endpoint.to_string()]
+        || descriptor.credential_reference_name != expected_credential
+        || descriptor.tokenizer_identity != expected_tokenizer
+        || descriptor.usage_mapping != expected_usage
+        || descriptor.pricing_currency != expected_pricing_currency
+        || descriptor.pricing_unit != expected_pricing_unit
+        || descriptor.pricing_effective_date != expected_pricing_date
+        || descriptor.lifecycle_cost_mapping != expected_cost_mapping
         || descriptor.missing_identity_disposition != "incomparable"
         || descriptor.missing_usage_disposition != "incomparable"
         || descriptor.admitted_profile_sha256
@@ -936,7 +1003,14 @@ fn mx1_validate_model_descriptor(
     ] {
         mx1_require_id(field, value)?;
     }
-    if descriptor.provider != "deepseek"
+    let codex_subscription_model = matches!(
+        descriptor.descriptor_id.as_str(),
+        MX1_CODEX_LUNA_MODEL_ID | MX1_CODEX_TERRA_MODEL_ID
+    );
+    let provider_admitted = (codex_subscription_model
+        && descriptor.provider == "chatgpt_subscription")
+        || (!codex_subscription_model && descriptor.provider == "deepseek");
+    if !provider_admitted
         || descriptor.protocol != "openai_compatible"
         || !descriptor.endpoint.starts_with("https://")
         || descriptor.endpoint_allowlist != vec![descriptor.endpoint.clone()]
@@ -1290,6 +1364,33 @@ fn mx1_validate_manifest_contents(
             .collect(),
         "Strategy",
     )?;
+    let codex_subscription_models = manifest.models.iter().any(|model| {
+        matches!(
+            model.descriptor_id.as_str(),
+            MX1_CODEX_LUNA_MODEL_ID | MX1_CODEX_TERRA_MODEL_ID
+        )
+    });
+    let expected_model_ids = if codex_subscription_models {
+        vec![MX1_CODEX_LUNA_MODEL_ID, MX1_CODEX_TERRA_MODEL_ID]
+    } else {
+        vec![MX1_SECOND_MODEL_ID, MX1_ARM_ZERO_MODEL_ID]
+    };
+    let actual_model_ids: Vec<&str> = manifest
+        .models
+        .iter()
+        .map(|model| model.descriptor_id.as_str())
+        .collect();
+    if actual_model_ids != expected_model_ids {
+        return Err(mx1_error(
+            "mx1_manifest_models",
+            "manifest must bind exactly one admitted two-model provider family",
+        ));
+    }
+    let arm_zero_model_id = if codex_subscription_models {
+        MX1_CODEX_LUNA_MODEL_ID
+    } else {
+        MX1_ARM_ZERO_MODEL_ID
+    };
     if manifest
         .harnesses
         .iter()
@@ -1299,7 +1400,7 @@ fn mx1_validate_manifest_contents(
         || manifest
             .models
             .iter()
-            .filter(|item| item.descriptor_id == MX1_ARM_ZERO_MODEL_ID)
+            .filter(|item| item.descriptor_id == arm_zero_model_id)
             .count()
             != 1
         || manifest
@@ -2578,6 +2679,64 @@ pub fn sample_mx1_descriptor_manifest_with_ledger_harness() -> Mx1DescriptorMani
     }
     seal_mx1_descriptor_manifest(manifest)
         .expect("the ledger-orchestrated manifest must seal cleanly")
+}
+
+/// Canonical MX1 descriptor manifest for the ChatGPT Codex subscription
+/// provider family.  This reuses the existing Harnesses and Strategies; only
+/// the two Model identities and their frozen provider metadata differ.
+pub fn sample_mx1_descriptor_manifest_with_codex_subscription_models() -> Mx1DescriptorManifest {
+    let mut manifest = sample_mx1_descriptor_manifest_with_ledger_harness();
+    let template = manifest
+        .models
+        .first()
+        .cloned()
+        .expect("canonical MX1 manifest must contain a model");
+    let model = |descriptor_id: &str, resolved_model_id: &str| {
+        let mut descriptor = template.clone();
+        descriptor.descriptor_id = descriptor_id.to_string();
+        descriptor.requested_model_id = resolved_model_id.to_string();
+        descriptor.resolved_model_id = resolved_model_id.to_string();
+        descriptor.provider = "chatgpt_subscription".to_string();
+        descriptor.endpoint = MX1_CODEX_RESPONSES_ENDPOINT.to_string();
+        descriptor.endpoint_allowlist = vec![MX1_CODEX_RESPONSES_ENDPOINT.to_string()];
+        descriptor.admitted_profile_sha256 =
+            mx1_expected_model_evidence_digest("admitted-profile", descriptor_id);
+        descriptor.credential_reference_name = MX1_CODEX_CREDENTIAL_REFERENCE.to_string();
+        descriptor.role_assignments.values_mut().for_each(|role| {
+            *role = resolved_model_id.to_string();
+        });
+        descriptor.tokenizer_identity = MX1_CODEX_TOKENIZER_IDENTITY.to_string();
+        descriptor.usage_mapping = MX1_CODEX_USAGE_MAPPING.to_string();
+        descriptor.pricing_currency = MX1_CODEX_PRICING_CURRENCY.to_string();
+        descriptor.pricing_unit = MX1_CODEX_PRICING_UNIT.to_string();
+        descriptor.pricing_source_sha256 =
+            mx1_expected_model_evidence_digest("pricing-source", descriptor_id);
+        descriptor.pricing_effective_date = MX1_CODEX_PRICING_DATE.to_string();
+        descriptor.lifecycle_cost_mapping = MX1_CODEX_COST_MAPPING.to_string();
+        descriptor
+    };
+    let model_ids = vec![
+        MX1_CODEX_LUNA_MODEL_ID.to_string(),
+        MX1_CODEX_TERRA_MODEL_ID.to_string(),
+    ];
+    manifest.models = vec![
+        model(
+            MX1_CODEX_LUNA_MODEL_ID,
+            crate::rwe::campaign_package::CODEX_SUBSCRIPTION_LUNA_MODEL,
+        ),
+        model(
+            MX1_CODEX_TERRA_MODEL_ID,
+            crate::rwe::campaign_package::CODEX_SUBSCRIPTION_TERRA_MODEL,
+        ),
+    ];
+    for strategy in &mut manifest.strategies {
+        strategy.supported_model_ids = model_ids.clone();
+    }
+    for harness in &mut manifest.harnesses {
+        harness.supported_model_ids = model_ids.clone();
+    }
+    seal_mx1_descriptor_manifest(manifest)
+        .expect("the Codex subscription manifest must seal cleanly")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -7040,6 +7199,30 @@ mod tests {
                 .code,
             "mx1_strategy_identity"
         );
+    }
+
+    #[test]
+    fn mx1_codex_subscription_manifest_reuses_existing_harness_strategy_and_matrix_owner() {
+        let manifest = sample_mx1_descriptor_manifest_with_codex_subscription_models();
+        validate_mx1_descriptor_manifest(&manifest).unwrap();
+        assert_eq!(manifest.harnesses.len(), 2);
+        assert_eq!(manifest.models.len(), 2);
+        assert_eq!(manifest.strategies.len(), 3);
+        assert_eq!(manifest.models[0].descriptor_id, MX1_CODEX_LUNA_MODEL_ID);
+        assert_eq!(manifest.models[1].descriptor_id, MX1_CODEX_TERRA_MODEL_ID);
+        let plan = build_mx1_matrix_plan(
+            &manifest,
+            Mx1MatrixRung::OneByTwoByOne,
+            "rwe-minimum-t1-fix_flow_linkage",
+            1,
+            &sha256_hex("common-rwe-basis"),
+        )
+        .unwrap();
+        assert_eq!(plan.cells.len(), 2);
+        assert!(plan.cells.iter().all(|cell| {
+            cell.identity.harness_id == MX1_ARM_ZERO_HARNESS_ID
+                && cell.identity.strategy_id == MX1_NO_PROJECTION_STRATEGY_ID
+        }));
     }
 
     #[test]
