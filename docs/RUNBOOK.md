@@ -708,7 +708,19 @@ The bounded route is:
    Keep the repair on one focused Draft PR and use the normal exact-head
    review, canonical CI, guarded merge, and accepted-main readback. Do not
    create a maintenance Mission, Stage, or WorkCard for the repair.
-3. Revalidate the unchanged frozen experiment and execute the canonical
+3. Resolve missing prerequisites before the experiment call. Search every
+   existing app-owned Store and durable-evidence owner for a real prerequisite
+   whose identity and source revision exactly match the frozen campaign. If it
+   is absent, invoke the existing Product Golden Path with the exact frozen
+   target revision and existing workspace, verifier, approval, and terminal-
+   evidence owners to create the smallest real prerequisite. Do not create a
+   synthetic row, copy fixture evidence, edit a revision, hand-write terminal
+   evidence, or bypass Store. A prerequisite is complete only when its
+   trustworthy terminal evidence, approval identity, artifact/output receipt,
+   executor/provider/model/binary identity, and non-fixture provenance are
+   persisted by the canonical owners. The prerequisite is not a scientific
+   result.
+4. Revalidate the unchanged frozen experiment and execute the canonical
    `1x2x1`: one Harness, two frozen Matrix Models, one baseline Strategy, the
    same frozen tasks/evaluator/budget/seed/comparability rules. Save redacted
    model output evidence, token usage, latency, provider-call count, retries,
@@ -716,7 +728,7 @@ The bounded route is:
    provenance. A provider operational failure or an unexecuted cell remains an
    operational state; it must not be relabeled as scientific
    `INCOMPARABLE`/`INSUFFICIENT`.
-4. Only after valid comparable evidence is sealed may the operator continue the
+5. Only after valid comparable evidence is sealed may the operator continue the
    existing ladder: `1x2x1 -> 1x2x3 -> 2x2x3`.
 
 This procedure itself creates no provider spend or target-write authority. It
