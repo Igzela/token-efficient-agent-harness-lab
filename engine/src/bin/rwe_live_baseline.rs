@@ -6,7 +6,8 @@
 use clap::{Parser, Subcommand};
 use engine::rwe::live_baseline_coordinator::{
     issue_and_admit_v2_with_package, operator_preflight_read_only, project_first_baseline_evidence,
-    run_frozen_mx1_1x2x1, run_frozen_schedule, ProductGoldenPathCellDriver,
+    recover_or_create_codex_subscription_golden_path_prerequisite, run_frozen_mx1_1x1x1,
+    run_frozen_mx1_1x1x3, run_frozen_mx1_1x2x1, run_frozen_schedule, ProductGoldenPathCellDriver,
     RWE_LIVE_CELL_COMPOSITION_SEAM,
 };
 use engine::storage::local_product_store::LocalProductStore;
@@ -34,12 +35,36 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Synchronize a terminal scheduler run through the existing ProductTask owner.
+    /// Preserves workspace, provider journals, and unresolved effects.
+    SyncProductTask {
+        #[arg(long)]
+        product_task_id: String,
+    },
+    /// Read a tenant-owned ProductTask's canonical research evidence projection.
+    InspectProductTask {
+        #[arg(long)]
+        product_task_id: String,
+    },
     /// Provider-free readiness check. Never consumes RWE authority.
     Preflight {
         #[arg(long)]
         authorization_id: Option<String>,
         #[arg(long)]
         golden_path_prerequisite_product_task_id: Option<String>,
+    },
+    /// Recover or create the exact-revision Product Golden Path prerequisite.
+    /// Uses real Luna subscription calls and canonical Draft PR output.
+    /// Does not merge the target default branch.
+    Prerequisite {
+        #[arg(long)]
+        target_repo_path: String,
+        /// Provisioned operator key id for the delegated attempt activator.
+        #[arg(long)]
+        cell_executor_key_id: String,
+        /// Provisioned reviewer key id for independent artifact confirmation.
+        #[arg(long)]
+        cell_confirmer_key_id: String,
     },
     /// Issue v2 + admit run (store-owned bindings). No cell execution.
     Admit {
@@ -85,6 +110,12 @@ enum Commands {
         /// Execute the exact frozen MX1 1x2x1 matrix instead of the four-cell RWE schedule.
         #[arg(long, default_value_t = false)]
         mx1_1x2x1: bool,
+        /// Execute the Luna-only exact frozen MX1 1x1x1 matrix.
+        #[arg(long, default_value_t = false)]
+        mx1_1x1x1: bool,
+        /// Execute the Luna-only exact frozen MX1 1x1x3 strategy extension.
+        #[arg(long, default_value_t = false)]
+        mx1_1x1x3: bool,
         /// Registered campaign package selected for the driver.
         #[arg(long)]
         campaign_package_id: Option<String>,
@@ -93,7 +124,10 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
-    let read_only_preflight = matches!(&cli.command, Commands::Preflight { .. });
+    let read_only_preflight = matches!(
+        &cli.command,
+        Commands::Preflight { .. } | Commands::InspectProductTask { .. }
+    );
     let store = if read_only_preflight {
         LocalProductStore::open_existing_read_only(&cli.db_path)
     } else {
@@ -119,6 +153,61 @@ fn main() {
     });
 
     let result = match cli.command {
+        Commands::SyncProductTask { product_task_id } => (|| {
+            if !principal.has_scope(engine::storage::local_product_store::SCOPE_DELEGATED_EXECUTE) {
+                return Err("principal lacks delegated execution scope".into());
+            }
+            let task = store.get_product_task(&product_task_id)?.ok_or("ProductTask is missing")?;
+            if task.get("tenant_id").and_then(serde_json::Value::as_str) != Some(principal.tenant_id()) {
+                return Err("ProductTask tenant does not match principal".into());
+            }
+            let run_id = task.get("run_id").and_then(serde_json::Value::as_str)
+                .ok_or("ProductTask has no scheduler run")?;
+            let run = store.get_workflow_run(run_id)?.ok_or("scheduler run is missing")?;
+            if !matches!(run.get("status").and_then(serde_json::Value::as_str), Some("failed" | "cancelled" | "killed")) {
+                return Err("recovery synchronization requires a terminal unsuccessful run".into());
+            }
+            let synchronized = store.sync_product_task_from_run(&product_task_id, principal.principal_id())?;
+            Ok(json!({
+                "product_task_id": product_task_id,
+                "previous_status": task.get("status"),
+                "task_status": synchronized.get("status"),
+                "run_id": run_id,
+                "provider_call_performed": false,
+                "workspace_cleanup_performed": false,
+                "effect_reconciliation_performed": false,
+            }))
+        })(),
+        Commands::InspectProductTask {
+            product_task_id,
+        } => {
+            store.get_product_task(&product_task_id).and_then(|task| {
+                let task = task.ok_or("ProductTask is missing")?;
+                if task.get("tenant_id").and_then(serde_json::Value::as_str)
+                    != Some(principal.tenant_id())
+                {
+                    return Err("ProductTask tenant does not match principal".into());
+                }
+                let run = task.get("run_id").and_then(serde_json::Value::as_str)
+                    .map(|id| store.get_workflow_run(id)).transpose()?.flatten();
+                Ok(json!({
+                    "product_task_id": product_task_id,
+                    "task_status": task.get("status"),
+                    "source_revision": task.get("source_revision"),
+                    "output_intent": task.get("output_intent"),
+                    "run_id": task.get("run_id"),
+                    "run_status": run.as_ref().and_then(|value| value.get("status")),
+                    "nodes": run.as_ref().and_then(|value| value.get("nodes"))
+                        .and_then(serde_json::Value::as_array).map(|nodes| nodes.iter().map(|node| json!({
+                            "node_id": node.get("node_id"),
+                            "status": node.get("status"),
+                            "error_domain": node.pointer("/result/error_domain"),
+                        })).collect::<Vec<_>>()),
+                    "provider_call_performed": false,
+                    "store_mutation_performed": false,
+                }))
+            })
+        }
         Commands::Preflight {
             authorization_id,
             golden_path_prerequisite_product_task_id,
@@ -127,6 +216,17 @@ fn main() {
             &principal,
             authorization_id.as_deref(),
             golden_path_prerequisite_product_task_id.as_deref(),
+        ),
+        Commands::Prerequisite {
+            target_repo_path,
+            cell_executor_key_id,
+            cell_confirmer_key_id,
+        } => recover_or_create_codex_subscription_golden_path_prerequisite(
+            &store,
+            &principal,
+            std::path::Path::new(&target_repo_path),
+            &cell_executor_key_id,
+            &cell_confirmer_key_id,
         ),
         Commands::Admit {
             authorization_id,
@@ -160,6 +260,8 @@ fn main() {
             cell_executor_key_id,
             cell_confirmer_key_id,
             mx1_1x2x1,
+            mx1_1x1x1,
+            mx1_1x1x3,
             campaign_package_id,
         } => {
             let campaign_package = campaign_package_id
@@ -178,7 +280,30 @@ fn main() {
                 cell_confirmer_key_id,
                 campaign_package,
             };
-            let run = if mx1_1x2x1 {
+            let selected_rungs = u8::from(mx1_1x1x1) + u8::from(mx1_1x1x3) + u8::from(mx1_1x2x1);
+            if selected_rungs > 1 {
+                eprintln!("select at most one MX1 rung");
+                std::process::exit(2);
+            }
+            let run = if mx1_1x1x1 {
+                run_frozen_mx1_1x1x1(
+                    &store,
+                    &principal,
+                    &run_id,
+                    &authorization_id,
+                    &lease_token,
+                    &driver,
+                )
+            } else if mx1_1x1x3 {
+                run_frozen_mx1_1x1x3(
+                    &store,
+                    &principal,
+                    &run_id,
+                    &authorization_id,
+                    &lease_token,
+                    &driver,
+                )
+            } else if mx1_1x2x1 {
                 run_frozen_mx1_1x2x1(
                     &store,
                     &principal,

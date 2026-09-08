@@ -1,6 +1,6 @@
 # Autonomy and Testing Contract
 
-Last updated: 2026-09-07.
+Last updated: 2026-09-08.
 
 This document defines the autonomy governance, lifecycle state machine, review convergence protocol, exact-head CI, and guarded merge contracts for the Autonomous Steward system.
 
@@ -66,6 +66,30 @@ boundary, and external uncertainty recovery rules, remains authoritative and
 has priority. The prerequisite itself is never counted as the experiment's
 scientific result.
 
+#### Standing Recovery Authorization
+
+Apply the owner's latest explicit authorization, not a superseded model or
+budget choice. When the owner authorizes a model, reasoning, experiment-shape,
+or finite execution-envelope revision, record a distinct freeze through the
+existing campaign, binding, Matrix, and budget owners before execution.
+Preserve prior freezes, consumed spend, failures, and usage; never relabel old
+results as matching the revised experiment. This is not permission to change
+the evaluator or comparability rules to rescue a result.
+
+Within that standing authorization, routine session resolution and standard
+refresh, bounded prerequisite acquisition, and finite schedule-derived budget
+updates do not require repeated owner confirmation. Record budget changes and
+actual consumption through the existing owner. Actual quota exhaustion uses
+the provider's bounded reset/retry path; it does not permit unlimited POSTs,
+buying quota, substituting credentials/models, or counting unknown usage as
+zero. Failed authentication requires an owner login only after supported
+automatic recovery is exhausted; authentication and isolation remain enforced.
+
+An unreconciled effect pauses that effect and any dependent execution, not
+independent safe inspection, repair, testing, or delivery. Preserve its receipt
+and reconcile through the existing owner before replay; general recovery
+authorization and passing new tests cannot prove a historical effect absent.
+
 When the owner has explicitly required a finite frozen experiment and a real
 live smoke exposes a missing composition seam between existing canonical
 owners, that seam is a bounded execution repair. The implementation agent may
@@ -80,8 +104,10 @@ This continuation rule does not permit:
 
 - adding or replacing an authority owner or a parallel runtime, scheduler,
   Store, budget, evaluator, evidence, or approval owner;
-- changing the evaluator, corpus, scientific question, Strategy, seed,
-  comparability contract, provider/model set, call count, or budget envelope;
+- changing the evaluator, corpus, scientific question, Strategy, seed, or
+  comparability contract, or changing the provider/model set, call count, or
+  budget envelope without the explicit authorization and recorded revision
+  described above;
 - creating, rotating, disclosing, or persisting credentials;
 - destructive effects or a second attempt after an outcome whose external
   effect cannot be safely reconciled.

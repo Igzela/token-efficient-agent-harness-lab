@@ -25,6 +25,9 @@ pub const RWE_CAMPAIGN_PACKAGE_SCHEMA: &str = "rwe_campaign_package.v1";
 pub const RWE_DEEPSEEK_V2_PACKAGE_ID: &str = "rwe-campaign-deepseek-v2";
 pub const RWE_AGY_V1_PACKAGE_ID: &str = "rwe-campaign-agy-v1";
 pub const RWE_CODEX_SUBSCRIPTION_V1_PACKAGE_ID: &str = "rwe-campaign-codex-subscription-v1";
+pub const RWE_CODEX_LUNA_XHIGH_V2_PACKAGE_ID: &str = "rwe-campaign-codex-luna-xhigh-v2";
+pub const RWE_CODEX_LUNA_XHIGH_V3_STRATEGY_PACKAGE_ID: &str =
+    "rwe-campaign-codex-luna-xhigh-strategy-v3";
 pub const FROZEN_PROVIDER_EXECUTION_BINDING_SCHEMA: &str =
     "rwe_frozen_provider_execution_binding.v1";
 
@@ -85,10 +88,21 @@ pub struct FrozenProviderExecutionBinding {
     pub pricing_identity: Option<String>,
     pub cost_unavailable: bool,
     pub admitted_model: String,
+    /// Absent on historical bindings so their canonical bytes stay unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 impl FrozenProviderExecutionBinding {
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(effort) = &self.reasoning_effort {
+            if self.provider_kind != CODEX_SUBSCRIPTION_PROVIDER_KIND
+                || self.request_schema_version != CODEX_SUBSCRIPTION_REQUEST_SCHEMA
+                || effort != "xhigh"
+            {
+                return Err("frozen reasoning effort is not admitted for this provider".into());
+            }
+        }
         if self.schema_version != FROZEN_PROVIDER_EXECUTION_BINDING_SCHEMA {
             return Err("frozen provider binding schema is not canonical".into());
         }
@@ -132,7 +146,7 @@ impl FrozenProviderExecutionBinding {
     }
 
     pub fn to_json(&self) -> Value {
-        json!({
+        let mut value = json!({
             "schema_version": self.schema_version,
             "provider_identity": self.provider_identity,
             "provider_kind": self.provider_kind,
@@ -147,7 +161,11 @@ impl FrozenProviderExecutionBinding {
             "pricing_identity": self.pricing_identity,
             "cost_unavailable": self.cost_unavailable,
             "admitted_model": self.admitted_model,
-        })
+        });
+        if let Some(effort) = &self.reasoning_effort {
+            value["reasoning_effort"] = json!(effort);
+        }
+        value
     }
 
     pub fn from_json(value: &Value) -> Result<Self, String> {
@@ -182,6 +200,7 @@ pub fn canonical_deepseek_provider_binding() -> FrozenProviderExecutionBinding {
         pricing_identity: Some("deepseek-v4-usd-2026-07-31".into()),
         cost_unavailable: false,
         admitted_model: OPERATOR_ADMITTED_MODEL.into(),
+        reasoning_effort: None,
     }
 }
 
@@ -206,6 +225,7 @@ pub fn canonical_codex_subscription_provider_binding(
         pricing_identity: None,
         cost_unavailable: true,
         admitted_model: admitted_model.into(),
+        reasoning_effort: None,
     }
 }
 
@@ -245,6 +265,21 @@ pub struct FrozenCampaignPackage {
 }
 
 impl FrozenCampaignPackage {
+    /// Number of Matrix factor cells emitted for each frozen schedule cell.
+    ///
+    /// Historical package bytes are immutable: the original Codex package's
+    /// `cell_count` described the four-cell base schedule even though its
+    /// `1x2x1` runner emits two model cells per schedule cell. New packages use
+    /// distinct identities; callers must use this typed mapping rather than
+    /// reinterpret the historical field.
+    pub fn matrix_schedule_expansion_factor(&self) -> u64 {
+        match self.package_id.as_str() {
+            RWE_CODEX_SUBSCRIPTION_V1_PACKAGE_ID => 2,
+            RWE_CODEX_LUNA_XHIGH_V3_STRATEGY_PACKAGE_ID => 3,
+            _ => 1,
+        }
+    }
+
     /// Resolve the exact provider binding for one package-owned model role.
     ///
     /// A package may expose distinct implementer and planner/reviewer model
@@ -334,10 +369,16 @@ impl FrozenCampaignPackage {
         if !is_sha256(&self.schedule_sha256) {
             return Err("schedule_sha256 must be a valid 64-character hex SHA-256".into());
         }
-        if self.cell_count != 4 {
+        let expected_cell_count = if self.package_id == RWE_CODEX_LUNA_XHIGH_V3_STRATEGY_PACKAGE_ID
+        {
+            12
+        } else {
+            4
+        };
+        if self.cell_count != expected_cell_count {
             return Err(format!(
-                "cell_count mismatch: expected 4 cells, got {}",
-                self.cell_count
+                "cell_count mismatch: expected {expected_cell_count} cells for package {}, got {}",
+                self.package_id, self.cell_count
             ));
         }
         if !self.auto_merge_disabled {
@@ -541,12 +582,43 @@ pub fn canonical_codex_subscription_v1_package() -> Result<FrozenCampaignPackage
     Ok(pkg)
 }
 
+/// Explicit Luna-only revision; historical subscription packages remain unchanged.
+pub fn canonical_codex_luna_xhigh_v2_package() -> Result<FrozenCampaignPackage, String> {
+    let mut package = canonical_codex_subscription_v1_package()?;
+    package.package_id = RWE_CODEX_LUNA_XHIGH_V2_PACKAGE_ID.into();
+    package.planner_reviewer_model = CODEX_SUBSCRIPTION_LUNA_MODEL.into();
+    package
+        .provider_execution_binding
+        .as_mut()
+        .expect("Codex binding")
+        .reasoning_effort = Some("xhigh".into());
+    package.notes = "Luna-only xhigh operator revision; preserves corpus, evaluator, seed and Strategy definitions. Old two-model package remains immutable. Scientific schedule is explicitly versioned separately.".into();
+    package.validate()?;
+    Ok(package)
+}
+
+/// Luna-only three-Strategy extension. Its distinct package identity and
+/// twelve-cell envelope prevent a baseline authorization from selecting the
+/// extension after admission.
+pub fn canonical_codex_luna_xhigh_v3_strategy_package() -> Result<FrozenCampaignPackage, String> {
+    let mut package = canonical_codex_luna_xhigh_v2_package()?;
+    package.package_id = RWE_CODEX_LUNA_XHIGH_V3_STRATEGY_PACKAGE_ID.into();
+    package.cell_count = 12;
+    package.notes = "Luna-only xhigh 1x1x3 Strategy extension: four frozen schedule cells expanded across three existing Strategies. Corpus, evaluator, seeds, model, and comparability rules are unchanged; the distinct package binds the finite twelve-cell budget envelope.".into();
+    package.validate()?;
+    Ok(package)
+}
+
 /// Resolve a frozen campaign package by its canonical identifier.
 pub fn resolve_frozen_campaign_package(package_id: &str) -> Result<FrozenCampaignPackage, String> {
     match package_id {
         RWE_DEEPSEEK_V2_PACKAGE_ID => canonical_deepseek_v2_package(),
         RWE_AGY_V1_PACKAGE_ID => canonical_agy_v1_candidate_package(),
         RWE_CODEX_SUBSCRIPTION_V1_PACKAGE_ID => canonical_codex_subscription_v1_package(),
+        RWE_CODEX_LUNA_XHIGH_V2_PACKAGE_ID => canonical_codex_luna_xhigh_v2_package(),
+        RWE_CODEX_LUNA_XHIGH_V3_STRATEGY_PACKAGE_ID => {
+            canonical_codex_luna_xhigh_v3_strategy_package()
+        }
         other => Err(format!("unknown frozen campaign package id: {other}")),
     }
 }
@@ -675,6 +747,72 @@ mod tests {
         let json = pkg.to_json();
         let restored = FrozenCampaignPackage::from_json(&json).expect("from_json must succeed");
         assert_eq!(pkg, restored);
+    }
+
+    #[test]
+    fn luna_revision_roundtrips_reasoning_without_mutating_legacy_binding() {
+        let legacy = canonical_codex_subscription_v1_package().unwrap();
+        let package = canonical_codex_luna_xhigh_v2_package().unwrap();
+        let binding = package.provider_execution_binding.as_ref().unwrap();
+        assert_eq!(binding.to_json()["reasoning_effort"], "xhigh");
+        assert_eq!(
+            FrozenProviderExecutionBinding::from_json(&binding.to_json()).unwrap(),
+            *binding
+        );
+        assert!(legacy
+            .provider_execution_binding
+            .as_ref()
+            .unwrap()
+            .to_json()
+            .get("reasoning_effort")
+            .is_none());
+        assert_eq!(
+            FrozenCampaignPackage::from_json(&package.to_json()).unwrap(),
+            package
+        );
+        assert_ne!(
+            legacy.canonical_sha256().unwrap(),
+            package.canonical_sha256().unwrap()
+        );
+        assert!(package
+            .provider_execution_binding_for_model(CODEX_SUBSCRIPTION_TERRA_MODEL)
+            .is_err());
+        assert_eq!(package.corpus_sha256, legacy.corpus_sha256);
+        assert_eq!(package.target_main_sha, legacy.target_main_sha);
+        let mut invalid = binding.clone();
+        invalid.reasoning_effort = Some("low".into());
+        assert!(invalid.validate().is_err());
+        let mut wrong_provider = canonical_deepseek_provider_binding();
+        wrong_provider.reasoning_effort = Some("xhigh".into());
+        assert!(wrong_provider.validate().is_err());
+    }
+
+    #[test]
+    fn luna_strategy_extension_has_a_distinct_twelve_cell_freeze() {
+        let baseline = canonical_codex_luna_xhigh_v2_package().unwrap();
+        let extension = canonical_codex_luna_xhigh_v3_strategy_package().unwrap();
+        assert_eq!(baseline.cell_count, 4);
+        assert_eq!(extension.cell_count, 12);
+        assert_eq!(baseline.matrix_schedule_expansion_factor(), 1);
+        assert_eq!(extension.matrix_schedule_expansion_factor(), 3);
+        assert_eq!(
+            canonical_codex_subscription_v1_package()
+                .unwrap()
+                .matrix_schedule_expansion_factor(),
+            2
+        );
+        assert_ne!(baseline.package_id, extension.package_id);
+        assert_ne!(
+            baseline.canonical_sha256().unwrap(),
+            extension.canonical_sha256().unwrap()
+        );
+        assert_eq!(baseline.admitted_model, extension.admitted_model);
+        assert_eq!(baseline.corpus_sha256, extension.corpus_sha256);
+        assert_eq!(baseline.protocol_sha256, extension.protocol_sha256);
+        assert_eq!(baseline.schedule_sha256, extension.schedule_sha256);
+        let mut invalid = extension;
+        invalid.cell_count = 4;
+        assert!(invalid.validate().is_err());
     }
 
     #[test]

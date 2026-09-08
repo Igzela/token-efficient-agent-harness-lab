@@ -258,6 +258,13 @@ impl CellOutcome {
 
 /// Cell execution seam shared by production and tests.
 pub trait CellDriver: Send + Sync {
+    /// Exact campaign package consumed by this driver. `None` is the legacy
+    /// canonical DeepSeek default only; Codex runners always require an exact
+    /// package value matching the Store authorization.
+    fn campaign_package(&self) -> Option<&crate::rwe::campaign_package::FrozenCampaignPackage> {
+        None
+    }
+
     fn ensure_effects_ready(&self) -> Result<(), String> {
         Ok(())
     }
@@ -282,6 +289,10 @@ pub struct CountingCellDriver<'a> {
 }
 
 impl CellDriver for CountingCellDriver<'_> {
+    fn campaign_package(&self) -> Option<&crate::rwe::campaign_package::FrozenCampaignPackage> {
+        self.inner.campaign_package()
+    }
+
     fn ensure_effects_ready(&self) -> Result<(), String> {
         self.inner.ensure_effects_ready()
     }
@@ -426,8 +437,12 @@ impl std::fmt::Debug for ProductGoldenPathCellDriver {
 }
 
 impl CellDriver for ProductGoldenPathCellDriver {
+    fn campaign_package(&self) -> Option<&crate::rwe::campaign_package::FrozenCampaignPackage> {
+        self.campaign_package.as_ref()
+    }
+
     fn ensure_effects_ready(&self) -> Result<(), String> {
-        if std::env::var("CI").ok().as_deref() == Some("true") {
+        if self.allow_live_provider_effects && std::env::var("CI").ok().as_deref() == Some("true") {
             return Err(
                 "fail closed before cell effect: live RWE cell execution is forbidden in CI".into(),
             );
@@ -637,6 +652,7 @@ impl CellDriver for ProductGoldenPathCellDriver {
             ids,
             &product_task_id,
             matrix_binding.as_ref(),
+            self.campaign_package.as_ref(),
             target,
             &self.fake_transport,
         )
@@ -4010,11 +4026,13 @@ pub fn revalidate_stored_v2_authorization(
     if body.get("target_main_sha").and_then(Value::as_str) != Some(target_main) {
         return Err("stored v2 authorization target_main_sha mismatch".into());
     }
+    let schedule_expansion = package.matrix_schedule_expansion_factor();
     let run_max_req = frozen
         .schedule
         .body
         .pointer("/run_level_budget/max_total_provider_requests")
-        .and_then(Value::as_u64);
+        .and_then(Value::as_u64)
+        .and_then(|value| value.checked_mul(schedule_expansion));
     if body
         .get("max_total_provider_requests")
         .and_then(Value::as_u64)
@@ -4026,9 +4044,19 @@ pub fn revalidate_stored_v2_authorization(
         .schedule
         .body
         .pointer("/run_level_budget/max_total_tokens")
-        .and_then(Value::as_u64);
+        .and_then(Value::as_u64)
+        .and_then(|value| value.checked_mul(schedule_expansion));
     if body.get("max_total_tokens").and_then(Value::as_u64) != run_max_tok {
         return Err("stored v2 authorization max_total_tokens mismatch".into());
+    }
+    let run_max_wall_ms = frozen
+        .schedule
+        .body
+        .pointer("/run_level_budget/max_wall_time_ms")
+        .and_then(Value::as_u64)
+        .and_then(|value| value.checked_mul(schedule_expansion));
+    if body.get("max_wall_time_ms").and_then(Value::as_u64) != run_max_wall_ms {
+        return Err("stored v2 authorization max_wall_time_ms mismatch".into());
     }
     if body.get("fixture_only").and_then(Value::as_bool) != Some(false) {
         return Err("live baseline refuses fixture_only authorization".into());
@@ -4750,6 +4778,30 @@ fn mark_cleanup_failed(outcome: &mut CellOutcome, detail: impl Into<String>) {
 /// Returns `external` only when the aggregated execution evidence and every
 /// durable journal claim attest the production external transport. Missing,
 /// invalid, or mixed provenance fails closed with an error.
+fn validate_prerequisite_provider_identity(
+    projection: &Value,
+    provider_kind: &str,
+    model: &str,
+) -> Result<(), String> {
+    let requests = projection
+        .pointer("/provider_execution/requests")
+        .and_then(Value::as_array)
+        .filter(|requests| !requests.is_empty())
+        .ok_or("completed prerequisite lacks confirmed provider requests")?;
+    for request in requests {
+        if request.get("provider_kind").and_then(Value::as_str) != Some(provider_kind)
+            || request.get("requested_model").and_then(Value::as_str) != Some(model)
+            || request.get("resolved_model").and_then(Value::as_str) != Some(model)
+            || request.pointer("/usage/model").and_then(Value::as_str) != Some(model)
+        {
+            return Err(
+                "completed prerequisite provider/model differs from selected freeze".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
 fn store_evidence_transport_provenance(projection: &Value) -> Result<String, String> {
     let journal_projection = provider_execution_from_journal(projection);
     let pe = projection
@@ -4996,82 +5048,175 @@ fn cell_reservation_limits(cell: &Value) -> Result<RweCellBudgetEnvelope, String
     RweCellBudgetEnvelope::from_schedule_cell(cell)
 }
 
-fn frozen_codex_mx1_cells(frozen: &OperatorFrozenContractSet) -> Result<Vec<Value>, String> {
-    let task = frozen
-        .corpus
-        .tasks
-        .first()
-        .ok_or("frozen operator corpus has no task for MX1")?;
-    let base_cell = frozen
+fn frozen_codex_mx1_cells(
+    frozen: &OperatorFrozenContractSet,
+    rung: crate::harness_evolution::Mx1MatrixRung,
+) -> Result<Vec<Value>, String> {
+    let base_cells = frozen
         .schedule
         .body
         .get("cells")
         .and_then(Value::as_array)
-        .and_then(|cells| cells.first())
-        .cloned()
-        .ok_or("frozen schedule has no budget cell for MX1")?;
+        .filter(|cells| !cells.is_empty())
+        .ok_or("frozen schedule has no budget cells for MX1")?;
     let manifest =
         crate::harness_evolution::sample_mx1_descriptor_manifest_with_codex_subscription_models();
     crate::harness_evolution::validate_mx1_descriptor_manifest(&manifest)
         .map_err(|error| format!("Codex MX1 manifest is invalid: {}", error.message))?;
-    let common_basis = sort_value(&json!({
-        "schema_version": "mx1_common_basis.v1",
-        "corpus_sha256": frozen.corpus.corpus_sha256,
-        "protocol_sha256": frozen.protocol.body_sha256,
-        "schedule_sha256": frozen.schedule.schedule_sha256,
-        "task_id": task.task_id,
-        "repetition": base_cell.get("repetition"),
-        "seed": base_cell.get("seed"),
-        "budget_point_id": base_cell.get("budget_point_id"),
-        "verifier": crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY,
-        "allowed_paths": task.allowed_mutable_paths,
-        "comparison": current_comparison_manifest()?.to_json(),
-    }));
-    let common_basis_sha256 = sha256_hex(common_basis.to_string().as_bytes());
-    let plan = crate::harness_evolution::build_mx1_matrix_plan(
-        &manifest,
-        crate::harness_evolution::Mx1MatrixRung::OneByTwoByOne,
-        &task.task_id,
-        base_cell
+    let factor_cells_per_schedule_cell = match rung {
+        crate::harness_evolution::Mx1MatrixRung::OneByOneByOne => 1,
+        crate::harness_evolution::Mx1MatrixRung::OneByOneByThree => 3,
+        crate::harness_evolution::Mx1MatrixRung::OneByTwoByOne => 2,
+        _ => {
+            return Err(format!(
+                "Codex operator runner does not admit MX1 rung {}",
+                rung.as_str()
+            ))
+        }
+    };
+    let comparison = current_comparison_manifest()?.to_json();
+    let mut cells = Vec::with_capacity(base_cells.len() * factor_cells_per_schedule_cell);
+    for base_cell in base_cells {
+        let task_id = base_cell
+            .get("task_id")
+            .and_then(Value::as_str)
+            .ok_or("MX1 schedule cell task identity is missing")?;
+        let task = frozen
+            .corpus
+            .tasks
+            .iter()
+            .find(|task| task.task_id == task_id)
+            .ok_or("MX1 schedule cell task is absent from the frozen corpus")?;
+        let repetition = base_cell
             .get("repetition")
             .and_then(Value::as_u64)
-            .ok_or("MX1 base cell repetition is missing")? as u32,
-        &common_basis_sha256,
-    )
-    .map_err(|error| format!("Codex MX1 plan construction failed: {}", error.message))?;
-    crate::harness_evolution::validate_mx1_matrix_plan(&manifest, &plan)
-        .map_err(|error| format!("Codex MX1 plan validation failed: {}", error.message))?;
-    let mut cells = Vec::with_capacity(plan.cells.len());
-    for (index, matrix_cell) in plan.cells.iter().enumerate() {
-        if matrix_cell.disposition != crate::harness_evolution::Mx1MatrixCellDisposition::Admitted {
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .ok_or("MX1 schedule cell repetition is invalid")?;
+        let common_basis = sort_value(&json!({
+            "schema_version": "mx1_common_basis.v1",
+            "corpus_sha256": frozen.corpus.corpus_sha256,
+            "protocol_sha256": frozen.protocol.body_sha256,
+            "schedule_sha256": frozen.schedule.schedule_sha256,
+            "task_id": task.task_id,
+            "repetition": repetition,
+            "seed": base_cell.get("seed"),
+            "budget_point_id": base_cell.get("budget_point_id"),
+            "verifier": crate::rwe::frozen_rwe_bindings::FROZEN_RWE_VERIFIER_IDENTITY,
+            "allowed_paths": task.allowed_mutable_paths,
+            "comparison": comparison,
+        }));
+        let common_basis_sha256 = sha256_hex(common_basis.to_string().as_bytes());
+        let plan = crate::harness_evolution::build_mx1_matrix_plan(
+            &manifest,
+            rung,
+            task_id,
+            repetition,
+            &common_basis_sha256,
+        )
+        .map_err(|error| format!("Codex MX1 plan construction failed: {}", error.message))?;
+        crate::harness_evolution::validate_mx1_matrix_plan(&manifest, &plan)
+            .map_err(|error| format!("Codex MX1 plan validation failed: {}", error.message))?;
+        if plan.cells.len() != factor_cells_per_schedule_cell {
             return Err(format!(
-                "Codex MX1 1x2x1 selected an incomparable cell: {}",
-                matrix_cell.cell_id
+                "Codex MX1 {} factor plan must contain {} cells, got {}",
+                rung.as_str(),
+                factor_cells_per_schedule_cell,
+                plan.cells.len()
             ));
         }
-        let mut cell = base_cell.clone();
-        cell["cell_id"] = json!(matrix_cell.cell_id);
-        cell["task_id"] = json!(matrix_cell.identity.task_id);
-        cell["harness_id"] = json!(matrix_cell.identity.harness_id);
-        cell["strategy_id"] = json!(matrix_cell.identity.strategy_id);
-        cell["matrix_plan_id"] = json!(plan.plan_id);
-        cell["matrix_manifest_sha256"] = json!(plan.manifest_sha256);
-        cell["matrix_common_basis_sha256"] = json!(plan.common_basis_sha256);
-        cell["matrix_rung"] = json!(plan.rung.as_str());
-        cell["matrix_repetition"] = json!(plan.repetition);
-        cell["matrix_cell_descriptor_sha256"] = json!(matrix_cell.descriptor_digest);
-        cell["matrix_model_id"] = json!(matrix_cell.identity.model_id);
-        cell["matrix_strategy_id"] = json!(matrix_cell.identity.strategy_id);
-        cell["sequential_order"] = json!((index + 1) as u64);
-        cells.push(cell);
+        for matrix_cell in &plan.cells {
+            if matrix_cell.disposition
+                != crate::harness_evolution::Mx1MatrixCellDisposition::Admitted
+            {
+                return Err(format!(
+                    "Codex MX1 {} selected an incomparable cell: {}",
+                    rung.as_str(),
+                    matrix_cell.cell_id
+                ));
+            }
+            let mut cell = base_cell.clone();
+            cell["cell_id"] = json!(matrix_cell.cell_id);
+            cell["task_id"] = json!(matrix_cell.identity.task_id);
+            cell["harness_id"] = json!(matrix_cell.identity.harness_id);
+            cell["strategy_id"] = json!(matrix_cell.identity.strategy_id);
+            cell["matrix_plan_id"] = json!(plan.plan_id);
+            cell["matrix_manifest_sha256"] = json!(plan.manifest_sha256);
+            cell["matrix_common_basis_sha256"] = json!(plan.common_basis_sha256);
+            cell["matrix_rung"] = json!(plan.rung.as_str());
+            cell["matrix_repetition"] = json!(plan.repetition);
+            cell["matrix_cell_descriptor_sha256"] = json!(matrix_cell.descriptor_digest);
+            cell["matrix_model_id"] = json!(matrix_cell.identity.model_id);
+            cell["matrix_strategy_id"] = json!(matrix_cell.identity.strategy_id);
+            cell["sequential_order"] = json!((cells.len() + 1) as u64);
+            cells.push(cell);
+        }
     }
-    if cells.len() != 2 {
+    let expected_cells = base_cells.len() * factor_cells_per_schedule_cell;
+    if cells.len() != expected_cells {
         return Err(format!(
-            "Codex MX1 1x2x1 must materialize exactly two cells, got {}",
+            "Codex MX1 {} must materialize exactly {} cells, got {}",
+            rung.as_str(),
+            expected_cells,
             cells.len()
         ));
     }
     Ok(cells)
+}
+
+fn authorization_campaign_package_id(auth: &Value) -> Result<&str, String> {
+    auth.get("body_json")
+        .and_then(|body| body.get("campaign_package_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("stored RWE authorization lacks a campaign package identity".into())
+}
+
+fn required_campaign_package_id_for_rung(
+    rung: Option<crate::harness_evolution::Mx1MatrixRung>,
+) -> Result<&'static str, String> {
+    match rung {
+        None => Ok(crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID),
+        Some(crate::harness_evolution::Mx1MatrixRung::OneByTwoByOne) => {
+            Ok(crate::rwe::campaign_package::RWE_CODEX_SUBSCRIPTION_V1_PACKAGE_ID)
+        }
+        Some(crate::harness_evolution::Mx1MatrixRung::OneByOneByOne) => {
+            Ok(crate::rwe::campaign_package::RWE_CODEX_LUNA_XHIGH_V2_PACKAGE_ID)
+        }
+        Some(crate::harness_evolution::Mx1MatrixRung::OneByOneByThree) => {
+            Ok(crate::rwe::campaign_package::RWE_CODEX_LUNA_XHIGH_V3_STRATEGY_PACKAGE_ID)
+        }
+        Some(other) => Err(format!(
+            "operator runner does not admit MX1 rung {}",
+            other.as_str()
+        )),
+    }
+}
+
+fn require_driver_campaign_package(
+    driver: &dyn CellDriver,
+    expected_package_id: &str,
+) -> Result<crate::rwe::campaign_package::FrozenCampaignPackage, String> {
+    let expected =
+        crate::rwe::campaign_package::resolve_frozen_campaign_package(expected_package_id)?;
+    let observed = match driver.campaign_package() {
+        Some(package) => package.clone(),
+        None if expected_package_id == crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID => {
+            crate::rwe::campaign_package::canonical_deepseek_v2_package()?
+        }
+        None => {
+            return Err(format!(
+                "campaign package {expected_package_id} requires an exact driver package binding"
+            ))
+        }
+    };
+    observed.validate()?;
+    if observed != expected {
+        return Err(format!(
+            "driver campaign package does not exactly match authorization package {expected_package_id}"
+        ));
+    }
+    Ok(expected)
 }
 
 /// Run the frozen schedule under an admitted authorization and injectable driver.
@@ -5083,10 +5228,15 @@ pub fn run_frozen_schedule(
     lease_token: &str,
     driver: &dyn CellDriver,
 ) -> Result<Value, String> {
-    driver.ensure_effects_ready()?;
-
     let frozen = freeze_current_operator_contract_set()?;
-    revalidate_stored_v2_authorization(store, principal, authorization_id, &frozen)?;
+    let auth = revalidate_stored_v2_authorization(store, principal, authorization_id, &frozen)?;
+    let package_id = authorization_campaign_package_id(&auth)?;
+    let required_package_id = required_campaign_package_id_for_rung(None)?;
+    if package_id != required_package_id {
+        return Err("the generic frozen schedule accepts only the canonical DeepSeek package; Codex packages require an exact MX1 rung".into());
+    }
+    require_driver_campaign_package(driver, package_id)?;
+    driver.ensure_effects_ready()?;
     let cells = frozen
         .schedule
         .body
@@ -5122,18 +5272,20 @@ pub fn run_frozen_mx1_1x2x1(
     lease_token: &str,
     driver: &dyn CellDriver,
 ) -> Result<Value, String> {
-    driver.ensure_effects_ready()?;
     let frozen = freeze_current_operator_contract_set()?;
     let auth = revalidate_stored_v2_authorization(store, principal, authorization_id, &frozen)?;
-    if auth
-        .get("body_json")
-        .and_then(|body| body.get("campaign_package_id"))
-        .and_then(Value::as_str)
-        != Some(crate::rwe::campaign_package::RWE_CODEX_SUBSCRIPTION_V1_PACKAGE_ID)
-    {
+    let required_package_id = required_campaign_package_id_for_rung(Some(
+        crate::harness_evolution::Mx1MatrixRung::OneByTwoByOne,
+    ))?;
+    if authorization_campaign_package_id(&auth)? != required_package_id {
         return Err("MX1 1x2x1 requires the frozen Codex subscription campaign package".into());
     }
-    let cells = frozen_codex_mx1_cells(&frozen)?;
+    require_driver_campaign_package(driver, required_package_id)?;
+    driver.ensure_effects_ready()?;
+    let cells = frozen_codex_mx1_cells(
+        &frozen,
+        crate::harness_evolution::Mx1MatrixRung::OneByTwoByOne,
+    )?;
     run_frozen_cells(
         store,
         principal,
@@ -5143,6 +5295,92 @@ pub fn run_frozen_mx1_1x2x1(
         lease_token,
         cells,
         driver,
+    )
+}
+
+fn run_frozen_codex_single_model_rung(
+    store: &std::sync::Arc<LocalProductStore>,
+    principal: &AuthenticatedPrincipal,
+    run_id: &str,
+    authorization_id: &str,
+    lease_token: &str,
+    driver: &dyn CellDriver,
+    rung: crate::harness_evolution::Mx1MatrixRung,
+) -> Result<Value, String> {
+    let frozen = freeze_current_operator_contract_set()?;
+    let auth = revalidate_stored_v2_authorization(store, principal, authorization_id, &frozen)?;
+    let required_package_id = required_campaign_package_id_for_rung(Some(rung))?;
+    if authorization_campaign_package_id(&auth)? != required_package_id {
+        return Err(format!(
+            "MX1 {} requires frozen campaign package {required_package_id}",
+            rung.as_str(),
+        ));
+    }
+    require_driver_campaign_package(driver, required_package_id)?;
+    driver.ensure_effects_ready()?;
+    let cells = frozen_codex_mx1_cells(&frozen, rung)?;
+    let package =
+        crate::rwe::campaign_package::resolve_frozen_campaign_package(required_package_id)?;
+    if cells.len() != package.cell_count {
+        return Err(format!(
+            "MX1 {} materialized {} cells but frozen package {} requires {}",
+            rung.as_str(),
+            cells.len(),
+            required_package_id,
+            package.cell_count
+        ));
+    }
+    run_frozen_cells(
+        store,
+        principal,
+        &frozen,
+        run_id,
+        authorization_id,
+        lease_token,
+        cells,
+        driver,
+    )
+}
+
+/// Execute the Luna-only Codex subscription matrix rung: one H0 Harness, one
+/// exact Luna Model, and one baseline Strategy.
+pub fn run_frozen_mx1_1x1x1(
+    store: &std::sync::Arc<LocalProductStore>,
+    principal: &AuthenticatedPrincipal,
+    run_id: &str,
+    authorization_id: &str,
+    lease_token: &str,
+    driver: &dyn CellDriver,
+) -> Result<Value, String> {
+    run_frozen_codex_single_model_rung(
+        store,
+        principal,
+        run_id,
+        authorization_id,
+        lease_token,
+        driver,
+        crate::harness_evolution::Mx1MatrixRung::OneByOneByOne,
+    )
+}
+
+/// Execute the three-Strategy extension only after the Luna-only baseline has
+/// been admitted by the same Store-owned run path.
+pub fn run_frozen_mx1_1x1x3(
+    store: &std::sync::Arc<LocalProductStore>,
+    principal: &AuthenticatedPrincipal,
+    run_id: &str,
+    authorization_id: &str,
+    lease_token: &str,
+    driver: &dyn CellDriver,
+) -> Result<Value, String> {
+    run_frozen_codex_single_model_rung(
+        store,
+        principal,
+        run_id,
+        authorization_id,
+        lease_token,
+        driver,
+        crate::harness_evolution::Mx1MatrixRung::OneByOneByThree,
     )
 }
 
@@ -5697,10 +5935,19 @@ fn execute_armed_delegated_rwe_cell(
     ids: &CellIdentities,
     product_task_id: &str,
     matrix_binding: Option<&ProductHarnessMatrixBinding>,
+    campaign_package: Option<&crate::rwe::campaign_package::FrozenCampaignPackage>,
     target_repo_path: &std::path::Path,
     transport: &Option<std::sync::Arc<dyn crate::provider::transport::HttpTransport>>,
 ) -> Result<CellOutcome, String> {
     let product_task_id = product_task_id.to_string();
+    // Validate the frozen output contract before issuing spend or activating
+    // any provider stage. Discovering this after three calls is too late.
+    let product_task = store
+        .get_product_task(&product_task_id)?
+        .ok_or("delegated ProductTask is missing")?;
+    if product_task.get("output_intent").and_then(Value::as_str) != Some("draft_pr") {
+        return Err("delegated RWE execution requires the frozen draft_pr output contract".into());
+    }
     let delegation_id = format!("rwe-del:{run_id}:{}", ids.cell_id);
     let attempt_id = ids.delegated_attempt_id.clone();
     let now = store.require_now()?;
@@ -5714,20 +5961,32 @@ fn execute_armed_delegated_rwe_cell(
     let cell_cost = crate::rwe::frozen_rwe_bindings::frozen_schedule_cell_max_cost(cell)?
         .ok_or("frozen RWE cell monetary ceiling required for delegated spend")?;
     let union_paths = crate::rwe::frozen_rwe_bindings::frozen_rwe_union_allowed_paths()?;
-    let package = match matrix_binding {
-        Some(binding) => {
+    let package = match (matrix_binding, campaign_package) {
+        (Some(binding), Some(package)) => {
+            if !matches!(binding.rung.as_str(), "1x1x1" | "1x1x3" | "1x2x1")
+                || binding.harness_id != crate::harness_evolution::MX1_ARM_ZERO_HARNESS_ID
+            {
+                return Err(
+                    "Codex live H0 route requires an admitted single-Harness frozen MX1 cell"
+                        .into(),
+                );
+            }
+            package.clone()
+        }
+        (Some(binding), None) => {
             if binding.rung != "1x2x1"
                 || binding.harness_id != crate::harness_evolution::MX1_ARM_ZERO_HARNESS_ID
                 || binding.strategy_id != crate::harness_evolution::MX1_NO_PROJECTION_STRATEGY_ID
             {
                 return Err(
-                    "Codex live H0 route requires the frozen MX1 1x2x1 arm-zero/no-projection cell"
+                    "Codex live H0 route requires the legacy frozen MX1 1x2x1 arm-zero/no-projection cell"
                         .into(),
                 );
             }
             crate::rwe::campaign_package::canonical_codex_subscription_v1_package()?
         }
-        None => crate::rwe::campaign_package::canonical_deepseek_v2_package()?,
+        (None, Some(package)) => package.clone(),
+        (None, None) => crate::rwe::campaign_package::canonical_deepseek_v2_package()?,
     };
     package.validate()?;
     let is_codex = package.provider_kind
@@ -6090,6 +6349,18 @@ fn execute_armed_delegated_rwe_cell(
         .and_then(Value::as_str)
         .ok_or("delegated product-task approval identity missing")?;
 
+    // This campaign requires the canonical Draft PR output contract.
+    let output_intent = store
+        .get_product_task(&product_task_id)?
+        .and_then(|task| task.get("output_intent").cloned())
+        .and_then(|value| value.as_str().map(str::to_string))
+        .ok_or("delegated ProductTask output intent is missing")?;
+    if output_intent != "draft_pr" {
+        return Err(format!(
+            "delegated ProductTask output intent is not supported: {output_intent}"
+        ));
+    }
+
     // 8. Genuine output under the operator-authorized live-run environment: the
     // store plans and claims the draft_pr operation, pushes the approved branch
     // to the credential-free https origin, and records the pushed commit; the
@@ -6414,6 +6685,421 @@ pub fn project_first_baseline_evidence(run_aggregate: &Value) -> Value {
     }))
 }
 
+/// Recover or create the exact-revision Product Golden Path prerequisite used
+/// by live Codex RWE authorization.
+///
+/// This is an ordinary Store-owned ProductTask using the first frozen workload
+/// definition and verifier, with `draft_pr` output. It exercises real
+/// Luna subscription calls, workspace actions, deterministic verification,
+/// independent confirmation, Draft PR output, and terminal evidence. It does
+/// not merge the target default branch and is never an RWE matrix result.
+pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
+    store: &std::sync::Arc<LocalProductStore>,
+    principal: &AuthenticatedPrincipal,
+    target_repo_path: &std::path::Path,
+    cell_executor_key_id: &str,
+    cell_confirmer_key_id: &str,
+) -> Result<Value, String> {
+    use crate::product_golden_path::{
+        validate_intake, ProductExecutorPolicy, ProductTaskBudget, ProductTaskIntakeRequest,
+        ProductVerificationCommand,
+    };
+
+    if !target_repo_path.is_dir() {
+        return Err("Codex prerequisite target_repo_path must be an existing directory".into());
+    }
+    let target_repo_path = target_repo_path
+        .canonicalize()
+        .map_err(|_| "Codex prerequisite target_repo_path identity is unavailable".to_string())?;
+    let (_default_branch, origin_remote, observed_sha) =
+        crate::target_repo_output::inspect_git_source_identity(
+            &crate::target_repo_output::TargetRepoOutputConfig::from_env(),
+            &target_repo_path,
+        )?;
+    let repository = crate::target_repo_output::parse_github_repository_url(&origin_remote)
+        .map_err(|_| {
+            "Codex prerequisite target origin is not the frozen GitHub repository".to_string()
+        })?;
+    if format!("{}/{}", repository.owner, repository.repository) != OPERATOR_TARGET_REPO {
+        return Err("Codex prerequisite target origin does not match the frozen repository".into());
+    }
+    if observed_sha != FROZEN_RWE_TARGET_MAIN_SHA {
+        return Err(format!(
+            "Codex prerequisite target revision mismatch: expected {FROZEN_RWE_TARGET_MAIN_SHA}"
+        ));
+    }
+
+    let package = crate::rwe::campaign_package::canonical_codex_luna_xhigh_v2_package()?;
+    package.validate()?;
+    if package.admitted_model != crate::rwe::campaign_package::CODEX_SUBSCRIPTION_LUNA_MODEL
+        || package.planner_reviewer_model
+            != crate::rwe::campaign_package::CODEX_SUBSCRIPTION_LUNA_MODEL
+        || package
+            .provider_execution_binding
+            .as_ref()
+            .and_then(|binding| binding.reasoning_effort.as_deref())
+            != Some("xhigh")
+    {
+        return Err("Codex prerequisite requires the exact Luna xhigh package".into());
+    }
+    let driver = ProductGoldenPathCellDriver {
+        target_repo_path: Some(target_repo_path.clone()),
+        allow_live_provider_effects: true,
+        fake_transport: None,
+        cell_executor_key_id: Some(cell_executor_key_id.to_string()),
+        cell_confirmer_key_id: Some(cell_confirmer_key_id.to_string()),
+        campaign_package: Some(package.clone()),
+    };
+    let executor_principal = store.authenticate_managed_acceptance_principal(
+        principal.tenant_id(),
+        cell_executor_key_id,
+        None,
+    )?;
+    let confirmer_principal = store.authenticate_managed_acceptance_principal(
+        principal.tenant_id(),
+        cell_confirmer_key_id,
+        None,
+    )?;
+    if executor_principal.principal_id() == principal.principal_id()
+        || confirmer_principal.principal_id() == principal.principal_id()
+        || executor_principal.principal_id() == confirmer_principal.principal_id()
+    {
+        return Err(
+            "Codex prerequisite requires three distinct operator, executor, and confirmer identities"
+                .into(),
+        );
+    }
+
+    let frozen = freeze_current_operator_contract_set()?;
+    let frozen_task = frozen
+        .corpus
+        .tasks
+        .first()
+        .cloned()
+        .ok_or("frozen RWE corpus has no prerequisite task")?;
+    if frozen_task.source_commit != FROZEN_RWE_TARGET_MAIN_SHA {
+        return Err("frozen prerequisite task source revision is not exact".into());
+    }
+    let verifier = frozen_task
+        .expected_verification_commands
+        .first()
+        .cloned()
+        .ok_or("frozen prerequisite task verifier is missing")?;
+    let schedule_cell = frozen
+        .schedule
+        .body
+        .get("cells")
+        .and_then(Value::as_array)
+        .and_then(|cells| cells.first())
+        .cloned()
+        .ok_or("frozen schedule has no cell budget for prerequisite")?;
+    // A prior attempt may have failed after Store admission but before the
+    // provider request. Reconcile that exact task through the existing
+    // ProductTask finalizer before making one bounded recovery admission. A
+    // recovered attempt gets fresh immutable delegation/task identities; the
+    // failed history remains in Store and is never overwritten or replayed.
+    let mut recovery_generation = 0u8;
+    let (product_task_id, persisted_task, ids) = loop {
+        let execution_run_id = if recovery_generation == 0 {
+            "codex-prerequisite".to_string()
+        } else {
+            format!("codex-prerequisite-recovery-{recovery_generation}")
+        };
+        let ids = cell_identities_for(&execution_run_id, &schedule_cell, &frozen_task)?;
+        let idempotency_key = format!(
+            "rwe-golden-prerequisite-codex-luna-xhigh-v{}",
+            recovery_generation + 1
+        );
+        let workspace_id = idempotency_key.clone();
+        let intake = ProductTaskIntakeRequest {
+            objective: frozen_task.objective.clone(),
+            target_id: "alters-lab".into(),
+            target_repo_path: target_repo_path.to_string_lossy().into_owned(),
+            source_kind: Some("git_repository".into()),
+            source_revision: frozen_task.source_commit.clone(),
+            source_tree_hash: Some(frozen_task.source_tree_hash.clone()),
+            allowed_paths: frozen_task.allowed_mutable_paths.clone(),
+            verification_commands: vec![ProductVerificationCommand {
+                command: verifier.clone(),
+                timeout_ms: frozen_task.timeout_ms.clamp(1, 900_000),
+            }],
+            output_intent: "draft_pr".into(),
+            executor_policy: ProductExecutorPolicy {
+                allowed_executors: vec!["managed_deepseek".into()],
+                prefer: Some("managed_deepseek".into()),
+            },
+            budget: Some(ProductTaskBudget {
+                total_tokens: Some(frozen_task.per_task_max_total_tokens),
+                total_calls: Some(frozen_task.per_task_max_provider_requests),
+                total_elapsed_ms: Some(frozen_task.timeout_ms),
+                max_retries: Some(frozen_task.per_task_max_retries),
+                max_repairs: Some(0),
+                max_concurrency: Some(1),
+                stage_budgets: None,
+            }),
+            risk_class: FROZEN_RWE_RISK_CLASS.into(),
+            approval_required: true,
+            confirm_execution: Some(true),
+            confirm_output: Some(true),
+            idempotency_key: idempotency_key.clone(),
+            expected_version: None,
+            tenant_id: Some(principal.tenant_id().into()),
+            workspace_id: Some(workspace_id.clone()),
+            workspace_mode: Some("git_worktree".into()),
+            matrix_binding: None,
+        };
+        let validated = validate_intake(&intake, principal.tenant_id(), &workspace_id)?;
+        // Read history before admission: a changed output contract must not
+        // overwrite the old intake or hide its unsettled provider attempt.
+        let admitted = match store.get_product_task_by_idempotency(
+            principal.tenant_id(),
+            &workspace_id,
+            &idempotency_key,
+        )? {
+            Some(existing) => existing,
+            None => {
+                // Historical reconciliation/reuse does not require a fresh
+                // provider session. New task admission still checks readiness
+                // before any workspace acquisition or execution.
+                driver.ensure_effects_ready()?;
+                store.admit_product_task(&validated, principal.principal_id())?
+            }
+        };
+        let product_task_id = admitted
+            .get("task_id")
+            .and_then(Value::as_str)
+            .ok_or("Codex prerequisite ProductTask identity is missing")?
+            .to_string();
+        let persisted_task = store
+            .get_product_task(&product_task_id)?
+            .ok_or("Codex prerequisite ProductTask disappeared after admission")?;
+        let status = persisted_task.get("status").and_then(Value::as_str);
+        let historical_evidence =
+            store.project_rwe_cell_store_evidence(&product_task_id, &ids.delegated_attempt_id)?;
+        if historical_evidence
+            .get("provider_request_journal")
+            .and_then(Value::as_array)
+            .is_some_and(|entries| {
+                entries.iter().any(|entry| {
+                    matches!(
+                        entry.get("status").and_then(Value::as_str),
+                        Some("sending" | "outcome_unknown")
+                    )
+                })
+            })
+        {
+            return Err(format!("prerequisite attempt requires provider reconciliation; preserved task {product_task_id}"));
+        }
+        if matches!(status, Some("completed" | "workspace_bound")) {
+            if persisted_task.get("output_intent").and_then(Value::as_str) != Some("draft_pr")
+                || persisted_task
+                    .get("source_revision")
+                    .and_then(Value::as_str)
+                    != Some(FROZEN_RWE_TARGET_MAIN_SHA)
+            {
+                return Err(
+                    "historical prerequisite does not match the frozen revision/output contract"
+                        .into(),
+                );
+            }
+            break (product_task_id, persisted_task, ids);
+        }
+
+        let run_status = persisted_task
+            .get("run_id")
+            .and_then(Value::as_str)
+            .map(|run_id| store.get_workflow_run(run_id))
+            .transpose()?
+            .flatten()
+            .and_then(|run| {
+                run.get("status")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
+        if matches!(
+            run_status.as_deref(),
+            Some("failed" | "cancelled" | "killed")
+        ) {
+            let finalized = store
+                .finalize_product_task_after_execution(&product_task_id, "recovery-owner")
+                .map_err(|error| {
+                    format!(
+                        "failed prerequisite recovery could not be reconciled through Store: {error}"
+                    )
+                })?;
+            let delegation_id = format!("rwe-del:{execution_run_id}:{}", ids.cell_id);
+            store.require_delegation_product_task(
+                &delegation_id,
+                principal.tenant_id(),
+                &product_task_id,
+            )?;
+            let authority_state = store.delegated_authority_state(&delegation_id)?;
+            let durable_terminal = if authority_state
+                .get("attempt_lease_state")
+                .and_then(Value::as_str)
+                == Some("closed")
+                && authority_state
+                    .get("delegation_state")
+                    .and_then(Value::as_str)
+                    == Some("expired")
+                && authority_state
+                    .get("spend_authorization_state")
+                    .and_then(Value::as_str)
+                    == Some("expired")
+            {
+                authority_state
+                    .get("terminal_evidence")
+                    .filter(|value| value.is_object())
+                    .cloned()
+            } else {
+                None
+            };
+            let terminal_class = finalized
+                .pointer("/delegated_terminal/terminal/terminal_class")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    durable_terminal
+                        .as_ref()
+                        .and_then(|receipt| receipt.get("terminal_class"))
+                        .and_then(Value::as_str)
+                });
+            // An absent journal/receipt does not prove reconciliation. Require
+            // the Store finalizer's affirmative terminal evidence before any
+            // recovery admission; historical replay needs the durable receipt.
+            let failure_receipt = finalized
+                .pointer("/delegated_terminal/failure_terminal_evidence")
+                .or(durable_terminal.as_ref());
+            let reconciled_before_provider = failure_receipt.is_some_and(|receipt| {
+                receipt.get("schema_version").and_then(Value::as_str)
+                    == Some("managed_delegated_failure_terminal_evidence.v1")
+                    && receipt.get("product_task_id").and_then(Value::as_str)
+                        == Some(product_task_id.as_str())
+                    && receipt
+                        .get("provider_request_count")
+                        .and_then(Value::as_u64)
+                        == Some(0)
+                    && receipt.get("cost_evidence").and_then(Value::as_str) == Some("reconciled")
+                    && receipt.get("cleanup_status").and_then(Value::as_str) == Some("cleaned")
+            });
+            if terminal_class != Some("failed") || !reconciled_before_provider {
+                return Err(
+                    "failed prerequisite recovery did not produce a reconciled non-effect failure terminal"
+                        .into(),
+                );
+            }
+            if recovery_generation >= 1 {
+                return Err("bounded Codex prerequisite recovery attempts exhausted".into());
+            }
+            recovery_generation += 1;
+            continue;
+        }
+        return Err(format!(
+            "Codex prerequisite requires workspace_bound task, got {}",
+            status.unwrap_or("unknown")
+        ));
+    };
+
+    // Idempotent recovery: only a pre-existing Store-owned completed seal can
+    // satisfy this branch; no synthetic terminal row is ever created.
+    if persisted_task.get("status").and_then(Value::as_str) == Some("completed") {
+        let evidence = store.validated_rwe_prerequisite_evidence(
+            principal,
+            &product_task_id,
+            FROZEN_RWE_TARGET_MAIN_SHA,
+        )?;
+        let projection =
+            store.project_rwe_cell_store_evidence(&product_task_id, &ids.delegated_attempt_id)?;
+        if store_evidence_transport_provenance(&projection)? != "external" {
+            return Err("completed prerequisite lacks external provider provenance".into());
+        }
+        validate_prerequisite_provider_identity(
+            &projection,
+            &package.provider_kind,
+            &package.admitted_model,
+        )?;
+        return Ok(sort_value(&json!({
+            "schema_version": "codex_golden_path_prerequisite.v1",
+            "scientific_result": false,
+            "reused": true,
+            "status": "completed",
+            "product_task_id": product_task_id,
+            "source_revision": FROZEN_RWE_TARGET_MAIN_SHA,
+            "expected_provider_kind": package.provider_kind,
+            "expected_model_identity": package.admitted_model,
+            "expected_reasoning_effort": "xhigh",
+            "managed_executor_identity": evidence.pointer("/node/managed_executor_identity"),
+            "provider_execution": projection.get("provider_execution"),
+            "terminal_evidence_id": evidence.get("evidence_id"),
+            "terminal_content_sha256": evidence.get("content_sha256"),
+            "note": "reused Store-owned prerequisite; not a scientific matrix result"
+        })));
+    }
+    if persisted_task.get("status").and_then(Value::as_str) != Some("workspace_bound") {
+        return Err(format!(
+            "Codex prerequisite requires workspace_bound task, got {}",
+            persisted_task
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        ));
+    }
+    let workspace_path = persisted_task
+        .pointer("/workspace_binding/workspace_path")
+        .and_then(Value::as_str)
+        .ok_or("Codex prerequisite workspace binding path is missing")?
+        .to_string();
+    let prerequisite_run_id = ids
+        .workflow_id
+        .strip_prefix("rwe-wf:")
+        .and_then(|value| value.split_once(':').map(|(run_id, _)| run_id))
+        .ok_or("Codex prerequisite run identity is malformed")?;
+    driver.ensure_effects_ready()?;
+    let outcome = execute_armed_delegated_rwe_cell(
+        store,
+        principal,
+        &executor_principal,
+        &confirmer_principal,
+        &frozen,
+        prerequisite_run_id,
+        "",
+        &schedule_cell,
+        &frozen_task,
+        &ids,
+        &product_task_id,
+        None,
+        Some(&package),
+        std::path::Path::new(&workspace_path),
+        &None,
+    )?;
+    let evidence = store.get_product_task_terminal_evidence(&product_task_id)?;
+    if evidence.get("task_status").and_then(Value::as_str) != Some("completed") {
+        return Err(
+            "Codex prerequisite execution returned without a completed terminal seal".into(),
+        );
+    }
+    Ok(sort_value(&json!({
+        "schema_version": "codex_golden_path_prerequisite.v1",
+        "scientific_result": false,
+        "reused": false,
+        "status": "completed",
+        "product_task_id": product_task_id,
+        "source_revision": FROZEN_RWE_TARGET_MAIN_SHA,
+        "provider_kind": package.provider_kind,
+        "provider_identity": package.provider_execution_binding.as_ref().map(|b| b.provider_identity.clone()),
+        "model_identity": package.admitted_model,
+        "reasoning_effort": "xhigh",
+        "provider_transport_provenance": outcome.provider_transport_provenance,
+        "provider_requests": outcome.provider_requests,
+        "total_tokens": outcome.total_tokens,
+        "verification_status": outcome.verification_status,
+        "verification_trustworthy": outcome.verification_trustworthy,
+        "terminal_evidence_id": evidence.get("evidence_id"),
+        "terminal_content_sha256": evidence.get("content_sha256"),
+        "output_draft_pr": outcome.output_draft_pr,
+        "note": "real Store-owned Product Golden Path prerequisite; not a scientific matrix result"
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6478,31 +7164,21 @@ mod tests {
     }
 
     #[test]
-    fn codex_mx1_materialization_is_exact_two_cells_on_one_frozen_basis() {
+    fn codex_mx1_materialization_expands_every_frozen_schedule_cell() {
         let frozen = freeze_current_operator_contract_set().unwrap();
-        let cells = frozen_codex_mx1_cells(&frozen).unwrap();
+        let cells = frozen_codex_mx1_cells(
+            &frozen,
+            crate::harness_evolution::Mx1MatrixRung::OneByTwoByOne,
+        )
+        .unwrap();
 
-        assert_eq!(cells.len(), 2);
-        let plan_id = cells[0]
-            .get("matrix_plan_id")
-            .and_then(Value::as_str)
-            .unwrap();
-        let common_basis = cells[0]
-            .get("matrix_common_basis_sha256")
-            .and_then(Value::as_str)
-            .unwrap();
-        assert!(!plan_id.is_empty());
-        assert_eq!(common_basis.len(), 64);
+        assert_eq!(cells.len(), 8); // 4 schedule cells × 2 Models
         assert!(cells.iter().all(|cell| {
             cell.get("matrix_rung").and_then(Value::as_str) == Some("1x2x1")
                 && cell.get("harness_id").and_then(Value::as_str)
                     == Some(crate::harness_evolution::MX1_ARM_ZERO_HARNESS_ID)
                 && cell.get("strategy_id").and_then(Value::as_str)
                     == Some(crate::harness_evolution::MX1_NO_PROJECTION_STRATEGY_ID)
-                && cell
-                    .get("matrix_common_basis_sha256")
-                    .and_then(Value::as_str)
-                    == Some(common_basis)
         }));
         let model_ids = cells
             .iter()
@@ -6515,6 +7191,115 @@ mod tests {
                 crate::harness_evolution::MX1_CODEX_TERRA_MODEL_ID,
             ])
         );
+        let plan_ids = cells
+            .iter()
+            .map(|cell| cell["matrix_plan_id"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let bases = cells
+            .iter()
+            .map(|cell| cell["matrix_common_basis_sha256"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(plan_ids.len(), 4);
+        assert_eq!(bases.len(), 4);
+        assert_eq!(
+            cells
+                .iter()
+                .map(|cell| cell["sequential_order"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            (1..=8).collect::<Vec<_>>()
+        );
+
+        let baseline = frozen_codex_mx1_cells(
+            &frozen,
+            crate::harness_evolution::Mx1MatrixRung::OneByOneByOne,
+        )
+        .unwrap();
+        let strategies = frozen_codex_mx1_cells(
+            &frozen,
+            crate::harness_evolution::Mx1MatrixRung::OneByOneByThree,
+        )
+        .unwrap();
+        assert_eq!(baseline.len(), 4); // 4 schedule cells × 1 Model × 1 Strategy
+        assert_eq!(strategies.len(), 12); // 4 schedule cells × 1 Model × 3 Strategies
+        assert!(baseline.iter().chain(&strategies).all(|cell| {
+            cell["matrix_model_id"].as_str()
+                == Some(crate::harness_evolution::MX1_CODEX_LUNA_MODEL_ID)
+        }));
+    }
+
+    #[test]
+    fn campaign_package_binding_rejects_cross_rung_and_tampered_drivers() {
+        assert_eq!(
+            required_campaign_package_id_for_rung(None).unwrap(),
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID
+        );
+        for (rung, package_id) in [
+            (
+                crate::harness_evolution::Mx1MatrixRung::OneByTwoByOne,
+                crate::rwe::campaign_package::RWE_CODEX_SUBSCRIPTION_V1_PACKAGE_ID,
+            ),
+            (
+                crate::harness_evolution::Mx1MatrixRung::OneByOneByOne,
+                crate::rwe::campaign_package::RWE_CODEX_LUNA_XHIGH_V2_PACKAGE_ID,
+            ),
+            (
+                crate::harness_evolution::Mx1MatrixRung::OneByOneByThree,
+                crate::rwe::campaign_package::RWE_CODEX_LUNA_XHIGH_V3_STRATEGY_PACKAGE_ID,
+            ),
+        ] {
+            assert_eq!(
+                required_campaign_package_id_for_rung(Some(rung)).unwrap(),
+                package_id
+            );
+        }
+        assert!(required_campaign_package_id_for_rung(Some(
+            crate::harness_evolution::Mx1MatrixRung::OneByTwoByThree
+        ))
+        .is_err());
+        let package_ids = [
+            crate::rwe::campaign_package::RWE_CODEX_SUBSCRIPTION_V1_PACKAGE_ID,
+            crate::rwe::campaign_package::RWE_CODEX_LUNA_XHIGH_V2_PACKAGE_ID,
+            crate::rwe::campaign_package::RWE_CODEX_LUNA_XHIGH_V3_STRATEGY_PACKAGE_ID,
+        ];
+        for expected in package_ids {
+            for observed in package_ids {
+                let driver = ProductGoldenPathCellDriver {
+                    campaign_package: Some(
+                        crate::rwe::campaign_package::resolve_frozen_campaign_package(observed)
+                            .unwrap(),
+                    ),
+                    ..ProductGoldenPathCellDriver::default()
+                };
+                assert_eq!(
+                    require_driver_campaign_package(&driver, expected).is_ok(),
+                    expected == observed,
+                    "expected={expected}, observed={observed}"
+                );
+            }
+        }
+        let unbound = InjectedCellDriver { outcomes: vec![] };
+        assert!(require_driver_campaign_package(
+            &unbound,
+            crate::rwe::campaign_package::RWE_CODEX_LUNA_XHIGH_V2_PACKAGE_ID
+        )
+        .is_err());
+        assert!(require_driver_campaign_package(
+            &unbound,
+            crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID
+        )
+        .is_ok());
+        let mut tampered =
+            crate::rwe::campaign_package::canonical_codex_luna_xhigh_v2_package().unwrap();
+        tampered.notes.push_str(" tampered");
+        let driver = ProductGoldenPathCellDriver {
+            campaign_package: Some(tampered),
+            ..ProductGoldenPathCellDriver::default()
+        };
+        assert!(require_driver_campaign_package(
+            &driver,
+            crate::rwe::campaign_package::RWE_CODEX_LUNA_XHIGH_V2_PACKAGE_ID
+        )
+        .is_err());
     }
 
     #[test]
@@ -6537,6 +7322,7 @@ mod tests {
         request.schema_version = "codex_responses_api.v1".into();
         request.requested_model =
             crate::rwe::campaign_package::CODEX_SUBSCRIPTION_LUNA_MODEL.into();
+        request.thinking.reasoning_effort = Some("xhigh".into());
         request.messages = vec![ManagedMessage::text("user", "bounded")];
         request.tools = vec![crate::provider::managed_deepseek::ManagedTool {
             tool_type: "function".into(),
@@ -6553,6 +7339,7 @@ mod tests {
         }));
 
         let body = codex_responses_body(&request);
+        assert_eq!(body["reasoning"]["effort"], "xhigh");
         assert_eq!(body["stream"], json!(true));
         assert_eq!(
             body["tool_choice"],
@@ -6779,6 +7566,64 @@ mod tests {
         store
             .insert_product_task_terminal_evidence_for_tests(&evidence)
             .unwrap();
+    }
+
+    #[test]
+    fn armed_cell_rejects_artifact_only_before_delegation_or_spend() {
+        let dir = tempdir().unwrap();
+        let store =
+            Arc::new(LocalProductStore::new(dir.path().join("output-contract.db")).unwrap());
+        let principal = operator(&store, "output-test", "output-operator");
+        let executor = cell_executor(&store, "output-test", "output-executor");
+        let confirmer = cell_confirmer(&store, "output-test", "output-confirmer");
+        // Deliberately incompatible fixture in a fresh test-only Store. No live
+        // evidence or operator database is used by this refusal regression.
+        seed_gp(&store, "output-task", "output-test");
+        let fixture_conn =
+            rusqlite::Connection::open(dir.path().join("output-contract.db")).unwrap();
+        fixture_conn.execute("UPDATE product_tasks SET output_intent='artifact_only' WHERE task_id='output-task'", []).unwrap();
+        let frozen = freeze_current_operator_contract_set().unwrap();
+        let cell = &frozen.schedule.body["cells"][0];
+        let task = frozen
+            .corpus
+            .tasks
+            .iter()
+            .find(|task| Some(task.task_id.as_str()) == cell["task_id"].as_str())
+            .unwrap();
+        let ids = cell_identities_for("output-test", cell, task).unwrap();
+        let error = execute_armed_delegated_rwe_cell(
+            &store,
+            &principal,
+            &executor,
+            &confirmer,
+            &frozen,
+            "output-test",
+            "",
+            cell,
+            task,
+            &ids,
+            "output-task",
+            None,
+            None,
+            dir.path(),
+            &None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "delegated RWE execution requires the frozen draft_pr output contract"
+        );
+        let count: i64 = fixture_conn
+            .query_row(
+                "SELECT COUNT(*) FROM managed_acceptance_delegations",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "refusal must precede delegation and its spend journal"
+        );
     }
 
     fn success_outcomes() -> Vec<CellOutcome> {
@@ -7480,15 +8325,15 @@ mod tests {
         std::fs::create_dir_all(target.join("apps/api/src")).unwrap();
         std::fs::create_dir_all(target.join("apps/api/tests")).unwrap();
         std::fs::write(target.join("README.md"), "rwe\n").unwrap();
-        let _gate = crate::product_golden_path::PRODUCT_TASK_GATE;
         let _lock = crate::cli::config::cli_env_test_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        std::env::set_var(crate::product_golden_path::PRODUCT_TASK_GATE, "1");
-        // The coordinator refuses to execute any cell effect while CI is set;
-        // simulate the operator environment around this provider-free run.
-        let had_ci = std::env::var_os("CI");
-        std::env::remove_var("CI");
+        // Provider-free composition is valid in CI; the same environment must
+        // still reject a driver requesting live effects before execution.
+        let _env = LiveLedgerEnvGuard::set(&[
+            (crate::product_golden_path::PRODUCT_TASK_GATE, Some("1")),
+            ("CI", Some("true")),
+        ]);
         let driver = ProductGoldenPathCellDriver {
             allow_live_provider_effects: false,
             target_repo_path: Some(target),
@@ -7497,6 +8342,12 @@ mod tests {
             cell_confirmer_key_id: None,
             campaign_package: None,
         };
+        let live_driver = ProductGoldenPathCellDriver {
+            allow_live_provider_effects: true,
+            target_repo_path: driver.target_repo_path.clone(),
+            ..Default::default()
+        };
+        let live_refusal = live_driver.ensure_effects_ready();
         let result = run_frozen_schedule(
             &store,
             &principal,
@@ -7504,12 +8355,9 @@ mod tests {
             "auth-unarmed",
             &lease,
             &driver,
-        )
-        .unwrap();
-        match had_ci {
-            Some(v) => std::env::set_var("CI", v),
-            None => std::env::remove_var("CI"),
-        }
+        );
+        assert!(live_refusal.unwrap_err().contains("forbidden in CI"));
+        let result = result.unwrap();
         assert_eq!(result["live_baseline_sealed"], false);
         assert_eq!(result["provider_call_performed"], false);
         let attempts = store.list_rwe_task_attempts_for_run("run-unarmed").unwrap();
@@ -7521,7 +8369,6 @@ mod tests {
             );
             assert_ne!(a["classification"], "dispatched");
         }
-        std::env::remove_var(crate::product_golden_path::PRODUCT_TASK_GATE);
     }
 
     #[test]
@@ -8237,6 +9084,36 @@ mod tests {
         // here the durable attempt evidence itself must never carry external
         // provenance for the spoof path.
         std::env::remove_var(crate::product_golden_path::PRODUCT_TASK_GATE);
+    }
+
+    #[test]
+    fn completed_prerequisite_requires_exact_provider_and_model() {
+        let request = json!({
+            "provider_kind": "codex-subscription",
+            "requested_model": "gpt-5.6-luna",
+            "resolved_model": "gpt-5.6-luna",
+            "usage": {"model": "gpt-5.6-luna"}
+        });
+        let projection = json!({"provider_execution": {"requests": [request.clone()]}});
+        let validate = |value: &Value| {
+            validate_prerequisite_provider_identity(value, "codex-subscription", "gpt-5.6-luna")
+        };
+        assert!(validate(&projection).is_ok());
+        for pointer in [
+            "/provider_kind",
+            "/requested_model",
+            "/resolved_model",
+            "/usage/model",
+        ] {
+            let mut wrong = request.clone();
+            *wrong.pointer_mut(pointer).unwrap() = json!("different-identity");
+            assert!(validate(
+                &json!({"provider_execution": {"requests": [request.clone(), wrong]}})
+            )
+            .is_err());
+        }
+        assert!(validate(&json!({"provider_execution": {"requests": []}})).is_err());
+        assert!(validate(&json!({})).is_err());
     }
 
     #[test]
@@ -10957,6 +11834,7 @@ mod tests {
         };
 
         let contract1 = PersistedManagedExecutionContract {
+            thinking: None,
             provider_identity: "custom-provider".to_string(),
             provider_kind: "openai_compatible".to_string(),
             protocol: DeepSeekProtocol::OpenAiCompatible,

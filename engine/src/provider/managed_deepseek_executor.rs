@@ -428,6 +428,10 @@ impl ManagedDeepSeekNodeExecutor {
         }
         request.limits = contract.limits;
         request.price_profile = contract.price_profile;
+        let frozen_thinking = contract.thinking;
+        if let Some(thinking) = &frozen_thinking {
+            request.thinking = thinking.clone();
+        }
         // Execution-path provenance: derived from the transport object that
         // will actually serve this role's request, never caller-supplied.
         request.transport_provenance = self.providers.for_role(role).transport_provenance();
@@ -477,8 +481,10 @@ impl ManagedDeepSeekNodeExecutor {
             // enabled, so this bounded implementation turn uses the provider's
             // non-thinking tool-call mode; planner and reviewer remain on the
             // admitted reasoning route.
-            request.thinking.mode = "disabled".to_string();
-            request.thinking.reasoning_effort = None;
+            if frozen_thinking.is_none() {
+                request.thinking.mode = "disabled".to_string();
+                request.thinking.reasoning_effort = None;
+            }
             request.tools = vec![managed_workspace_action_tool()];
             request.tool_choice = Some(json!({
                 "type": "function",
@@ -837,6 +843,7 @@ mod tests {
 
     fn test_execution_contract() -> PersistedManagedExecutionContract {
         PersistedManagedExecutionContract {
+            thinking: None,
             provider_identity: crate::provider::managed_deepseek::DEEPSEEK_PROVIDER_ID.into(),
             provider_kind: DEEPSEEK_PROVIDER_KIND.into(),
             protocol: DeepSeekProtocol::OpenAiCompatible,
@@ -911,6 +918,35 @@ mod tests {
 
     #[test]
     fn implementer_request_requires_one_workspace_action_tool() {
+        assert_implementer_request(false);
+    }
+
+    #[test]
+    fn codex_implementer_preserves_frozen_xhigh_with_workspace_tool() {
+        assert_implementer_request(true);
+    }
+
+    fn assert_implementer_request(codex: bool) {
+        let mut contract = test_execution_contract();
+        if codex {
+            let package =
+                crate::rwe::campaign_package::canonical_codex_luna_xhigh_v2_package().unwrap();
+            let binding = package.provider_execution_binding.unwrap();
+            contract.provider_identity = binding.provider_identity;
+            contract.provider_kind = binding.provider_kind;
+            contract.host = binding.host;
+            contract.base_url = binding.base_url;
+            contract.endpoint_path = binding.endpoint_path;
+            contract.credential_reference = binding.credential_reference;
+            contract.request_schema_version = binding.request_schema_version;
+            contract.response_schema_version = binding.response_schema_version;
+            contract.usage_parser_version = binding.usage_parser_version;
+            contract.requested_model = binding.admitted_model;
+            contract.thinking = Some(crate::provider::managed_deepseek::ThinkingConfiguration {
+                mode: "enabled".into(),
+                reasoning_effort: binding.reasoning_effort,
+            });
+        }
         let source = Arc::new(StaticAuthority {
             snapshot: PersistedAuthoritySnapshot {
                 product_task_id: binding().product_task_id,
@@ -922,7 +958,7 @@ mod tests {
                 spend_status: "consumed".to_string(),
                 consumed_by_attempt_id: Some("attempt-1".to_string()),
                 lease_status: "current".to_string(),
-                execution_contract: Some(test_execution_contract()),
+                execution_contract: Some(contract),
             },
         });
         let transport = Arc::new(CountingTransport {
@@ -943,8 +979,14 @@ mod tests {
         .unwrap();
         let (request, role, _) = executor.request(&input("implementation")).unwrap();
         assert_eq!(role, ManagedModelRole::Implementer);
-        assert_eq!(request.thinking.mode, "disabled");
-        assert_eq!(request.thinking.reasoning_effort, None);
+        assert_eq!(
+            request.thinking.mode,
+            if codex { "enabled" } else { "disabled" }
+        );
+        assert_eq!(
+            request.thinking.reasoning_effort.as_deref(),
+            if codex { Some("xhigh") } else { None }
+        );
         assert_eq!(request.tools.len(), 1);
         assert_eq!(
             request.tools[0].function.name,

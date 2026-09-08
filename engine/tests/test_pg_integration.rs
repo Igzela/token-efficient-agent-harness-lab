@@ -9205,6 +9205,40 @@ fn pg_rwe_v2_production_issue_admit_one_use_parity() {
     );
     assert_eq!(issued["fixture_only"], false);
 
+    // The Luna Strategy extension reuses the same Store owner and frozen
+    // schedule, but its distinct package expands the finite envelope from four
+    // schedule cells to twelve actual matrix cells.
+    let extension_auth_id = format!("rwe-luna-v3-pg-auth-{tag}");
+    let extension = persist_rwe_run_authorization_v2(
+        &store,
+        &principal,
+        &RweAuthorizationV2IssueRequest {
+            authorization_id: extension_auth_id,
+            golden_path_prerequisite_product_task_id: prereq.clone(),
+            campaign_package_id: Some(
+                engine::rwe::campaign_package::RWE_CODEX_LUNA_XHIGH_V3_STRATEGY_PACKAGE_ID.into(),
+            ),
+            expires_at: (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        extension["body_json"]["campaign_package_id"],
+        engine::rwe::campaign_package::RWE_CODEX_LUNA_XHIGH_V3_STRATEGY_PACKAGE_ID
+    );
+    for field in [
+        "max_total_provider_requests",
+        "max_total_tokens",
+        "max_wall_time_ms",
+    ] {
+        assert_eq!(
+            extension["body_json"][field].as_u64(),
+            issued["body_json"][field]
+                .as_u64()
+                .and_then(|value| value.checked_mul(3))
+        );
+    }
+
     // Issue audit parity with SQLite (same action/resource, same owner).
     let Some(url) = std::env::var("ACP_TEST_DATABASE_URL").ok() else {
         return;

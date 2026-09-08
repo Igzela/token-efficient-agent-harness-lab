@@ -319,6 +319,57 @@ fn process_boundary_mapping_is_exhaustive_and_fail_closed() {
 }
 
 #[test]
+fn admission_refusal_boundary_rejects_contradictory_or_future_process_evidence() {
+    let refusal =
+        ProcessOutcome::failure("admission_refused_before_spawn", None, "launcher refusal");
+    assert_eq!(
+        refusal.boundary_mapping().effect,
+        ProcessEffectState::NotStarted
+    );
+    let mut with_exit = refusal.clone();
+    with_exit.exit_code = Some(0);
+    assert_eq!(
+        with_exit.boundary_mapping().effect,
+        ProcessEffectState::Unknown
+    );
+    let mut with_signal = refusal.clone();
+    with_signal.signal = Some(9);
+    assert_eq!(
+        with_signal.boundary_mapping().effect,
+        ProcessEffectState::Unknown
+    );
+    let mut future = refusal;
+    future.schema_version = "process_outcome.v2".into();
+    assert_eq!(
+        future.boundary_mapping().effect,
+        ProcessEffectState::Unknown
+    );
+}
+
+#[test]
+fn consumed_store_lease_before_child_is_typed_not_started_and_fail_closed_on_contradiction() {
+    let outcome = ProcessOutcome::failure(
+        "store_lease_consumed_before_child",
+        None,
+        "store attempt lease consumed before gateway forwarding or child spawn",
+    );
+    assert_eq!(
+        outcome.boundary_mapping().effect,
+        ProcessEffectState::NotStarted
+    );
+    assert_eq!(
+        outcome.boundary_mapping().outcome,
+        ProcessOutcomeState::KnownFailure
+    );
+    let mut contradictory = outcome;
+    contradictory.exit_code = Some(0);
+    assert_eq!(
+        contradictory.boundary_mapping().effect,
+        ProcessEffectState::Unknown
+    );
+}
+
+#[test]
 fn process_boundary_mapping_does_not_change_process_outcome_serialization() {
     let outcome = ProcessOutcome::failure("spawn_failed", None, "bounded reason");
     let encoded = serde_json::to_value(&outcome).unwrap();

@@ -8,9 +8,16 @@
 //! Official ChatGPT-auth Codex (child holds reusable OAuth) remains excluded.
 
 use std::ffi::OsString;
-use std::net::SocketAddr;
+use std::io::{self, Read, Write};
+use std::net::{Shutdown, SocketAddr, TcpStream};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -23,7 +30,15 @@ use super::codex_budget_authority::{
 
 pub const CODEX_MEDIATED_ADMISSION_SCHEMA: &str = "codex_mediated_admission.v2";
 pub const BUBBLEWRAP_BIN: &str = "/usr/bin/bwrap";
+pub const SOCAT_BIN: &str = "/usr/bin/socat";
+/// Fixed in-sandbox Unix endpoint. The host-side path is private and ephemeral.
+pub const SANDBOX_GATEWAY_SOCKET: &str = "/tmp/acp-codex-gateway.sock";
+/// Each launch has its own network namespace, so this port cannot collide with
+/// another managed launch. It is never bound on the host network.
+pub const SANDBOX_GATEWAY_LISTEN_PORT: u16 = 37_851;
 const SEALED_HELPER_PATH: &str = "/usr/bin:/bin";
+const BRIDGE_CONNECT_TIMEOUT_MS: u64 = 500;
+const BRIDGE_IO_POLL_MS: u64 = 100;
 /// Fixed in-sandbox path for the admitted Codex binary (never the real home path).
 pub const SANDBOX_CODEX_BIN: &str = "/opt/acp/managed-codex";
 /// Fixed in-sandbox path for the task-scoped CODEX_HOME.
@@ -37,8 +52,7 @@ pub(crate) fn seal_untrusted_helper_environment(command: &mut Command) {
     command.env_clear().env("PATH", SEALED_HELPER_PATH);
 }
 
-/// Typed fact about the child network namespace. The currently wired launch
-/// shares the host network; a loopback gateway alone is not network confinement.
+/// Typed fact about the child network namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagedCodexNetworkBoundary {
     HostNetworkShared,
@@ -86,7 +100,241 @@ struct ManagedCodexChildLaunchOwner {
     clear_parent_environment: bool,
     isolation_mode: IsolationMode,
     sandbox_codex_home: PathBuf,
+    network_boundary: ManagedCodexNetworkBoundary,
     gateway_binding: GatewayLaunchBinding,
+}
+
+/// Parent-owned transport bridge for a single managed launch.
+///
+/// The child gets only a read-only bind of `host_socket_path`. The bridge never
+/// parses, authorizes, budgets, or persists requests: it copies bytes between
+/// that Unix socket and the already-running `CodexBudgetGateway` TCP listener.
+/// The gateway remains the sole provider and budget owner.
+#[derive(Debug)]
+struct UnixGatewayBridge {
+    stop: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
+    host_socket_path: PathBuf,
+    _temp_dir: tempfile::TempDir,
+    join: Option<JoinHandle<()>>,
+}
+
+impl UnixGatewayBridge {
+    fn start(gateway_addr: SocketAddr) -> Result<Arc<Self>, String> {
+        let temp_dir = tempfile::Builder::new()
+            .prefix("acp-codex-gateway-")
+            .tempdir()
+            .map_err(|error| format!("failed to create gateway bridge directory: {error}"))?;
+        let host_socket_path = temp_dir.path().join("gateway.sock");
+        let listener = UnixListener::bind(&host_socket_path)
+            .map_err(|error| format!("failed to bind gateway bridge Unix socket: {error}"))?;
+        std::fs::set_permissions(&host_socket_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("failed to restrict gateway bridge Unix socket: {error}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|error| format!("failed to configure gateway bridge Unix socket: {error}"))?;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let running = Arc::new(AtomicBool::new(true));
+        let thread_stop = Arc::clone(&stop);
+        let thread_running = Arc::clone(&running);
+        let join = thread::Builder::new()
+            .name("codex-gateway-unix-bridge".into())
+            .spawn(move || {
+                unix_gateway_bridge_accept_loop(listener, gateway_addr, thread_stop);
+                thread_running.store(false, Ordering::SeqCst);
+            })
+            .map_err(|error| format!("failed to start gateway bridge: {error}"))?;
+
+        Ok(Arc::new(Self {
+            stop,
+            running,
+            host_socket_path,
+            _temp_dir: temp_dir,
+            join: Some(join),
+        }))
+    }
+
+    fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for UnixGatewayBridge {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        // Wake the nonblocking accept loop without changing host firewall or
+        // gateway state. The connection is closed immediately and is never a
+        // provider request.
+        let _ = UnixStream::connect(&self.host_socket_path);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
+fn unix_gateway_bridge_accept_loop(
+    listener: UnixListener,
+    gateway_addr: SocketAddr,
+    stop: Arc<AtomicBool>,
+) {
+    while !stop.load(Ordering::SeqCst) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // A launch owns one Codex child. Relay inline so Drop can join
+                // every accepted connection rather than leaving detached
+                // threads or reusable gateway paths behind.
+                let _ = relay_unix_stream_to_gateway(stream, gateway_addr, Arc::clone(&stop));
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+fn relay_unix_stream_to_gateway(
+    client: UnixStream,
+    gateway_addr: SocketAddr,
+    owner_stop: Arc<AtomicBool>,
+) -> Result<(), String> {
+    let gateway = TcpStream::connect_timeout(
+        &gateway_addr,
+        Duration::from_millis(BRIDGE_CONNECT_TIMEOUT_MS),
+    )
+    .map_err(|error| format!("gateway bridge TCP connect failed: {error}"))?;
+    // The timeout is a cancellation polling interval, not a response deadline.
+    // Normal provider reasoning can remain idle for much longer than this.
+    let timeout = Some(Duration::from_millis(BRIDGE_IO_POLL_MS));
+    client
+        .set_read_timeout(timeout)
+        .and_then(|_| client.set_write_timeout(timeout))
+        .map_err(|error| format!("gateway bridge Unix timeout setup failed: {error}"))?;
+    gateway
+        .set_read_timeout(timeout)
+        .and_then(|_| gateway.set_write_timeout(timeout))
+        .map_err(|error| format!("gateway bridge TCP timeout setup failed: {error}"))?;
+
+    let mut client_reader = client
+        .try_clone()
+        .map_err(|error| format!("gateway bridge Unix clone failed: {error}"))?;
+    let mut gateway_writer = gateway
+        .try_clone()
+        .map_err(|error| format!("gateway bridge TCP clone failed: {error}"))?;
+    let mut gateway_reader = gateway
+        .try_clone()
+        .map_err(|error| format!("gateway bridge TCP clone failed: {error}"))?;
+    let mut client_writer = client;
+
+    let relay_stop = Arc::new(AtomicBool::new(false));
+    thread::scope(|scope| {
+        let c2g_stop = Arc::clone(&relay_stop);
+        let c2g_owner_stop = Arc::clone(&owner_stop);
+        let client_to_gateway = scope.spawn(move || {
+            let result = copy_until_stopped(
+                &mut client_reader,
+                &mut gateway_writer,
+                &c2g_owner_stop,
+                &c2g_stop,
+            );
+            if result.is_err() {
+                c2g_stop.store(true, Ordering::SeqCst);
+            }
+            let _ = gateway_writer.shutdown(Shutdown::Write);
+            result
+        });
+        let g2c_stop = Arc::clone(&relay_stop);
+        let g2c_owner_stop = Arc::clone(&owner_stop);
+        let gateway_to_client = scope.spawn(move || {
+            let result = copy_until_stopped(
+                &mut gateway_reader,
+                &mut client_writer,
+                &g2c_owner_stop,
+                &g2c_stop,
+            );
+            if result.is_err() {
+                g2c_stop.store(true, Ordering::SeqCst);
+            }
+            let _ = client_writer.shutdown(Shutdown::Write);
+            result
+        });
+        let first = client_to_gateway
+            .join()
+            .map_err(|_| "gateway bridge client relay panicked".to_string())?;
+        let second = gateway_to_client
+            .join()
+            .map_err(|_| "gateway bridge gateway relay panicked".to_string())?;
+        first.and(second)
+    })
+}
+
+fn copy_until_stopped<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    owner_stop: &AtomicBool,
+    relay_stop: &AtomicBool,
+) -> Result<(), String> {
+    let mut buffer = [0_u8; 16 * 1024];
+    while !owner_stop.load(Ordering::SeqCst) && !relay_stop.load(Ordering::SeqCst) {
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(read) => write_all_until_stopped(writer, &buffer[..read], owner_stop, relay_stop)?,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => return Err(format!("gateway bridge read failed: {error}")),
+        }
+    }
+    Ok(())
+}
+
+fn write_all_until_stopped<W: Write>(
+    writer: &mut W,
+    mut bytes: &[u8],
+    owner_stop: &AtomicBool,
+    relay_stop: &AtomicBool,
+) -> Result<(), String> {
+    while !bytes.is_empty()
+        && !owner_stop.load(Ordering::SeqCst)
+        && !relay_stop.load(Ordering::SeqCst)
+    {
+        match writer.write(bytes) {
+            Ok(0) => return Err("gateway bridge write made no progress".into()),
+            Ok(written) => bytes = &bytes[written..],
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => return Err(format!("gateway bridge write failed: {error}")),
+        }
+    }
+    Ok(())
+}
+
+/// Validate the in-sandbox transport helper before constructing a launch. The
+/// canonical target may be a root-owned distribution symlink, but its resolved
+/// executable must be a private regular file beneath a mounted system root.
+pub(crate) fn trusted_socat_path() -> Result<PathBuf, String> {
+    let path = Path::new(SOCAT_BIN);
+    let resolved = std::fs::canonicalize(path)
+        .map_err(|error| format!("socat bridge helper is unavailable: {error}"))?;
+    let metadata = std::fs::metadata(&resolved)
+        .map_err(|error| format!("socat bridge helper metadata is unavailable: {error}"))?;
+    if !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.mode() & 0o022 != 0
+        || metadata.mode() & 0o111 == 0
+    {
+        return Err("socat bridge helper is not a trusted root-owned private executable".into());
+    }
+    if !resolved.starts_with("/usr/") && !resolved.starts_with("/bin/") {
+        return Err("socat bridge helper is outside the sandbox system roots".into());
+    }
+    Ok(resolved)
 }
 
 impl ManagedCodexRuntimeAttestation {
@@ -281,30 +529,41 @@ pub struct CodexMediatedCapabilityReport {
 }
 
 impl CodexMediatedCapabilityReport {
-    /// Honest classification after PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1
-    /// and PE7-CODEX-RESIDUAL-ADMISSION-CLOSURE-1.
-    ///
-    /// Does **not** claim full live Golden Path admission. Residual axes are
-    /// investigated by `codex_residual_admission` (`residual_admission_no_go`
-    /// until every axis is proved). Product launch still uses shared host
-    /// network (credential non-bypass only); loopback-only is design-proved
-    /// on capable hosts but not product-enforced.
+    /// Evaluate the non-runtime portion of a mediated launch plan. A production
+    /// plan uses `evaluate_with_network` only after it has created the parent
+    /// Unix bridge and proved the host can create `--unshare-net`.
     pub fn evaluate(isolation: IsolationMode, bwrap_present: bool) -> Self {
+        Self::evaluate_with_network(isolation, bwrap_present, false)
+    }
+
+    fn evaluate_with_network(
+        isolation: IsolationMode,
+        bwrap_present: bool,
+        network_confinement_enforced: bool,
+    ) -> Self {
         let fs_ok = matches!(isolation, IsolationMode::BubblewrapFilesystem) && bwrap_present;
-        let network_confinement = if fs_ok {
-            "shared_host_network_credential_non_bypass_only;loopback_only_design_proved_not_product_enforced"
-                .to_string()
-        } else {
-            "unavailable".to_string()
+        let network_ok = fs_ok && network_confinement_enforced;
+        let network_confinement = match (fs_ok, network_ok) {
+            (false, _) => "unavailable".to_string(),
+            (true, true) => "unshare_net_tcp_unix_gateway_bridge_enforced".to_string(),
+            (true, false) => {
+                "shared_host_network_credential_non_bypass_only;network_bridge_not_enforced"
+                    .to_string()
+            }
         };
         let remaining = if !fs_ok {
             Some(
                 "product-managed Codex mediation requires /usr/bin/bwrap filesystem+PID isolation"
                     .to_string(),
             )
+        } else if !network_ok {
+            Some(
+                "product-managed Codex mediation requires bwrap --unshare-net with a parent Unix gateway bridge"
+                    .to_string(),
+            )
         } else {
             Some(
-                "residual_admission_no_go: (1) Codex 0.145.0 internal retries are not wire-labeled (true retry identity unavailable; max_retries is subsequent-POST cap only); (2) product launch does not enforce loopback-only network confinement (unshare-net+unix-bridge design is host-proved where available, not product-wired); (3) unprivileged user-namespace/PID isolation is host-dependent (uid_map may be denied); (4) live operator credential+authorization still required for managed acceptance. See codex_residual_admission_finding.v1."
+                "residual_admission_no_go: (1) Codex 0.145.0 internal retries are not wire-labeled (true retry identity unavailable; max_retries is subsequent-POST cap only); (2) unprivileged user-namespace/PID isolation is host-dependent (uid_map may be denied); (3) live operator credential+authorization still required for managed acceptance. See codex_residual_admission_finding.v1."
                     .to_string(),
             )
         };
@@ -324,8 +583,9 @@ impl CodexMediatedCapabilityReport {
             // full provider-independent path confinement is not claimed here.
             worktree_path_confinement: fs_ok,
             no_direct_credential_bypass: fs_ok,
-            // Network egress may still exist; credential non-bypass is the proved axis.
-            no_direct_network_credential_bypass: false,
+            // The runtime plan only sets this after the netns + Unix bridge are
+            // both owned by the launcher and the netns capability probe passed.
+            no_direct_network_credential_bypass: network_ok,
             exact_executable_and_model_identity: true,
             hard_single_request_output_bound: fs_ok,
             hard_cross_call_budget_interposition: fs_ok,
@@ -343,6 +603,7 @@ impl CodexMediatedCapabilityReport {
                 "Session JSONL importer is corroborating evidence only; gateway is the cross-call gate.".into(),
                 "ProductTask budget remains the sole durable budget authority.".into(),
                 "Parent-owned usage journal is outside every child sandbox mount.".into(),
+                "Production child network uses bwrap --unshare-net and a parent Unix transport bridge.".into(),
             ],
         }
     }
@@ -385,6 +646,7 @@ pub struct MediatedCodexLaunchPlan {
     host_ephemeral_home: PathBuf,
     capability: CodexMediatedCapabilityReport,
     network_boundary: ManagedCodexNetworkBoundary,
+    network_bridge: Option<Arc<UnixGatewayBridge>>,
     child_launch_owner: ManagedCodexChildLaunchOwner,
 }
 
@@ -452,6 +714,17 @@ impl MediatedCodexLaunchPlan {
             || self.isolation_mode != IsolationMode::BubblewrapFilesystem
         {
             return Err("managed child launcher isolation owner is unavailable".to_string());
+        }
+        if owner.network_boundary != ManagedCodexNetworkBoundary::LoopbackOnlyEnforced
+            || self.network_boundary != ManagedCodexNetworkBoundary::LoopbackOnlyEnforced
+        {
+            return Err("managed child network namespace is not launcher-enforced".to_string());
+        }
+        let Some(bridge) = self.network_bridge.as_ref() else {
+            return Err("managed child Unix gateway bridge is unavailable".to_string());
+        };
+        if !bridge.is_running() {
+            return Err("managed child Unix gateway bridge stopped before spawn".to_string());
         }
         if owner.sandbox_codex_home != self.sandbox_codex_home
             || !self.sandbox_codex_home.is_absolute()
@@ -641,12 +914,46 @@ fn build_mediated_codex_launch_plan(
             .unwrap_or_else(|| "codex mediation admission is blocked".to_string()));
     }
 
+    let (network_bridge, socat_path) = match &gateway_binding {
+        GatewayLaunchBinding::RuntimeOwner { local_addr, .. } => {
+            use super::codex_residual_admission::{
+                probe_unshare_net_available, CapabilityEvidenceClass,
+            };
+
+            match probe_unshare_net_available() {
+                CapabilityEvidenceClass::Proved => {}
+                other => {
+                    return Err(format!(
+                        "managed Codex network namespace capability is not proved: {}",
+                        other.as_str()
+                    ));
+                }
+            }
+            let socat_path = trusted_socat_path()?;
+            let bridge = UnixGatewayBridge::start(*local_addr)?;
+            (Some(bridge), Some(socat_path))
+        }
+        #[cfg(test)]
+        GatewayLaunchBinding::DeclaredOnly => (None, None),
+    };
+    let capability = CodexMediatedCapabilityReport::evaluate_with_network(
+        isolation.clone(),
+        bwrap_present,
+        network_bridge.is_some(),
+    );
+
     let mut args: Vec<OsString> = Vec::new();
     // Die with parent so timeout/cancel of the outer process reaps the sandbox.
     // Do not use --new-session: the managed CLI owner places the child in a
     // process group and kills that group on timeout/cancel; a new session would
     // detach descendants from that cleanup path.
     args.push("--die-with-parent".into());
+    if network_bridge.is_some() {
+        // The child has no host interfaces or routes. Its only provider path is
+        // the Unix socket mounted below, reached through the in-sandbox TCP
+        // adapter started immediately before Codex.
+        args.push("--unshare-net".into());
+    }
     // PID isolation when the host permits unprivileged user namespaces. GitHub
     // Actions often denies uid_map; FS isolation still applies via tmpfs/bind.
     let pid_ns = unprivileged_user_ns_available();
@@ -673,6 +980,11 @@ fn build_mediated_codex_launch_plan(
     args.push("/home".into());
     args.push("--tmpfs".into());
     args.push("/root".into());
+    if let Some(bridge) = network_bridge.as_ref() {
+        args.push("--ro-bind".into());
+        args.push(bridge.host_socket_path.as_os_str().to_os_string());
+        args.push(SANDBOX_GATEWAY_SOCKET.into());
+    }
     // Re-bind worktree after /home tmpfs so product workspace remains reachable.
     args.push("--bind".into());
     args.push(authority.worktree.as_os_str().to_os_string());
@@ -696,9 +1008,14 @@ fn build_mediated_codex_launch_plan(
     args.push("--setenv".into());
     args.push("CODEX_HOME".into());
     args.push(SANDBOX_CODEX_HOME.into());
+    let child_gateway_base_url = if network_bridge.is_some() {
+        format!("http://127.0.0.1:{SANDBOX_GATEWAY_LISTEN_PORT}/v1")
+    } else {
+        gateway_base_url.to_string()
+    };
     args.push("--setenv".into());
     args.push("OPENAI_BASE_URL".into());
-    args.push(gateway_base_url.into());
+    args.push(child_gateway_base_url.clone().into());
     args.push("--setenv".into());
     args.push("OPENAI_API_KEY".into());
     args.push(session_token.into());
@@ -709,9 +1026,17 @@ fn build_mediated_codex_launch_plan(
             args.push(value.into());
         }
     }
-    // Codex program + product args (already include model, sandbox, prompt).
-    args.push(SANDBOX_CODEX_BIN.into());
-    args.extend(codex_args.iter().cloned());
+    // Production runs start the TCP-to-Unix adapter inside the isolated network
+    // namespace, then exec the admitted Codex binary. Declared-only plans are
+    // inspection-only and retain the direct command shape for unit tests.
+    if let Some(socat_path) = socat_path.as_deref() {
+        args.push("/bin/sh".into());
+        args.push("-c".into());
+        args.push(build_sandbox_bridge_command(socat_path, codex_args)?.into());
+    } else {
+        args.push(SANDBOX_CODEX_BIN.into());
+        args.extend(codex_args.iter().cloned());
+    }
 
     // Outer process env is cleared; bwrap --setenv injects the sandbox env.
     // Keep a mirrored env list for audit and non-bwrap test doubles.
@@ -719,7 +1044,7 @@ fn build_mediated_codex_launch_plan(
         ("PATH".into(), "/usr/bin:/bin".into()),
         ("HOME".into(), SANDBOX_CODEX_HOME.into()),
         ("CODEX_HOME".into(), SANDBOX_CODEX_HOME.into()),
-        ("OPENAI_BASE_URL".into(), gateway_base_url.into()),
+        ("OPENAI_BASE_URL".into(), child_gateway_base_url.into()),
         ("OPENAI_API_KEY".into(), session_token.into()),
     ];
 
@@ -734,13 +1059,21 @@ fn build_mediated_codex_launch_plan(
         sandbox_codex_home: PathBuf::from(SANDBOX_CODEX_HOME),
         host_ephemeral_home: host_ephemeral_home.to_path_buf(),
         capability,
-        // The current bwrap plan deliberately keeps host networking so it can
-        // reach the TCP loopback gateway. Do not claim this is confinement.
-        network_boundary: ManagedCodexNetworkBoundary::HostNetworkShared,
+        network_boundary: if network_bridge.is_some() {
+            ManagedCodexNetworkBoundary::LoopbackOnlyEnforced
+        } else {
+            ManagedCodexNetworkBoundary::HostNetworkShared
+        },
+        network_bridge,
         child_launch_owner: ManagedCodexChildLaunchOwner {
             clear_parent_environment: true,
             isolation_mode: IsolationMode::BubblewrapFilesystem,
             sandbox_codex_home: PathBuf::from(SANDBOX_CODEX_HOME),
+            network_boundary: if socat_path.is_some() {
+                ManagedCodexNetworkBoundary::LoopbackOnlyEnforced
+            } else {
+                ManagedCodexNetworkBoundary::HostNetworkShared
+            },
             gateway_binding,
         },
     };
@@ -864,8 +1197,59 @@ pub fn probe_real_auth_hidden(
     ))
 }
 
-fn shell_single_quote(value: &str) -> String {
+pub(crate) fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+fn build_sandbox_bridge_command(
+    socat_path: &Path,
+    codex_args: &[OsString],
+) -> Result<String, String> {
+    let mut codex_command = vec![shell_single_quote(SANDBOX_CODEX_BIN)];
+    for argument in codex_args {
+        let argument = argument.to_str().ok_or_else(|| {
+            "managed Codex argument is not valid UTF-8 for the bridge shell".to_string()
+        })?;
+        codex_command.push(shell_single_quote(argument));
+    }
+    let socat = shell_single_quote(&socat_path.to_string_lossy());
+    let socket = shell_single_quote(SANDBOX_GATEWAY_SOCKET);
+    Ok(format!(
+        r#"set -eu
+{socat} 'TCP4-LISTEN:{port},bind=127.0.0.1,reuseaddr,fork' 'UNIX-CONNECT:{socket}' >/dev/null 2>&1 &
+bridge_pid=$!
+cleanup() {{
+    kill "$bridge_pid" 2>/dev/null || true
+    wait "$bridge_pid" 2>/dev/null || true
+}}
+trap cleanup EXIT HUP INT TERM
+ready=0
+i=0
+while [ "$i" -lt 50 ]; do
+    if kill -0 "$bridge_pid" 2>/dev/null && {socat} -T 1 -u OPEN:/dev/null TCP4:127.0.0.1:{port} >/dev/null 2>&1; then
+        ready=1
+        break
+    fi
+    if ! kill -0 "$bridge_pid" 2>/dev/null; then
+        exit 125
+    fi
+    i=$((i + 1))
+    sleep 0.02
+done
+if [ "$ready" -ne 1 ]; then
+    exit 125
+fi
+set +e
+{codex}
+codex_status=$?
+set -e
+cleanup
+trap - EXIT HUP INT TERM
+exit "$codex_status"
+"#,
+        port = SANDBOX_GATEWAY_LISTEN_PORT,
+        codex = codex_command.join(" "),
+    ))
 }
 
 /// Reconcile gateway-measured usage with session JSONL rollup counters.
@@ -987,7 +1371,7 @@ mod tests {
         new_codex_attempt_id, write_ephemeral_codex_home, CodexExecutableIdentity,
         CodexProviderIdentity, ADMITTED_CODEX_CLI_VERSION, CODEX_BUDGET_AUTHORITY_SCHEMA,
     };
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
     fn require_bwrap() {
         assert!(
@@ -1024,6 +1408,58 @@ mod tests {
             command.status().unwrap().success(),
             "a sealed helper must not receive injected parent credentials"
         );
+    }
+
+    #[test]
+    fn unix_gateway_bridge_preserves_idle_responses_longer_than_poll_interval() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4];
+            stream.read_exact(&mut request).unwrap();
+            assert_eq!(&request, b"ping");
+            thread::sleep(Duration::from_millis(1_250));
+            stream.write_all(b"pong").unwrap();
+        });
+        let bridge = UnixGatewayBridge::start(address).unwrap();
+        let mut client = UnixStream::connect(&bridge.host_socket_path).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        client.write_all(b"ping").unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        let mut response = [0_u8; 4];
+        client.read_exact(&mut response).unwrap();
+        assert_eq!(&response, b"pong");
+        drop(client);
+        drop(bridge);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn unix_gateway_bridge_drop_joins_an_active_idle_relay() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (_stream, _) = listener.accept().unwrap();
+            accepted_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        let bridge = UnixGatewayBridge::start(address).unwrap();
+        let client = UnixStream::connect(&bridge.host_socket_path).unwrap();
+        accepted_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let started = Instant::now();
+        drop(bridge);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "bridge owner must cancel and join an idle accepted relay"
+        );
+        drop(client);
+        release_tx.send(()).unwrap();
+        server.join().unwrap();
     }
 
     fn sample_authority(worktree: PathBuf) -> CodexBudgetAuthority {
@@ -1083,6 +1519,18 @@ mod tests {
         assert!(!partial.bounded_calls_and_retries);
         assert!(!partial.no_direct_network_credential_bypass);
         assert!(partial
+            .remaining_blocker
+            .as_ref()
+            .unwrap()
+            .contains("unshare-net"));
+
+        let network_enforced = CodexMediatedCapabilityReport::evaluate_with_network(
+            IsolationMode::BubblewrapFilesystem,
+            true,
+            true,
+        );
+        assert!(network_enforced.no_direct_network_credential_bypass);
+        assert!(network_enforced
             .remaining_blocker
             .as_ref()
             .unwrap()
@@ -1193,10 +1641,7 @@ mod tests {
         assert!(attestation.gateway_is_loopback());
         assert!(attestation.journal_path_parent_owned());
         assert!(attestation.journal_durable());
-        assert!(
-            !attestation.network_confinement_enforced(),
-            "the current launcher must not claim host-network sharing is confinement"
-        );
+        assert!(attestation.network_confinement_enforced());
 
         let declared_only = plan_mediated_codex_launch(
             &authority,
@@ -1218,6 +1663,70 @@ mod tests {
         );
 
         let _ = gateway.shutdown();
+        let _ = std::fs::remove_file(journal_path);
+        let _ = std::fs::remove_dir_all(worktree);
+        let _ = std::fs::remove_dir_all(ephemeral_home);
+        let _ = std::fs::remove_file(authority.executable.binary_path);
+    }
+
+    #[test]
+    fn production_launch_executes_inside_netns_through_scoped_gateway_shape() {
+        require_bwrap();
+        let worktree =
+            std::env::temp_dir().join(format!("codex-live-shape-wt-{}", uuid::Uuid::new_v4()));
+        let ephemeral_home =
+            std::env::temp_dir().join(format!("codex-live-shape-home-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&worktree).unwrap();
+        let mut authority = sample_authority(worktree.clone());
+        std::fs::write(
+            &authority.executable.binary_path,
+            format!(
+                "#!/bin/sh\n[ \"$OPENAI_BASE_URL\" = \"http://127.0.0.1:{SANDBOX_GATEWAY_LISTEN_PORT}/v1\" ] || exit 91\ncase \"$OPENAI_API_KEY\" in {CODEX_SESSION_TOKEN_PREFIX}*) ;; *) exit 92 ;; esac\necho SANDBOX_SHAPE_OK\n"
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            &authority.executable.binary_path,
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        authority.executable.binary_sha256 = hex::encode(Sha256::digest(
+            std::fs::read(&authority.executable.binary_path).unwrap(),
+        ));
+        let journal_path =
+            crate::cli::codex_usage_journal::parent_owned_journal_path(&authority.execution_id);
+        let gateway = CodexBudgetGateway::start(
+            crate::cli::codex_budget_authority::CodexGatewayStartPermit::provider_free_fixture(
+                &authority.execution_id,
+            ),
+            authority.clone(),
+            &authority.provider.base_url,
+            "provider-fixture-key",
+            journal_path.clone(),
+        )
+        .unwrap();
+        write_ephemeral_codex_home(&ephemeral_home, &authority.model, &gateway.base_url()).unwrap();
+        let plan = plan_mediated_codex_launch_for_gateway(
+            &authority,
+            &authority.executable.binary_path,
+            &ephemeral_home,
+            &gateway,
+            &[],
+        )
+        .unwrap();
+        let output = plan.to_command().output().unwrap();
+        assert!(
+            output.status.success(),
+            "production-shaped sandbox failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "SANDBOX_SHAPE_OK"
+        );
+        drop(plan);
+        let usage = gateway.shutdown();
+        assert_eq!(usage.provider_requests, 0);
         let _ = std::fs::remove_file(journal_path);
         let _ = std::fs::remove_dir_all(worktree);
         let _ = std::fs::remove_dir_all(ephemeral_home);

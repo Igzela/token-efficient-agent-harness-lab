@@ -576,7 +576,7 @@ impl ManagedProviderCallRequest {
         }
         validate_messages(&self.messages)?;
         validate_tools(&self.tools, self.tool_choice.as_ref())?;
-        validate_thinking(&self.thinking)?;
+        validate_thinking(&self.thinking, codex_subscription_schema)?;
         if self.estimated_input_tokens() > self.limits.max_input_tokens {
             return Err("managed input ceiling exceeded before send".to_string());
         }
@@ -741,12 +741,19 @@ fn validate_tools(tools: &[ManagedTool], choice: Option<&Value>) -> Result<(), S
     Ok(())
 }
 
-fn validate_thinking(thinking: &ThinkingConfiguration) -> Result<(), String> {
+fn validate_thinking(
+    thinking: &ThinkingConfiguration,
+    codex_subscription_schema: bool,
+) -> Result<(), String> {
     if !matches!(thinking.mode.as_str(), "enabled" | "disabled") {
         return Err("thinking mode is not admitted".to_string());
     }
     if let Some(effort) = &thinking.reasoning_effort {
-        if !matches!(effort.as_str(), "high" | "max") {
+        if effort == "xhigh" && codex_subscription_schema {
+            if thinking.mode != "enabled" {
+                return Err("Codex xhigh requires enabled thinking".to_string());
+            }
+        } else if !matches!(effort.as_str(), "high" | "max") {
             return Err("reasoning effort must be high or max".to_string());
         }
     }
@@ -1086,6 +1093,8 @@ pub struct PersistedAuthoritySnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PersistedManagedExecutionContract {
+    /// Optional exact reasoning contract from the frozen provider binding.
+    pub thinking: Option<ThinkingConfiguration>,
     pub provider_identity: String,
     pub provider_kind: String,
     pub protocol: DeepSeekProtocol,
@@ -1218,6 +1227,10 @@ impl ManagedProviderCallAuthority {
             && contract.credential_reference == request.credential_reference
             && contract.requested_model == request.requested_model;
         if !provider_matches
+            || contract
+                .thinking
+                .as_ref()
+                .is_some_and(|thinking| thinking != &request.thinking)
             || contract.protocol != request.protocol
             || contract.request_schema_version != request.schema_version
             || contract.response_schema_version != request.response_schema_version
@@ -2150,6 +2163,21 @@ mod tests {
     fn request(protocol: DeepSeekProtocol) -> ManagedProviderCallRequest {
         ManagedProviderCallRequest::for_role(ManagedModelRole::Planner, protocol, binding())
     }
+
+    #[test]
+    fn xhigh_is_scoped_to_codex_subscription_request_schema() {
+        let mut req = request(DeepSeekProtocol::OpenAiCompatible);
+        req.messages = vec![ManagedMessage::text("user", "bounded test")];
+        req.thinking.reasoning_effort = Some("xhigh".into());
+        assert!(req.validate().unwrap_err().contains("reasoning effort"));
+        req.provider_kind = "chatgpt_subscription".into();
+        assert!(req.validate().unwrap_err().contains("reasoning effort"));
+        req.schema_version = "codex_responses_api.v1".into();
+        req.requested_model = "gpt-5.6-luna".into();
+        req.validate().unwrap();
+        req.thinking.mode = "disabled".into();
+        assert!(req.validate().unwrap_err().contains("requires enabled"));
+    }
     fn config_for(protocol: DeepSeekProtocol, model: &str) -> ProviderConfig {
         ProviderConfig::new(
             "deepseek-test",
@@ -2909,6 +2937,7 @@ followed by a one-sentence summary of the change.";
                 consumed_by_attempt_id: Some(binding.attempt_id.clone()),
                 lease_status: "current".into(),
                 execution_contract: Some(PersistedManagedExecutionContract {
+                    thinking: None,
                     provider_identity: DEEPSEEK_PROVIDER_ID.into(),
                     provider_kind: DEEPSEEK_PROVIDER_KIND.into(),
                     protocol: DeepSeekProtocol::OpenAiCompatible,

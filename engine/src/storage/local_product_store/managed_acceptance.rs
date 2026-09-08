@@ -1314,6 +1314,12 @@ fn delegated_execution_contract(
     };
     Ok(
         crate::provider::managed_deepseek::PersistedManagedExecutionContract {
+            thinking: provider_binding.reasoning_effort.map(|effort| {
+                crate::provider::managed_deepseek::ThinkingConfiguration {
+                    mode: "enabled".into(),
+                    reasoning_effort: Some(effort),
+                }
+            }),
             provider_identity: provider_binding.provider_identity,
             provider_kind: manifest
                 .pointer("/provider/kind")
@@ -6901,6 +6907,33 @@ impl LocalProductStore {
         }
     }
 
+    /// Delegated ProductTask attempts are owned by the delegation row, not by
+    /// the legacy managed-acceptance attempt table. Keep this lookup separate
+    /// from `current_attempt_lease_token`: the latter remains for the legacy
+    /// Codex CLI acceptance path.
+    fn current_delegated_attempt_lease_token(&self, attempt_id: &str) -> Result<String, String> {
+        match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT attempt_lease_token FROM managed_acceptance_delegations WHERE attempt_id=?1 AND attempt_status='admitted'",
+                    params![attempt_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|e| e.to_string())
+            }),
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_one(
+                        "SELECT attempt_lease_token FROM managed_acceptance_delegations WHERE attempt_id=$1 AND attempt_status='admitted'",
+                        &[&attempt_id],
+                    )
+                    .map(|row| row.get::<_, String>(0))
+                    .map_err(|e| e.to_string())
+            }),
+        }
+    }
+
     /// Terminalize attempt; requires current lease_token. Exact terminal replay allowed.
     pub fn complete_managed_acceptance_attempt(
         &self,
@@ -11792,7 +11825,7 @@ impl LocalProductStore {
         // each of those three roles.
         self.current_delegated_provider_authority(binding)?
             .ok_or("delegated provider authority is missing")?;
-        let lease_token = self.current_attempt_lease_token(&binding.attempt_id)?;
+        let lease_token = self.current_delegated_attempt_lease_token(&binding.attempt_id)?;
         if lease_token.trim().is_empty()
             || crate::provider::managed_deepseek::managed_attempt_lease_id(&lease_token)
                 != binding.attempt_lease_id
@@ -15476,6 +15509,10 @@ mod tests {
         .unwrap();
         assert_eq!(authority.lease_status, "current");
         assert_eq!(authority.spend_status, "consumed");
+        let gateway_permit = store
+            .codex_gateway_start_permit_for_delegated_attempt(&delegated_binding)
+            .unwrap();
+        assert!(gateway_permit.execution_id().starts_with("codex-attempt-"));
         let contract = authority.execution_contract.clone().unwrap();
         let mut request = crate::provider::managed_deepseek::ManagedProviderCallRequest::for_role(
             crate::provider::managed_deepseek::ManagedModelRole::Planner,
@@ -16717,6 +16754,32 @@ mod tests {
             .unwrap();
         assert_eq!(recovered["phase"], "terminal_failure");
         assert!(recovered["delegated_terminal"].is_null());
+        // A replayed finalizer returns no new terminal, but recovery must
+        // still observe the original uncertainty and conservative reservation.
+        let durable = recovered_failure_store
+            .delegated_authority_state(&delegation.delegation_id)
+            .unwrap();
+        assert_eq!(durable["attempt_lease_state"], "closed");
+        assert_eq!(durable["spend_authorization_state"], "expired");
+        assert_eq!(
+            durable["terminal_evidence"]["terminal_class"],
+            "outcome_unknown"
+        );
+        assert_eq!(durable["terminal_evidence"]["provider_request_count"], 1);
+        assert_eq!(
+            durable["terminal_evidence"]["cost_evidence"],
+            "conservative_reservation"
+        );
+        let replayed = recovered_failure_store
+            .finalize_product_task_after_execution(task_id, "recovery-owner")
+            .unwrap();
+        assert!(replayed["delegated_terminal"].is_null());
+        assert_eq!(
+            recovered_failure_store
+                .delegated_authority_state(&delegation.delegation_id)
+                .unwrap(),
+            durable
+        );
         assert_eq!(unknown_transport.sends.load(Ordering::SeqCst), 1);
 
         let cancelled_db = dir.path().join("delegated-late-response-cancelled.db");

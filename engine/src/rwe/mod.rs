@@ -13,9 +13,11 @@ pub mod operator_corpus;
 pub mod runner;
 
 pub use campaign_package::{
-    canonical_agy_v1_candidate_package, canonical_deepseek_v2_package,
+    canonical_agy_v1_candidate_package, canonical_codex_luna_xhigh_v2_package,
+    canonical_codex_luna_xhigh_v3_strategy_package, canonical_deepseek_v2_package,
     record_campaign_package_audit, FrozenCampaignPackage, RWE_AGY_V1_PACKAGE_ID,
-    RWE_CAMPAIGN_PACKAGE_SCHEMA, RWE_DEEPSEEK_V2_PACKAGE_ID,
+    RWE_CAMPAIGN_PACKAGE_SCHEMA, RWE_CODEX_LUNA_XHIGH_V2_PACKAGE_ID,
+    RWE_CODEX_LUNA_XHIGH_V3_STRATEGY_PACKAGE_ID, RWE_DEEPSEEK_V2_PACKAGE_ID,
 };
 pub use corpus::{freeze_first_rwe_corpus, FirstRweCorpus, RWE_CORPUS_SCHEMA};
 pub use economic_protocol::{
@@ -34,10 +36,11 @@ pub use frozen_rwe_bindings::{
 pub use live_baseline_coordinator::{
     build_rwe_cell_product_intake, cell_identities_for, issue_and_admit_v2,
     issue_and_admit_v2_with_package, operator_preflight, project_first_baseline_evidence,
-    revalidate_stored_v2_authorization, run_frozen_mx1_1x2x1, run_frozen_schedule, CellDriver,
-    CellIdentities, CellOutcome, CountingCellDriver, InjectedCellDriver,
-    ProductGoldenPathCellDriver, RWE_CELL_ATTEMPT_EVIDENCE_SCHEMA,
-    RWE_LIVE_BASELINE_COORDINATOR_SCHEMA, RWE_LIVE_CELL_COMPOSITION_SEAM,
+    revalidate_stored_v2_authorization, run_frozen_mx1_1x1x1, run_frozen_mx1_1x1x3,
+    run_frozen_mx1_1x2x1, run_frozen_schedule, CellDriver, CellIdentities, CellOutcome,
+    CountingCellDriver, InjectedCellDriver, ProductGoldenPathCellDriver,
+    RWE_CELL_ATTEMPT_EVIDENCE_SCHEMA, RWE_LIVE_BASELINE_COORDINATOR_SCHEMA,
+    RWE_LIVE_CELL_COMPOSITION_SEAM,
 };
 pub use operator_corpus::{
     freeze_current_operator_contract_set, freeze_operator_contract_set, freeze_operator_rwe_corpus,

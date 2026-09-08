@@ -6537,6 +6537,12 @@ fn retryable_node_failure(output: &crate::node_executor::NodeExecutionOutput) ->
     if output.status != "failed" {
         return false;
     }
+    // No process started, but the admitted tool receipt may already be
+    // consumed. Repair/reconciliation must precede a new authorization;
+    // scheduler retry must not replay this refusal or mask its cause as usage.
+    if output.codex_nonretryable_pre_child() {
+        return false;
+    }
     !matches!(
         output.error_domain.as_deref(),
         Some(
@@ -6558,6 +6564,7 @@ fn retryable_node_failure(output: &crate::node_executor::NodeExecutionOutput) ->
                 | "cli_output_limit_exceeded"
                 | "cli_process_tree_cleanup_error"
                 | "cli_process_tree_containment_unavailable"
+                | "cli_attempt_terminalization_failed"
         )
     )
 }
@@ -6720,6 +6727,40 @@ mod product_managed_token_budget_tests {
     }
 
     #[test]
+    fn pre_spawn_refusal_retains_cause_and_missing_usage_without_retry() {
+        let mut output = completed(None, None);
+        output.status = "failed".into();
+        output.error_domain = Some("cli_execution_authority_invalid".into());
+        output.error_message = Some("managed Codex spawn spend binding is missing".into());
+        output.process_outcome = Some(ProcessOutcome::admission_refused_before_spawn());
+        let settlement = enforce_product_managed_token_budget(output, &metadata(50.0));
+        assert_eq!(
+            settlement.output.error_domain.as_deref(),
+            Some("cli_execution_authority_invalid")
+        );
+        assert!(!retryable_node_failure(&settlement.output));
+        assert_eq!(settlement.output.input_tokens, None);
+        assert_eq!(
+            settlement.usage_state.unwrap()["current_attempt_tokens"],
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn consumed_codex_lease_before_child_is_structurally_nonretryable() {
+        let mut output = completed(None, None);
+        output.status = "failed".into();
+        output.error_domain = Some("retryable_if_only_string_matched".into());
+        output.process_outcome = Some(ProcessOutcome::store_lease_consumed_before_child());
+        assert!(output.codex_nonretryable_pre_child());
+        assert!(!retryable_node_failure(&output));
+        assert_eq!(
+            output.process_outcome.unwrap().boundary_mapping().effect,
+            crate::node_executor::ProcessEffectState::NotStarted
+        );
+    }
+
+    #[test]
     fn measured_managed_usage_within_product_budget_stays_complete() {
         let output =
             enforce_product_managed_token_budget(completed(Some(40), Some(10)), &metadata(50.0))
@@ -6775,6 +6816,7 @@ mod product_managed_token_budget_tests {
             "cli_output_limit_exceeded",
             "cli_process_tree_cleanup_error",
             "cli_process_tree_containment_unavailable",
+            "cli_attempt_terminalization_failed",
         ] {
             let mut output = completed(None, None);
             output.status = "failed".to_string();

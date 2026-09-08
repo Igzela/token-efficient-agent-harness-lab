@@ -62,6 +62,21 @@ its private `/tmp`. The checked-in unit names those three exact write roots.
 This is repository-maintenance authority, not permission to write another
 repository, an operator home, or an arbitrary host path.
 
+For product-managed Codex execution, the launcher owns the network boundary as
+well as the filesystem boundary. It creates a fresh bubblewrap network
+namespace with no host interfaces or external route, mounts one mode-0600
+ephemeral Unix socket, and starts a trusted in-sandbox TCP-to-Unix adapter on
+child loopback. The parent end only relays bytes to the already-authoritative
+`CodexBudgetGateway`; it does not parse requests or become another provider or
+budget owner. Construction fails before child spawn if network namespaces,
+the trusted adapter, the private socket, or the exact gateway binding cannot
+be proved. The launch plan retains the bridge for the child lifetime and
+cancels and joins accepted relays before deleting its socket. Response idle
+time is not treated as an execution deadline; the existing outer process and
+gateway timeout owners remain authoritative. Internal Codex retry identity is
+still a separate residual admission axis and is not inferred from this network
+confinement.
+
 ### Codex Lifecycle Hooks Architecture & Trust Model (H0–H3)
 
 Codex Lifecycle Hooks integrate the local Codex execution engine with Steward WorkCard constraints. Hooks are strictly worker-local event adapters; the Steward service remains the sole scheduler, reviewer, journal writer, and merge authority. Hooks never write to the durable journal or claim task completion.
@@ -122,6 +137,64 @@ quality/safety/comparability gates, and explicit authorized adoption before any
 change to the active Harness. The research milestone gates are owned by
 `docs/ROADMAP.md`; autonomy, testing, review, and merge rules by
 `docs/AUTONOMY.md`.
+
+The Luna-only Codex ladder uses two immutable campaign identities. The
+`rwe-campaign-codex-luna-xhigh-v2` package binds the four actual cells produced
+by the full frozen schedule at `1x1x1`; the
+`rwe-campaign-codex-luna-xhigh-strategy-v3` package binds the same schedule
+expanded across the three existing Strategies at `1x1x3` (twelve cells).
+Store authorization derives each finite run-level request/token/time envelope
+from the package-owned Matrix expansion factor and the unchanged schedule cell
+sums. This keeps the original two-model package bytes unchanged while binding
+its factor to two; the Luna packages bind factors one and three. A baseline
+authorization therefore cannot select the extension rung, while historical
+packages and evidence retain their original bytes and identities.
+Before any live readiness probe, each runner maps its rung to one exact package
+ID and requires the driver package to equal the canonical resolved package in
+every field. The generic schedule accepts only its canonical DeepSeek package;
+Codex packages cannot fall through to a four-cell generic run.
+
+Managed Codex launch evidence distinguishes refusal before Store admission
+from `store_lease_consumed_before_child`. The latter proves no process/provider
+effect began but also proves the one-use Store attempt was consumed, so the
+scheduler treats it as structurally terminal and never retries it. A failure
+to terminalize after an actual process preserves that process and usage
+evidence and is also non-retryable; it is not rewritten as a no-process claim.
+
+### Research binding consolidation: compatibility plan
+
+The following is a proposed follow-up design, not an alternate admission path
+or a change to any existing frozen contract. Execution continuation is owned
+by `AUTONOMY.md`; command procedures are owned by `RUNBOOK.md`.
+
+- Derive provider/model/reasoning identity once from `FrozenCampaignPackage`
+  and `FrozenProviderExecutionBinding`, then resolve the existing immutable
+  Matrix descriptors. Consumers in the live coordinator, delegated manifest,
+  and Store admission compare those identities rather than selecting their
+  own role defaults. Preserve old package IDs and descriptor hashes; changed
+  identities require a distinct freeze, not a migration of historical rows.
+- Keep `draft_pr` in existing prerequisite and terminal validators. General
+  output-mode support would require a separately versioned package contract
+  consumed by ProductTask intake, delegated artifact confirmation, target
+  output, and RWE prerequisite validation together. An `artifact_only`
+  package must prove artifact/verifier/approval completeness without claiming
+  a PR receipt. Legacy consumers retain their original Draft PR requirement.
+- Separate provider-independent identity validation from live admission
+  inside existing owners. A provider-free fixture can validate composition
+  in CI, but cannot acquire live authority or seal external scientific
+  evidence. Live admission still checks current lease, revocation, executor,
+  binary, workspace, credential confinement, and finite spend at dispatch.
+- Consolidate recoverable preflight findings and their existing-owner next
+  actions in the coordinator; do not introduce a second approval or budget
+  service. A preflight success is not a reusable spawn permit: mutable facts
+  are rechecked immediately before the effect to prevent TOCTOU races.
+
+Acceptance for that follow-up requires old-freeze replay compatibility,
+SQLite/PostgreSQL parity, output-mode mismatch rejection, wrong-model and
+stale-lease negative tests, CI/live separation, and restart tests proving no
+duplicate effects. Retain the prior versioned readers and evidence so rollback
+does not rewrite completed experiments. None of these proposed broader
+changes is a prerequisite for running the currently authorized freeze.
 
 ## Merge-dispatch recovery and emergency-stop contract
 

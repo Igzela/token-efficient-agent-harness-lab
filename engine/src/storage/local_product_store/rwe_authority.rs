@@ -658,6 +658,27 @@ fn redact_lease_from_run_view(mut row: Value) -> Value {
 }
 
 impl LocalProductStore {
+    /// Read and validate a prerequisite with the same owner used by RWE v2
+    /// issuance. This is read-only and does not issue experiment authority.
+    pub(crate) fn validated_rwe_prerequisite_evidence(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        product_task_id: &str,
+        source_revision: &str,
+    ) -> Result<Value, String> {
+        let evidence = self.get_product_task_terminal_evidence(product_task_id)?;
+        validate_golden_path_prerequisite_for_rwe_v2(
+            &evidence,
+            product_task_id,
+            principal.tenant_id(),
+        )?;
+        if evidence.get("source_revision").and_then(Value::as_str) != Some(source_revision) {
+            return Err(
+                "golden_path_prerequisite source revision does not match frozen target".into(),
+            );
+        }
+        Ok(evidence)
+    }
     /// Authenticated-only RWE authorization creation. Recomputes canonical body/hash inside
     /// the owner; caller-supplied body_sha is never trusted.
     pub fn issue_rwe_run_authorization(
@@ -911,15 +932,15 @@ impl LocalProductStore {
                     .ok_or("frozen protocol budget_point_id missing")
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let max_total_provider_requests = run_level
+        let base_max_total_provider_requests = run_level
             .get("max_total_provider_requests")
             .and_then(Value::as_u64)
             .ok_or("frozen schedule max_total_provider_requests missing")?;
-        let max_total_tokens = run_level
+        let base_max_total_tokens = run_level
             .get("max_total_tokens")
             .and_then(Value::as_u64)
             .ok_or("frozen schedule max_total_tokens missing")?;
-        let max_wall_time_ms = run_level
+        let base_max_wall_time_ms = run_level
             .get("max_wall_time_ms")
             .and_then(Value::as_u64)
             .ok_or("frozen schedule max_wall_time_ms missing")?;
@@ -940,6 +961,16 @@ impl LocalProductStore {
             .unwrap_or(crate::rwe::campaign_package::RWE_DEEPSEEK_V2_PACKAGE_ID);
         let package = crate::rwe::campaign_package::resolve_frozen_campaign_package(package_id)?;
         package.validate()?;
+        let schedule_expansion = package.matrix_schedule_expansion_factor();
+        let max_total_provider_requests = base_max_total_provider_requests
+            .checked_mul(schedule_expansion)
+            .ok_or("campaign package provider-request budget overflow")?;
+        let max_total_tokens = base_max_total_tokens
+            .checked_mul(schedule_expansion)
+            .ok_or("campaign package token budget overflow")?;
+        let max_wall_time_ms = base_max_wall_time_ms
+            .checked_mul(schedule_expansion)
+            .ok_or("campaign package wall-time budget overflow")?;
         let provider_binding = package
             .provider_execution_binding
             .clone()
@@ -3726,7 +3757,10 @@ pub(crate) fn validate_rwe_run_authorization_v2(
     if required_string_field(body, "admitted_executor")? != corpus.admitted_executor {
         return Err("v2 admitted_executor does not match frozen corpus".into());
     }
-    if required_string_field(body, "binary_version")? != corpus.admitted_codex_version {
+    let package_id = body.get("campaign_package_id").and_then(Value::as_str);
+    if package_id.is_none()
+        && required_string_field(body, "binary_version")? != corpus.admitted_codex_version
+    {
         return Err("v2 binary_version does not match frozen corpus admitted version".into());
     }
     let task_ids = body
@@ -3747,7 +3781,6 @@ pub(crate) fn validate_rwe_run_authorization_v2(
     }
     let auth_executor = required_string_field(body, "executor_identity")?;
     let auth_model = required_string_field(body, "model_identity")?;
-    let package_id = body.get("campaign_package_id").and_then(Value::as_str);
     if package_id.is_none() {
         for task in &corpus.tasks {
             if auth_executor != task.executor_identity || auth_model != task.model_identity {
@@ -3790,11 +3823,16 @@ pub(crate) fn validate_rwe_run_authorization_v2(
         None => crate::rwe::campaign_package::canonical_deepseek_v2_package()?,
     };
     let binary_path = required_string_field(body, "binary_path")?;
+    let binary_version = required_string_field(body, "binary_version")?;
     let binary_sha256 = required_string_field(body, "binary_sha256")?;
     if binary_path != package.admitted_binary_path
+        || binary_version != package.admitted_binary_version
         || binary_sha256 != package.admitted_binary_sha256
     {
-        return Err("v2 binary_path/binary_sha256 must bind the campaign package executor".into());
+        return Err(
+            "v2 binary_path/binary_version/binary_sha256 must bind the campaign package executor"
+                .into(),
+        );
     }
     let budget_point_ids = body
         .get("budget_point_ids")
@@ -4036,11 +4074,21 @@ pub(crate) fn validate_rwe_run_authorization_v2(
             )
             .ok_or("cell wall sum overflow")?;
     }
-    if required_u64_field(body, "max_total_provider_requests")? != cell_requests
-        || required_u64_field(body, "max_total_tokens")? != cell_tokens
-        || required_u64_field(body, "max_wall_time_ms")? != cell_wall_ms
+    let schedule_expansion = package.matrix_schedule_expansion_factor();
+    let expected_requests = cell_requests
+        .checked_mul(schedule_expansion)
+        .ok_or("v2 provider-request total overflow")?;
+    let expected_tokens = cell_tokens
+        .checked_mul(schedule_expansion)
+        .ok_or("v2 token total overflow")?;
+    let expected_wall_ms = cell_wall_ms
+        .checked_mul(schedule_expansion)
+        .ok_or("v2 wall-time total overflow")?;
+    if required_u64_field(body, "max_total_provider_requests")? != expected_requests
+        || required_u64_field(body, "max_total_tokens")? != expected_tokens
+        || required_u64_field(body, "max_wall_time_ms")? != expected_wall_ms
     {
-        return Err("v2 totals must equal the frozen schedule cell sums".into());
+        return Err("v2 totals must equal the package-expanded frozen schedule cell sums".into());
     }
     let run_level = schedule
         .body
@@ -4423,6 +4471,42 @@ mod operator_v2_authority_tests {
     }
 
     #[test]
+    fn prerequisite_readback_reuses_validator_and_requires_exact_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalProductStore::new(dir.path().join("prerequisite-readback.db")).unwrap();
+        let principal = operator_principal(&store, "tenant-readback", "readback-key");
+        let foreign = operator_principal(&store, "tenant-other", "foreign-key");
+        seed_gp_prerequisite(&store, "readback-task", "tenant-readback");
+        let evidence = store
+            .get_product_task_terminal_evidence("readback-task")
+            .unwrap();
+        let revision = evidence["source_revision"].as_str().unwrap();
+        assert_eq!(
+            store
+                .validated_rwe_prerequisite_evidence(&principal, "readback-task", revision)
+                .unwrap(),
+            evidence
+        );
+        assert!(store
+            .validated_rwe_prerequisite_evidence(&principal, "readback-task", &"0".repeat(40))
+            .unwrap_err()
+            .contains("source revision"));
+        assert!(store
+            .validated_rwe_prerequisite_evidence(&foreign, "readback-task", revision)
+            .unwrap_err()
+            .contains("tenant"));
+        let mut artifact_only = evidence.clone();
+        artifact_only["output"]["intent"] = json!("artifact_only");
+        assert!(validate_golden_path_prerequisite_for_rwe_v2(
+            &artifact_only,
+            "readback-task",
+            "tenant-readback"
+        )
+        .unwrap_err()
+        .contains("draft_pr"));
+    }
+
+    #[test]
     fn production_v2_issue_admit_happy_path_consumes_one_use_spend() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalProductStore::new_with_clock(dir.path().join("rwe-v2.db"), || {
@@ -4548,6 +4632,80 @@ mod operator_v2_authority_tests {
                 &json!({"board_b": true}),
             )
             .is_err());
+    }
+
+    #[test]
+    fn luna_strategy_package_derives_three_schedule_factors_of_finite_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalProductStore::new_with_clock(dir.path().join("rwe-luna-v3.db"), || {
+            "2026-07-25T12:00:00Z".into()
+        })
+        .unwrap();
+        let tenant = "tenant-rwe-luna-v3";
+        let principal = operator_principal(&store, tenant, "operator-rwe-luna-v3");
+        let prereq = "ptask-luna-v3-seal";
+        seed_gp_prerequisite(&store, prereq, tenant);
+        let frozen = frozen();
+        let issued = store
+            .issue_rwe_run_authorization_v2(
+                &principal,
+                &RweAuthorizationV2IssueRequest {
+                    authorization_id: "rwe-luna-v3-auth".into(),
+                    golden_path_prerequisite_product_task_id: prereq.into(),
+                    expires_at: "2026-08-07T00:00:00Z".into(),
+                    campaign_package_id: Some(
+                        crate::rwe::campaign_package::RWE_CODEX_LUNA_XHIGH_V3_STRATEGY_PACKAGE_ID
+                            .into(),
+                    ),
+                },
+            )
+            .unwrap();
+        let body = &issued["body_json"];
+        assert_eq!(
+            body["campaign_package_id"],
+            crate::rwe::campaign_package::RWE_CODEX_LUNA_XHIGH_V3_STRATEGY_PACKAGE_ID
+        );
+        for field in [
+            "max_total_provider_requests",
+            "max_total_tokens",
+            "max_wall_time_ms",
+        ] {
+            let base = frozen.schedule.body["run_level_budget"][field]
+                .as_u64()
+                .unwrap();
+            assert_eq!(body[field].as_u64(), base.checked_mul(3));
+        }
+        validate_rwe_run_authorization_v2(body, &frozen).unwrap();
+        let mut tampered = body.clone();
+        tampered["max_total_tokens"] = json!(body["max_total_tokens"].as_u64().unwrap() / 3);
+        assert!(validate_rwe_run_authorization_v2(&tampered, &frozen).is_err());
+
+        let legacy_dual = store
+            .issue_rwe_run_authorization_v2(
+                &principal,
+                &RweAuthorizationV2IssueRequest {
+                    authorization_id: "rwe-codex-v1-dual-auth".into(),
+                    golden_path_prerequisite_product_task_id: prereq.into(),
+                    expires_at: "2026-08-07T00:00:00Z".into(),
+                    campaign_package_id: Some(
+                        crate::rwe::campaign_package::RWE_CODEX_SUBSCRIPTION_V1_PACKAGE_ID.into(),
+                    ),
+                },
+            )
+            .unwrap();
+        for field in [
+            "max_total_provider_requests",
+            "max_total_tokens",
+            "max_wall_time_ms",
+        ] {
+            let base = frozen.schedule.body["run_level_budget"][field]
+                .as_u64()
+                .unwrap();
+            assert_eq!(
+                legacy_dual["body_json"][field].as_u64(),
+                base.checked_mul(2)
+            );
+        }
     }
 
     #[test]
