@@ -16366,13 +16366,38 @@ mod tests {
         )
         .is_ok());
 
-        let mut wrong_model = manifest;
+        let mut wrong_model = manifest.clone();
         wrong_model["provider"]["admitted_model"] = json!("gpt-5.6-terra");
         assert!(validate_workspace_provider_journal(
             &journal.to_string(),
             &binding,
             &scheduler,
             &wrong_model,
+        )
+        .is_err());
+
+        let mut wrong_provider = manifest.clone();
+        wrong_provider["provider"]["provider_identity"] = json!("different-provider");
+        assert!(validate_workspace_provider_journal(
+            &journal.to_string(),
+            &binding,
+            &scheduler,
+            &wrong_provider,
+        )
+        .is_err());
+
+        let wrong_kind = json!({
+            "provider": {
+                "provider_identity": "chatgpt-codex-subscription",
+                "provider_kind": "different-kind",
+                "admitted_model": "gpt-5.6-luna"
+            }
+        });
+        assert!(validate_workspace_provider_journal(
+            &journal.to_string(),
+            &binding,
+            &scheduler,
+            &wrong_kind,
         )
         .is_err());
     }
