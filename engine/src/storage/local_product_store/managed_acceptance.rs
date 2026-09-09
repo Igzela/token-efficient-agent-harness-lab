@@ -4315,6 +4315,69 @@ impl LocalProductStore {
             "terminal_at": row.4
         }))
     }
+
+    /// Read-only identity projection for a completed delegated attempt. The
+    /// manifest remains owned by Store; callers receive only the hash-bound
+    /// provider/model/target fields needed to validate a frozen evidence
+    /// consumer, never prompts, outputs, lease tokens, or raw credentials.
+    pub(crate) fn project_delegated_execution_identity_for_attempt(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Value, String> {
+        let manifest_json: Option<String> = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|connection| {
+                connection
+                    .query_row(
+                        "SELECT manifest_json FROM managed_acceptance_delegations
+                         WHERE attempt_id=?1",
+                        params![attempt_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_opt(
+                        "SELECT manifest_json FROM managed_acceptance_delegations
+                         WHERE attempt_id=$1",
+                        &[&attempt_id],
+                    )
+                    .map(|row| row.map(|row| row.get(0)))
+                    .map_err(|error| error.to_string())
+            })?,
+        };
+        let manifest: Value =
+            serde_json::from_str(&manifest_json.ok_or("delegated execution manifest is missing")?)
+                .map_err(|error| format!("delegated execution manifest is invalid: {error}"))?;
+        if manifest
+            .pointer("/execution/attempt_id")
+            .and_then(Value::as_str)
+            != Some(attempt_id)
+        {
+            return Err("delegated execution manifest attempt identity is mismatched".into());
+        }
+        let computed_manifest_sha256 = compute_attempt_manifest_sha256(&manifest)?;
+        if manifest.get("manifest_sha256").and_then(Value::as_str)
+            != Some(computed_manifest_sha256.as_str())
+        {
+            return Err("delegated execution manifest hash is invalid".into());
+        }
+        Ok(json!({
+            "manifest_sha256": manifest.get("manifest_sha256"),
+            "campaign_package_id": manifest.get("campaign_package_id"),
+            "provider_execution_binding": manifest.get("provider_execution_binding"),
+            "models": manifest.get("models"),
+            "target": manifest.get("target"),
+            "execution": manifest.get("execution").map(|execution| json!({
+                "product_task_id": execution.get("product_task_id"),
+                "attempt_id": execution.get("attempt_id"),
+                "workflow_id": execution.get("workflow_id"),
+            })),
+            "output": manifest.get("output"),
+        }))
+    }
 }
 
 /// Kind of authenticated principal. Fixture is test-only.

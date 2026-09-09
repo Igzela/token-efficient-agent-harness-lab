@@ -4806,22 +4806,78 @@ fn mark_cleanup_failed(outcome: &mut CellOutcome, detail: impl Into<String>) {
 /// invalid, or mixed provenance fails closed with an error.
 fn validate_prerequisite_provider_identity(
     projection: &Value,
-    provider_kind: &str,
-    model: &str,
+    manifest_identity: &Value,
+    expected_binding: &crate::rwe::campaign_package::FrozenProviderExecutionBinding,
+    expected_package_id: &str,
+    product_task_id: &str,
+    attempt_id: &str,
 ) -> Result<(), String> {
+    let persisted_binding = manifest_identity
+        .get("provider_execution_binding")
+        .ok_or_else(|| {
+            "completed prerequisite manifest lacks provider execution binding".to_string()
+        })
+        .and_then(crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json)?;
+    if &persisted_binding != expected_binding
+        || manifest_identity
+            .get("campaign_package_id")
+            .and_then(Value::as_str)
+            != Some(expected_package_id)
+        || manifest_identity
+            .pointer("/target/main_sha")
+            .and_then(Value::as_str)
+            != Some(FROZEN_RWE_TARGET_MAIN_SHA)
+        || manifest_identity
+            .pointer("/execution/product_task_id")
+            .and_then(Value::as_str)
+            != Some(product_task_id)
+        || manifest_identity
+            .pointer("/execution/attempt_id")
+            .and_then(Value::as_str)
+            != Some(attempt_id)
+        || manifest_identity.get("models")
+            != Some(&json!({
+                "planner": expected_binding.admitted_model,
+                "implementer": expected_binding.admitted_model,
+                "reviewer": expected_binding.admitted_model,
+            }))
+        || manifest_identity.get("output")
+            != Some(&json!({
+                "draft_pr_only": true,
+                "target_main_write": false,
+                "merge": false,
+                "auto_merge": false,
+            }))
+    {
+        return Err(
+            "completed prerequisite manifest does not match the exact frozen Codex binding".into(),
+        );
+    }
     let requests = projection
         .pointer("/provider_execution/requests")
         .and_then(Value::as_array)
         .filter(|requests| !requests.is_empty())
         .ok_or("completed prerequisite lacks confirmed provider requests")?;
+    if requests.len() != 3 {
+        return Err("completed prerequisite provider request route is not exact".into());
+    }
     for request in requests {
-        if request.get("provider_kind").and_then(Value::as_str) != Some(provider_kind)
-            || request.get("requested_model").and_then(Value::as_str) != Some(model)
-            || request.get("resolved_model").and_then(Value::as_str) != Some(model)
-            || request.pointer("/usage/model").and_then(Value::as_str) != Some(model)
+        if request.get("provider_identity").and_then(Value::as_str)
+            != Some(expected_binding.provider_identity.as_str())
+            || request.get("provider_kind").and_then(Value::as_str)
+                != Some(expected_binding.provider_kind.as_str())
+            || request.get("protocol").and_then(Value::as_str)
+                != Some(expected_binding.protocol.as_str())
+            || request.get("requested_model").and_then(Value::as_str)
+                != Some(expected_binding.admitted_model.as_str())
+            || request.get("resolved_model").and_then(Value::as_str)
+                != Some(expected_binding.admitted_model.as_str())
+            || request.pointer("/usage/model").and_then(Value::as_str)
+                != Some(expected_binding.admitted_model.as_str())
         {
             return Err(
-                "completed prerequisite provider/model differs from selected freeze".into(),
+                "completed prerequisite provider route or model differs from selected freeze"
+                    .into(),
             );
         }
     }
@@ -6955,6 +7011,21 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
                 "prerequisite attempt requires provider reconciliation; preserved task {product_task_id}"
             ));
         }
+        let intake_contract_matches = persisted_task
+            .get("intake_contract_sha256")
+            .and_then(Value::as_str)
+            == Some(validated.intake_contract_sha256.as_str());
+        if !intake_contract_matches
+            && !matches!(
+                status,
+                Some("failed" | "cancelled" | "killed" | "outcome_unknown")
+            )
+        {
+            return Err(
+                "persisted prerequisite ProductTask does not match the exact frozen intake contract"
+                    .into(),
+            );
+        }
         if matches!(status, Some("completed" | "workspace_bound")) {
             if persisted_task.get("output_intent").and_then(Value::as_str) != Some("draft_pr")
                 || persisted_task
@@ -7083,10 +7154,17 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
         if store_evidence_transport_provenance(&projection)? != "external" {
             return Err("completed prerequisite lacks external provider provenance".into());
         }
+        let manifest_identity =
+            store.project_delegated_execution_identity_for_attempt(&ids.delegated_attempt_id)?;
+        let expected_binding =
+            package.provider_execution_binding_for_model(&package.admitted_model)?;
         validate_prerequisite_provider_identity(
             &projection,
-            &package.provider_kind,
-            &package.admitted_model,
+            &manifest_identity,
+            &expected_binding,
+            &package.package_id,
+            &product_task_id,
+            &ids.delegated_attempt_id,
         )?;
         return Ok(sort_value(&json!({
             "schema_version": "codex_golden_path_prerequisite.v1",
@@ -9182,33 +9260,84 @@ mod tests {
     }
 
     #[test]
-    fn completed_prerequisite_requires_exact_provider_and_model() {
+    fn completed_prerequisite_requires_exact_codex_binding_and_model() {
+        let package =
+            crate::rwe::campaign_package::canonical_codex_luna_xhigh_v2_package().unwrap();
+        let binding = package
+            .provider_execution_binding_for_model(&package.admitted_model)
+            .unwrap();
+        let manifest_identity = json!({
+            "campaign_package_id": package.package_id.clone(),
+            "provider_execution_binding": binding.to_json(),
+            "models": {
+                "planner": package.admitted_model.clone(),
+                "implementer": package.admitted_model.clone(),
+                "reviewer": package.admitted_model.clone(),
+            },
+            "target": {"main_sha": FROZEN_RWE_TARGET_MAIN_SHA},
+            "execution": {"product_task_id": "ptask", "attempt_id": "attempt"},
+            "output": {
+                "draft_pr_only": true,
+                "target_main_write": false,
+                "merge": false,
+                "auto_merge": false,
+            },
+        });
         let request = json!({
-            "provider_kind": "codex-subscription",
+            "provider_identity": "chatgpt-codex-subscription",
+            "provider_kind": "chatgpt_subscription",
+            "protocol": "openai_compatible",
             "requested_model": "gpt-5.6-luna",
             "resolved_model": "gpt-5.6-luna",
             "usage": {"model": "gpt-5.6-luna"}
         });
-        let projection = json!({"provider_execution": {"requests": [request.clone()]}});
+        let projection = json!({
+            "provider_execution": {
+                "requests": [request.clone(), request.clone(), request.clone()]
+            }
+        });
         let validate = |value: &Value| {
-            validate_prerequisite_provider_identity(value, "codex-subscription", "gpt-5.6-luna")
+            validate_prerequisite_provider_identity(
+                value,
+                &manifest_identity,
+                &binding,
+                &package.package_id,
+                "ptask",
+                "attempt",
+            )
         };
         assert!(validate(&projection).is_ok());
         for pointer in [
+            "/provider_identity",
             "/provider_kind",
+            "/protocol",
             "/requested_model",
             "/resolved_model",
             "/usage/model",
         ] {
             let mut wrong = request.clone();
             *wrong.pointer_mut(pointer).unwrap() = json!("different-identity");
-            assert!(validate(
-                &json!({"provider_execution": {"requests": [request.clone(), wrong]}})
-            )
+            assert!(validate(&json!({
+                "provider_execution": {
+                    "requests": [request.clone(), request.clone(), wrong]
+                }
+            }))
             .is_err());
         }
         assert!(validate(&json!({"provider_execution": {"requests": []}})).is_err());
         assert!(validate(&json!({})).is_err());
+
+        let mut wrong_manifest = manifest_identity.clone();
+        wrong_manifest["provider_execution_binding"]["reasoning_effort"] = json!("low");
+        assert!(validate_prerequisite_provider_identity(
+            &projection,
+            &wrong_manifest,
+            &binding,
+            &package.package_id,
+            "ptask",
+            "attempt",
+        )
+        .is_err());
     }
 
     #[test]
