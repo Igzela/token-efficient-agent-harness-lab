@@ -638,6 +638,36 @@ fn failed_without_process(
     }
 }
 
+/// Use only after the Store has consumed the one-use managed Codex lease and
+/// the launcher still proves that no gateway forwarding or child spawn began.
+fn failed_after_store_lease_before_child(
+    domain: &str,
+    message: String,
+    start: std::time::Instant,
+) -> NodeExecutionOutput {
+    let mut output = failed_without_process(
+        "codex_cli",
+        domain,
+        message,
+        start.elapsed().as_millis() as i64,
+    );
+    output.process_outcome = Some(ProcessOutcome::store_lease_consumed_before_child());
+    output
+}
+
+// Use only before store spawn admission returns a lease. The general failure
+// helper also handles post-execution settlement failures and cannot attest this.
+fn refused_before_codex_spawn(message: String, start: std::time::Instant) -> NodeExecutionOutput {
+    let mut output = failed_without_process(
+        "codex_cli",
+        "cli_execution_authority_invalid",
+        message,
+        start.elapsed().as_millis() as i64,
+    );
+    output.process_outcome = Some(ProcessOutcome::admission_refused_before_spawn());
+    output
+}
+
 fn validate_claude_execution_authority(
     input: &NodeExecutionInput,
     admission: &ClaudeCodeAdmission,
@@ -1115,32 +1145,34 @@ fn execute_product_codex_with_budget_gateway(
     let lease = match store.admit_managed_codex_spawn(&facts) {
         Ok(lease) => lease,
         Err(error) => {
-            return failed_without_process(
-                "codex_cli",
-                "cli_execution_authority_invalid",
-                format!("managed Codex store admission rejected: {error}"),
-                start.elapsed().as_millis() as i64,
-            );
+            // Keep a bounded category, not arbitrary Store errors containing
+            // workspace paths. This branch precedes gateway/child creation.
+            let reason = if error == "managed Codex store-owned node spend binding is missing" {
+                "managed Codex spawn spend binding is missing"
+            } else {
+                "managed Codex store spawn admission rejected"
+            };
+            return refused_before_codex_spawn(reason.to_string(), start);
         }
     };
     let output = match authority_from_managed_codex_spawn_lease(&lease) {
         Ok(authority) => execute_product_codex_after_store_admission(
             bin_path, cwd, prompt, start, admission, store, &lease, authority,
         ),
-        Err(error) => failed_without_process(
-            "codex_cli",
+        Err(error) => failed_after_store_lease_before_child(
             "cli_execution_authority_invalid",
             format!("managed Codex store-issued authority is invalid: {error}"),
-            start.elapsed().as_millis() as i64,
+            start,
         ),
     };
     if let Err(error) = terminalize_managed_codex_spawn_output(store, &lease, &output) {
-        return failed_without_process(
-            "codex_cli",
-            "cli_execution_authority_invalid",
-            format!("managed Codex attempt lease terminalization failed: {error}"),
-            start.elapsed().as_millis() as i64,
-        );
+        let mut terminal_failure = output;
+        terminal_failure.status = "failed".into();
+        terminal_failure.error_domain = Some("cli_attempt_terminalization_failed".into());
+        terminal_failure.error_message = Some(format!(
+            "managed Codex attempt lease terminalization failed: {error}"
+        ));
+        return terminal_failure;
     }
     output
 }
@@ -1205,23 +1237,24 @@ fn failed_after_pre_child_managed_codex_start_cleanup(
 fn failed_after_pre_child_managed_codex_cleanup_result(
     cleanup_complete: bool,
     stage: &'static str,
-    message: String,
+    _message: String,
     start: std::time::Instant,
 ) -> NodeExecutionOutput {
     let (error_domain, message) = if cleanup_complete {
-        ("cli_execution_authority_invalid", message)
+        // Keep pre-child authority details bounded.  The detailed launch or
+        // gateway error can contain host capability and path information;
+        // callers only need the stable blocker class before a child exists.
+        (
+            "cli_execution_authority_invalid",
+            format!("managed Codex owner-derived preflight blocked: blocked_{stage}"),
+        )
     } else {
         (
             "cli_execution_cleanup_incomplete",
             format!("managed Codex pre-child cleanup incomplete after {stage}"),
         )
     };
-    failed_without_process(
-        "codex_cli",
-        error_domain,
-        message,
-        start.elapsed().as_millis() as i64,
-    )
+    failed_after_store_lease_before_child(error_domain, message, start)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1238,11 +1271,10 @@ fn execute_product_codex_after_store_admission(
     let upstream_auth =
         super::codex_budget_authority::CodexUpstreamAuth::resolve_parent_credential();
     let Some(upstream_auth) = upstream_auth else {
-        return failed_without_process(
-            "codex_cli",
+        return failed_after_store_lease_before_child(
             "cli_execution_authority_invalid",
             "product-managed Codex budget mediation requires parent-held upstream credential (ACP_CODEX_UPSTREAM_API_KEY, OPENAI_API_KEY, or ChatGPT subscription auth.json)".to_string(),
-            start.elapsed().as_millis() as i64,
+            start,
         );
     };
     // Provider identity is copied only from the consumed spend body.  The
@@ -1261,13 +1293,12 @@ fn execute_product_codex_after_store_admission(
         Path::new(super::codex_mediation_admission::BUBBLEWRAP_BIN).is_file(),
     );
     if !capability.admission_class.allows_mediated_product_launch() {
-        return failed_without_process(
-            "codex_cli",
+        return failed_after_store_lease_before_child(
             "cli_execution_authority_invalid",
             capability
                 .remaining_blocker
                 .unwrap_or_else(|| "codex mediation admission is blocked".to_string()),
-            start.elapsed().as_millis() as i64,
+            start,
         );
     }
 
@@ -2246,6 +2277,27 @@ mod tests {
         ProcessOutcome::exited(0)
     }
 
+    #[test]
+    fn store_admission_refusal_is_distinct_from_unavailable_process_evidence() {
+        let refusal = refused_before_codex_spawn(
+            "managed Codex spawn spend binding is missing".into(),
+            std::time::Instant::now(),
+        );
+        assert_eq!(
+            refusal.process_outcome.unwrap().boundary_mapping().effect,
+            crate::node_executor::ProcessEffectState::NotStarted,
+        );
+        // The same error domain is also used for settlement errors after
+        // execution. It must never itself imply that execution did not start.
+        let settlement_failure = failed_without_process(
+            "codex_cli",
+            "cli_execution_authority_invalid",
+            "managed Codex attempt lease terminalization failed".into(),
+            1,
+        );
+        assert!(settlement_failure.process_outcome.is_none());
+    }
+
     #[cfg(unix)]
     fn fake_codex(workspace: &Path, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -2393,6 +2445,14 @@ mod tests {
 
     #[cfg(unix)]
     fn prepare_managed_codex_execution_fixture(root: &Path) -> ManagedCodexExecutionFixture {
+        prepare_managed_codex_execution_fixture_with_binding(root, true)
+    }
+
+    #[cfg(unix)]
+    fn prepare_managed_codex_execution_fixture_with_binding(
+        root: &Path,
+        bind_spend: bool,
+    ) -> ManagedCodexExecutionFixture {
         let repo = root.join("target");
         let revision = init_product_repo(&repo);
         let store = Arc::new(LocalProductStore::new(root.join("store.db")).unwrap());
@@ -2559,9 +2619,11 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        store
-            .bind_managed_codex_spend_to_product_node(&principal, &spend_authorization_id)
-            .unwrap();
+        if bind_spend {
+            store
+                .bind_managed_codex_spend_to_product_node(&principal, &spend_authorization_id)
+                .unwrap();
+        }
 
         ManagedCodexExecutionFixture {
             store,
@@ -2575,6 +2637,49 @@ mod tests {
             attempt_id,
             spend_authorization_id,
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_store_binding_refuses_before_gateway_or_child() {
+        let _guard = env_lock();
+        let _env = ProductTaskOutputEnvGuard::enable();
+        let root = tempfile::tempdir().unwrap();
+        let fixture = prepare_managed_codex_execution_fixture_with_binding(root.path(), false);
+        let executor = CliNodeExecutor::admitted_codex(
+            fixture.admission.clone(),
+            Some(fixture.admission.binary_path.to_string_lossy().into_owned()),
+            300_000,
+        )
+        .with_managed_acceptance_store(Arc::clone(&fixture.store));
+        let tick = fixture
+            .store
+            .tick_with_executor(&fixture.run_id, "scheduler", 1, &executor)
+            .unwrap();
+        assert_eq!(
+            tick["result"]["error_domain"],
+            "cli_execution_authority_invalid"
+        );
+        assert_eq!(
+            tick["result"]["error_message"],
+            "managed Codex spawn spend binding is missing"
+        );
+        assert_eq!(
+            tick["result"]["process_outcome"]["state"],
+            "admission_refused_before_spawn"
+        );
+        assert!(!fixture.marker.exists());
+        assert!(fixture
+            .store
+            .get_managed_acceptance_attempt(&fixture.attempt_id)
+            .unwrap()
+            .is_none());
+        let spend = fixture
+            .store
+            .get_managed_acceptance_spend_authorization(&fixture.spend_authorization_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(spend["status"], "active");
     }
 
     #[cfg(unix)]
@@ -2811,6 +2916,13 @@ mod tests {
             output.error_domain.as_deref(),
             Some("cli_execution_cleanup_incomplete")
         );
+        assert_eq!(
+            output
+                .process_outcome
+                .as_ref()
+                .map(|value| value.state.as_str()),
+            Some("store_lease_consumed_before_child")
+        );
         assert!(!journal_path.exists());
         assert!(!fixture.marker.exists());
         assert!(!fixture.version_probe_credential_marker.exists());
@@ -2886,6 +2998,13 @@ mod tests {
         assert_eq!(
             output.error_domain.as_deref(),
             Some("cli_execution_cleanup_incomplete")
+        );
+        assert_eq!(
+            output
+                .process_outcome
+                .as_ref()
+                .map(|value| value.state.as_str()),
+            Some("store_lease_consumed_before_child")
         );
         assert!(!fixture.marker.exists());
         assert!(!fixture.version_probe_credential_marker.exists());

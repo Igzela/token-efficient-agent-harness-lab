@@ -13,17 +13,22 @@
 
 use std::fs;
 use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use serde_json::{json, Value};
 
 use super::codex_mediation_admission::{
-    seal_untrusted_helper_environment, unprivileged_user_ns_available, CodexAdmissionClass,
-    BUBBLEWRAP_BIN,
+    seal_untrusted_helper_environment, shell_single_quote, trusted_socat_path,
+    unprivileged_user_ns_available, CodexAdmissionClass, BUBBLEWRAP_BIN,
+    SANDBOX_GATEWAY_LISTEN_PORT, SANDBOX_GATEWAY_SOCKET,
 };
 use super::config::ADMITTED_CODEX_VERSION;
 
@@ -283,12 +288,10 @@ pub fn probe_unshare_net_available() -> CapabilityEvidenceClass {
     }
 }
 
-/// Executed probe: under `--unshare-net`, external TCP fails and a parent Unix
-/// gateway socket mounted into the sandbox remains reachable. Host loopback TCP
-/// (parent TCP gateway) is not reachable from the netns.
-///
-/// This proves a *feasible unprivileged design* (unix bridge + unshare-net). It
-/// does **not** by itself claim the product launch path currently enforces it.
+/// Execute the same transport shape as production: bwrap creates the network
+/// namespace, socat listens on child loopback, and the parent Unix endpoint
+/// forwards into a local fixture. This is provider-free and proves the child
+/// can reach its gateway without reaching host loopback or arbitrary TCP.
 pub fn probe_loopback_only_unix_bridge_design() -> Result<NetworkBridgeProbeResult, String> {
     if !bwrap_present() {
         return Err("bwrap unavailable".into());
@@ -299,30 +302,38 @@ pub fn probe_loopback_only_unix_bridge_design() -> Result<NetworkBridgeProbeResu
     ) {
         return Err("unshare-net unavailable on this host".into());
     }
+    let socat_path = trusted_socat_path()?;
 
     let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let sock_path = dir.path().join("gateway.sock");
     let _ = fs::remove_file(&sock_path);
 
     let listener = UnixListener::bind(&sock_path).map_err(|e| format!("unix bind failed: {e}"))?;
+    fs::set_permissions(&sock_path, fs::Permissions::from_mode(0o600))
+        .map_err(|e| format!("unix permissions: {e}"))?;
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("unix nonblocking: {e}"))?;
 
-    let accept_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let accept_flag_thread = std::sync::Arc::clone(&accept_flag);
+    let accept_flag = Arc::new(AtomicBool::new(false));
+    let accept_flag_thread = Arc::clone(&accept_flag);
     let accept_handle = thread::spawn(move || {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while std::time::Instant::now() < deadline {
             match listener.accept() {
                 Ok((mut stream, _)) => {
-                    let mut buf = [0u8; 256];
-                    let _ = stream.read(&mut buf);
-                    let _ = stream.write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
-                    );
-                    accept_flag_thread.store(true, std::sync::atomic::Ordering::SeqCst);
-                    break;
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
+                    let mut buf = [0u8; 4096];
+                    match stream.read(&mut buf) {
+                        Ok(read) if read > 0 => {
+                            let _ = stream.write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
+                            );
+                            accept_flag_thread.store(true, Ordering::SeqCst);
+                            break;
+                        }
+                        _ => {}
+                    }
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(20));
@@ -332,32 +343,69 @@ pub fn probe_loopback_only_unix_bridge_design() -> Result<NetworkBridgeProbeResu
         }
     });
 
-    // Child: unshare-net — external blocked; host TCP loopback isolated; unix ok.
+    let host_loopback_sentinel = TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| format!("host loopback sentinel bind failed: {e}"))?;
+    let host_loopback_port = host_loopback_sentinel
+        .local_addr()
+        .map_err(|e| format!("host loopback sentinel address failed: {e}"))?
+        .port();
+
+    // Child: unshare-net — external blocked; host TCP loopback isolated; the
+    // child TCP endpoint reaches the parent fixture through the Unix bridge.
+    let socat = shell_single_quote(&socat_path.to_string_lossy());
+    let socket = shell_single_quote(SANDBOX_GATEWAY_SOCKET);
     let script = format!(
-        r#"python3 - <<'PY'
+        r#"set -eu
+{socat} 'TCP4-LISTEN:{bridge_port},bind=127.0.0.1,reuseaddr,fork' 'UNIX-CONNECT:{socket}' >/dev/null 2>&1 &
+bridge_pid=$!
+cleanup() {{
+    kill "$bridge_pid" 2>/dev/null || true
+    wait "$bridge_pid" 2>/dev/null || true
+}}
+trap cleanup EXIT HUP INT TERM
+python3 - <<'PY'
 import socket
-path = {sock_path:?}
-# external
+import sys
+import time
+
+external_blocked = False
 try:
-    s = socket.socket(); s.settimeout(1.0); s.connect(("1.1.1.1", 443)); print("EXTERNAL_OK")
+    s = socket.socket(); s.settimeout(0.5); s.connect(("1.1.1.1", 443)); print("EXTERNAL_OK"); s.close()
 except Exception as e:
+    external_blocked = True
     print("EXTERNAL_BLOCKED", type(e).__name__)
-# host loopback TCP (should not reach parent services in a fresh netns)
+
+host_loopback_blocked = False
 try:
-    s = socket.socket(); s.settimeout(1.0); s.connect(("127.0.0.1", 9)); print("HOST_LOOPBACK_TCP_OK")
+    s = socket.socket(); s.settimeout(0.5); s.connect(("127.0.0.1", {host_loopback_port})); print("HOST_LOOPBACK_TCP_OK"); s.close()
 except Exception as e:
+    host_loopback_blocked = True
     print("HOST_LOOPBACK_TCP_BLOCKED", type(e).__name__)
-# parent unix gateway
-try:
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(2.0)
-    s.connect(path)
-    s.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
-    data = s.recv(64)
-    print("UNIX_GATEWAY_OK" if data.startswith(b"HTTP/1.1 200") else "UNIX_GATEWAY_BAD")
-except Exception as e:
-    print("UNIX_GATEWAY_FAIL", type(e).__name__, e)
+
+unix_gateway_ok = False
+for _ in range(50):
+    s = None
+    try:
+        s = socket.create_connection(("127.0.0.1", {bridge_port}), timeout=0.5)
+        s.sendall(b"GET /v1/models HTTP/1.1\r\nHost: bridge\r\nConnection: close\r\n\r\n")
+        data = s.recv(128)
+        if data.startswith(b"HTTP/1.1 200"):
+            unix_gateway_ok = True
+            print("UNIX_GATEWAY_OK")
+            break
+    except Exception:
+        time.sleep(0.02)
+    finally:
+        if s is not None:
+            s.close()
+if not unix_gateway_ok:
+    print("UNIX_GATEWAY_FAIL")
+sys.exit(0 if external_blocked and host_loopback_blocked and unix_gateway_ok else 1)
 PY"#,
-        sock_path = sock_path
+        bridge_port = SANDBOX_GATEWAY_LISTEN_PORT,
+        host_loopback_port = host_loopback_port,
+        socat = socat,
+        socket = socket,
     );
 
     let mut cmd = Command::new(BUBBLEWRAP_BIN);
@@ -384,7 +432,7 @@ PY"#,
         .arg("/tmp")
         .arg("--ro-bind")
         .arg(&sock_path)
-        .arg(&sock_path)
+        .arg(SANDBOX_GATEWAY_SOCKET)
         .arg("--clearenv")
         .arg("--setenv")
         .arg("PATH")
@@ -404,7 +452,10 @@ PY"#,
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if !output.status.success() {
-        if stderr.contains("uid map") || stderr.contains("Permission denied") {
+        if stderr.contains("uid map")
+            || stderr.contains("Permission denied")
+            || stderr.contains("Operation not permitted")
+        {
             return Err(format!("BLOCKED:bwrap_userns_unavailable: {stderr}"));
         }
         return Err(format!(
@@ -415,8 +466,7 @@ PY"#,
 
     let external_blocked = stdout.contains("EXTERNAL_BLOCKED");
     let host_loopback_isolated = stdout.contains("HOST_LOOPBACK_TCP_BLOCKED");
-    let unix_ok =
-        stdout.contains("UNIX_GATEWAY_OK") && accept_flag.load(std::sync::atomic::Ordering::SeqCst);
+    let unix_ok = stdout.contains("UNIX_GATEWAY_OK") && accept_flag.load(Ordering::SeqCst);
 
     Ok(NetworkBridgeProbeResult {
         external_egress_blocked: external_blocked,
@@ -457,12 +507,9 @@ impl NetworkBridgeProbeResult {
 
 /// Investigate loopback-only network confinement under the supported host profile.
 ///
-/// Product launch currently shares the host network and relies on credential
-/// non-bypass (session token only). A feasible unprivileged design exists
-/// (`bwrap --unshare-net` + parent Unix gateway socket + optional in-sandbox
-/// TCP→Unix bridge for OPENAI_BASE_URL). Closing the product residual requires
-/// shipping that enforcement on the launch path without elevated privileges,
-/// global firewall mutation, or a second privileged runtime owner.
+/// Product launch uses `bwrap --unshare-net` plus an in-sandbox TCP→Unix bridge
+/// to the parent-owned budget gateway. This function re-probes that transport
+/// provider-free and keeps the boolean input tied to the actual launch owner.
 pub fn investigate_network_confinement(
     product_launch_enforces_loopback_only: bool,
 ) -> NetworkConfinementFinding {
@@ -541,9 +588,8 @@ pub fn investigate_network_confinement(
             }
         };
 
-    // Product residual: design may be feasible, but full admission requires the
-    // product launch path to enforce loopback-only. Current product path uses
-    // shared host network (credential non-bypass only) unless explicitly wired.
+    // Product residual: the executed probe must pass and the actual product
+    // launch owner must report that it wires this same boundary.
     let loopback_only_enforced = product_launch_enforces_loopback_only && design_feasible;
     let classification = if loopback_only_enforced {
         CapabilityEvidenceClass::Proved
@@ -564,7 +610,7 @@ pub fn investigate_network_confinement(
     let reason = if loopback_only_enforced {
         "Loopback-only network confinement is enforced on the product launch path and proved by executed bypass probes.".into()
     } else if design_feasible {
-        "Executed probes prove an unprivileged design (unshare-net + parent Unix gateway) can block external egress while preserving gateway reachability, but the product mediated launch path still shares the host network (credential non-bypass only). Residual NO-GO until product launch enforces loopback-only with fail-closed host-capability gating.".into()
+        "Executed probes prove the product transport (unshare-net + TCP-to-Unix parent gateway) blocks external egress while preserving gateway reachability. Network residual is closed; other residual axes may still keep the overall admission NO-GO.".into()
     } else {
         format!(
             "Loopback-only network confinement is not proved on this host profile (unshare_net={}, design_feasible={design_feasible}). Residual NO-GO.",
@@ -681,7 +727,7 @@ pub fn investigate_user_pid_namespace() -> UserPidNamespaceFinding {
 /// Evaluate residual admission for the current host and product launch posture.
 ///
 /// `product_launch_enforces_loopback_only` must reflect the actual mediated
-/// launch path (currently false on main after PE7-CODEX-FULL-MEDIATION-ADMISSION-REPAIR-1).
+/// launch path, not a configured URL or a design-only probe.
 pub fn evaluate_residual_admission(
     product_launch_enforces_loopback_only: bool,
 ) -> ResidualAdmissionFinding {
@@ -746,9 +792,10 @@ pub fn evaluate_residual_admission(
     }
 }
 
-/// Convenience: current product launch does not enforce loopback-only netns.
+/// Convenience: the current product launcher wires the enforced netns + Unix
+/// bridge; the host capability and transport are still re-probed below.
 pub fn evaluate_residual_admission_for_current_product() -> ResidualAdmissionFinding {
-    evaluate_residual_admission(false)
+    evaluate_residual_admission(true)
 }
 
 #[cfg(test)]

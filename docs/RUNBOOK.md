@@ -696,9 +696,16 @@ existing `CodexBudgetGateway` and Store/RWE owners. Do not use `codex exec` as
 an agent loop for a transport smoke, and do not persist credentials, raw
 prompts, raw outputs, or transcripts.
 
+The managed Codex host profile requires trusted root-owned `/usr/bin/bwrap`
+and `/usr/bin/socat`. Preflight must execute the network-namespace/Unix-bridge
+probe; file presence alone is insufficient. A missing or failed capability
+refuses before child spawn and must not silently fall back to shared host
+networking.
+
 The bounded route is:
 
-1. Run one minimal subscription smoke through the existing gateway. Record the
+1. Reuse an already verified subscription smoke for the same transport and
+   identity; otherwise run one minimal smoke through the existing gateway. Record the
    exact model, subscription usage/quota observation, gateway journal/effect
    result, credential-isolation facts, and any operational failure. A smoke is
    transport evidence only; it is not experimental evidence.
@@ -708,27 +715,95 @@ The bounded route is:
    Keep the repair on one focused Draft PR and use the normal exact-head
    review, canonical CI, guarded merge, and accepted-main readback. Do not
    create a maintenance Mission, Stage, or WorkCard for the repair.
-3. Revalidate the unchanged frozen experiment and execute the canonical
-   `1x2x1`: one Harness, two frozen Matrix Models, one baseline Strategy, the
+3. Resolve missing prerequisites before the experiment call. Search every
+   existing app-owned Store and durable-evidence owner for a real prerequisite
+   whose identity and source revision exactly match the frozen campaign. If it
+   is absent, invoke the existing Product Golden Path with the exact frozen
+   target revision and existing workspace, verifier, approval, and terminal-
+   evidence owners to create the smallest real prerequisite. Do not create a
+   synthetic row, copy fixture evidence, edit a revision, hand-write terminal
+   evidence, or bypass Store. A prerequisite is complete only when its
+   trustworthy terminal evidence with `passed`, `accepted`, or
+   `evidence_recorded` verification status, an independent approval identity,
+   complete artifact/output/evidence receipts, managed
+   executor/provider/model/binary identity, and non-fixture provenance are
+   persisted by the canonical owners. The prerequisite is not a scientific
+   result. The existing global stop taxonomy, including emergency stop,
+   material boundary crossing, and outcome-unknown recovery, remains
+   authoritative for this procedure.
+4. Revalidate the selected frozen experiment and execute its admitted rung.
+   The original `1x2x1` has one Harness, two frozen Matrix Models, one baseline Strategy, the
    same frozen tasks/evaluator/budget/seed/comparability rules. Save redacted
    model output evidence, token usage, latency, provider-call count, retries,
    cost or explicit cost-unavailable state, missingness, verifier result, and
    provenance. A provider operational failure or an unexecuted cell remains an
    operational state; it must not be relabeled as scientific
    `INCOMPARABLE`/`INSUFFICIENT`.
-4. Only after valid comparable evidence is sealed may the operator continue the
-   existing ladder: `1x2x1 -> 1x2x3 -> 2x2x3`.
+   For an explicitly authorized Luna-only revision, select the distinct
+   `rwe-campaign-codex-luna-xhigh-v2` campaign package and `1x1x1` rung;
+   verify the frozen model and
+   reasoning identity and retain the original package. Derive the finite
+   execution envelope from the full schedule through the existing budget
+   owner before admission. A rung's dimensions are not its POST count.
+5. Only after valid comparable evidence is sealed may the operator continue
+   the selected authorized ladder: `1x2x1 -> 1x2x3 -> 2x2x3` for the original
+   package, or `1x1x1 -> 1x1x3` for the Luna-only revision. The extension uses
+   its own `rwe-campaign-codex-luna-xhigh-strategy-v3` authorization so the
+   twelve-cell finite envelope cannot be selected by the four-cell baseline
+   authorization. Never label the latter as a two-model comparison.
 
 This procedure itself creates no provider spend or target-write authority. It
-does not change the evaluator, corpus, scientific question, Strategy, seed,
-comparability contract, provider/model set, call count, or budget envelope.
-Only a new authority owner, boundary expansion, credential action, destructive
-effect, or unreconcilable outcome-unknown state is a pause condition. A small
-amount of glue code between existing owners is not a pause condition.
+does not change the evaluator, corpus, scientific question, Strategy, seed, or
+comparability contract. A different provider/model/reasoning/rung or its
+finite call and budget envelope requires the distinct recorded campaign
+package described above; it never mutates the historical freeze.
+Apply standing recovery authorization as defined in
+[AUTONOMY](AUTONOMY.md#standing-recovery-authorization); do not request it again
+for each routine refresh or authorized finite budget revision.
+For prerequisite recovery, a new authority owner, unauthorized boundary expansion,
+credential action, destructive effect, or unreconcilable outcome-unknown state
+is a pause condition for the affected execution; the existing global stop taxonomy remains authoritative
+and has priority, including genuine emergency stops, material mission/time/
+effect boundaries, and unresolvable safety or external-uncertainty recovery.
+A small amount of glue code between existing owners is not a pause condition.
 
 The research milestone and advancement gates remain owned by
 `docs/ROADMAP.md`; architecture and authority by `docs/ARCHITECTURE.md`; and
 autonomy, testing, review, and merge rules by `docs/AUTONOMY.md`.
+
+### Inspecting an interrupted research ProductTask
+
+Use `rwe-live-baseline inspect-product-task --product-task-id <id>` with the
+CLI's existing database, tenant, and operator-key-id arguments. It opens the
+Store read-only and returns a field-limited task/run/node status projection.
+The `provider_call_performed` flag describes this inspection command, not the
+historical task's provider activity. Inspect the durable provider and gateway
+journals separately for historical effects and usage.
+
+If the read-only Store rejects a non-empty WAL companion, obtain a consistent
+SQLite online backup in a new private temporary location, verify its integrity,
+and inspect that snapshot. Do not remove WAL files or copy only the main DB
+file: either would discard or omit committed evidence.
+
+For a scheduler run already observed as `failed`, `cancelled`, or `killed`,
+`rwe-live-baseline sync-product-task --product-task-id <id>` uses the existing
+ProductTask status owner to synchronize the task projection. It requires a
+same-tenant principal with delegated-execution scope. Validate on the snapshot
+before applying to the original Store. This operation does not execute nodes,
+clean a workspace, settle provider effects, or reopen consumed spend. Preserve
+the provider journal and workspace binding, and verify that their hashes remain
+unchanged. A task becoming `failed` does not resolve an `outcome_unknown`
+provider request; that request still requires affirmative reconciliation.
+
+The Codex `prerequisite` recovery entry reads existing history before checking
+live-provider readiness. With the ProductTask gate enabled and live-run
+disabled, a diagnostic snapshot containing an unsettled request must report
+that reconciliation is required, preserving its journal and attempt state.
+Verify the journal hash and request count against the original after this
+check. This entry is not generally read-only: it may finalize a known failed
+predecessor through Store. Use the snapshot for diagnostics; new admission and
+execution still require live readiness. Do not enable live calls merely to
+inspect an unknown attempt.
 
 ## Release Upgrade and Rollback
 

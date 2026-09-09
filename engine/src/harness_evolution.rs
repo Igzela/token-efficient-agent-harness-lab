@@ -387,6 +387,8 @@ pub struct Mx1ConfinedSubprocessHarnessAdapter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Mx1MatrixRung {
+    OneByOneByOne,
+    OneByOneByThree,
     OneByTwoByOne,
     OneByTwoByThree,
     TwoByTwoByThree,
@@ -395,6 +397,8 @@ pub enum Mx1MatrixRung {
 impl Mx1MatrixRung {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::OneByOneByOne => "1x1x1",
+            Self::OneByOneByThree => "1x1x3",
             Self::OneByTwoByOne => "1x2x1",
             Self::OneByTwoByThree => "1x2x3",
             Self::TwoByTwoByThree => "2x2x3",
@@ -1977,18 +1981,37 @@ pub fn build_mx1_matrix_plan(
         .find(|item| item.descriptor_id == MX1_NO_PROJECTION_STRATEGY_ID)
         .expect("manifest validation requires arm zero");
     let selected_harnesses: Vec<&Mx1HarnessImplementationDescriptor> = match rung {
-        Mx1MatrixRung::OneByTwoByOne | Mx1MatrixRung::OneByTwoByThree => vec![h0],
+        Mx1MatrixRung::OneByOneByOne
+        | Mx1MatrixRung::OneByOneByThree
+        | Mx1MatrixRung::OneByTwoByOne
+        | Mx1MatrixRung::OneByTwoByThree => vec![h0],
         Mx1MatrixRung::TwoByTwoByThree => vec![h0, h1],
     };
     let selected_strategies: Vec<&Mx1StrategyPlanDescriptor> = match rung {
-        Mx1MatrixRung::OneByTwoByOne => vec![s0],
-        Mx1MatrixRung::OneByTwoByThree | Mx1MatrixRung::TwoByTwoByThree => {
-            manifest.strategies.iter().collect()
-        }
+        Mx1MatrixRung::OneByOneByOne | Mx1MatrixRung::OneByTwoByOne => vec![s0],
+        Mx1MatrixRung::OneByOneByThree
+        | Mx1MatrixRung::OneByTwoByThree
+        | Mx1MatrixRung::TwoByTwoByThree => manifest.strategies.iter().collect(),
+    };
+    // These operator rungs select the exact Luna descriptor, never the first
+    // model in a caller-provided ordering. Historical dual-model rungs retain
+    // their full cross product and deterministic identities.
+    let selected_models: Vec<&Mx1ModelPlanDescriptor> = match rung {
+        Mx1MatrixRung::OneByOneByOne | Mx1MatrixRung::OneByOneByThree => vec![manifest
+            .models
+            .iter()
+            .find(|model| model.descriptor_id == MX1_CODEX_LUNA_MODEL_ID)
+            .ok_or_else(|| {
+                mx1_error(
+                    "mx1_matrix_luna_model",
+                    "single-model operator rung requires the exact Luna descriptor",
+                )
+            })?],
+        _ => manifest.models.iter().collect(),
     };
     let mut cells = Vec::new();
     for harness in selected_harnesses {
-        for model in &manifest.models {
+        for model in &selected_models {
             for strategy in &selected_strategies {
                 let identity = Mx1CellIdentity {
                     harness_id: harness.descriptor_id.clone(),
@@ -7199,6 +7222,36 @@ mod tests {
                 .code,
             "mx1_strategy_identity"
         );
+    }
+
+    #[test]
+    fn mx1_luna_only_rungs_select_exact_model_and_reject_plan_expansion() {
+        let manifest = sample_mx1_descriptor_manifest_with_codex_subscription_models();
+        let basis = sha256_hex("luna-operator-common-basis");
+        for (rung, count) in [
+            (Mx1MatrixRung::OneByOneByOne, 1),
+            (Mx1MatrixRung::OneByOneByThree, 3),
+        ] {
+            let plan = build_mx1_matrix_plan(&manifest, rung, "operator-task", 1, &basis).unwrap();
+            assert_eq!(plan.cells.len(), count);
+            assert!(plan
+                .cells
+                .iter()
+                .all(|cell| cell.identity.model_id == MX1_CODEX_LUNA_MODEL_ID
+                    && cell.identity.harness_id == MX1_ARM_ZERO_HARNESS_ID));
+            validate_mx1_matrix_plan(&manifest, &plan).unwrap();
+            let mut expanded = plan.clone();
+            expanded.cells.push(plan.cells[0].clone());
+            assert!(validate_mx1_matrix_plan(&manifest, &expanded).is_err());
+            assert!(build_mx1_matrix_plan(
+                &sample_mx1_descriptor_manifest(),
+                rung,
+                "operator-task",
+                1,
+                &basis
+            )
+            .is_err());
+        }
     }
 
     #[test]

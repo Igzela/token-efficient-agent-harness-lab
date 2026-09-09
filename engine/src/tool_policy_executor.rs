@@ -841,7 +841,11 @@ impl NodeExecutor for ToolPolicyNodeExecutor<'_> {
         }
 
         let mut output = self.inner.execute_node(&enriched_input);
-        if output.status == "failed" {
+        // Only an explicit launcher observation can establish this boundary.
+        // An absent process outcome, or an authority error string, cannot.
+        // The consumed tool receipt is deliberately not reactivated here.
+        let codex_effect_not_started = output.codex_nonretryable_pre_child();
+        if output.status == "failed" && !codex_effect_not_started {
             let inner_domain = output.error_domain.as_deref().unwrap_or("unknown");
             output.error_message = Some(format!(
                 "tool execution began and failed with domain {inner_domain}; effect outcome is unknown"
@@ -1608,6 +1612,118 @@ mod tests {
             Some("cli_workspace_binding_error")
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn codex_pre_spawn_refusal_preserves_reason_without_releasing_receipt() {
+        struct RefusedExecutor;
+        impl NodeExecutor for RefusedExecutor {
+            fn execute_node(&self, _: &NodeExecutionInput) -> NodeExecutionOutput {
+                NodeExecutionOutput {
+                    status: "failed".into(),
+                    executor_type: "codex_cli".into(),
+                    output: None,
+                    error_domain: Some("cli_execution_authority_invalid".into()),
+                    error_message: Some("managed Codex spawn spend binding is missing".into()),
+                    input_tokens: None,
+                    output_tokens: None,
+                    estimated_cost: None,
+                    latency_ms: Some(0),
+                    process_outcome: Some(
+                        crate::node_executor::ProcessOutcome::admission_refused_before_spawn(),
+                    ),
+                    resolved_model: None,
+                }
+            }
+            fn executor_type_name(&self) -> &str {
+                "command"
+            }
+        }
+        let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+        let (run_id, workflow_id) = setup_command_run(&store);
+        store
+            .set_tool_allowlist("locked", &["echo".into()])
+            .unwrap();
+        let executor = ToolPolicyNodeExecutor::command(Arc::new(RefusedExecutor), store.clone());
+        let input = NodeExecutionInput {
+            node_id: "node-tool".into(),
+            task_type: "command".into(),
+            run_id,
+            workflow_id,
+            node_metadata: json!({"profile_id": "locked", "command": "echo approved"}),
+        };
+        let first = executor.execute_node(&input);
+        assert_eq!(
+            first.error_domain.as_deref(),
+            Some("cli_execution_authority_invalid")
+        );
+        assert_eq!(
+            first.error_message.as_deref(),
+            Some("managed Codex spawn spend binding is missing")
+        );
+        assert_eq!(
+            first.process_outcome.unwrap().boundary_mapping().effect,
+            crate::node_executor::ProcessEffectState::NotStarted
+        );
+        let duplicate = executor.execute_node(&input);
+        assert_eq!(
+            duplicate.error_domain.as_deref(),
+            Some("tool_execution_outcome_unknown")
+        );
+        let receipt = store
+            .inspect_tool_execution_authorization(&input.run_id, &input.node_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt["status"], "consumed");
+    }
+
+    #[test]
+    fn consumed_codex_store_lease_before_child_preserves_typed_known_failure() {
+        struct ConsumedBeforeChildExecutor;
+        impl NodeExecutor for ConsumedBeforeChildExecutor {
+            fn execute_node(&self, _: &NodeExecutionInput) -> NodeExecutionOutput {
+                NodeExecutionOutput {
+                    status: "failed".into(),
+                    executor_type: "codex_cli".into(),
+                    output: None,
+                    error_domain: Some("cli_execution_cleanup_incomplete".into()),
+                    error_message: Some("managed Codex pre-child cleanup incomplete".into()),
+                    input_tokens: None,
+                    output_tokens: None,
+                    estimated_cost: None,
+                    latency_ms: Some(0),
+                    process_outcome: Some(
+                        crate::node_executor::ProcessOutcome::store_lease_consumed_before_child(),
+                    ),
+                    resolved_model: None,
+                }
+            }
+            fn executor_type_name(&self) -> &str {
+                "command"
+            }
+        }
+        let store = Arc::new(LocalProductStore::new(":memory:").unwrap());
+        let (run_id, workflow_id) = setup_command_run(&store);
+        store
+            .set_tool_allowlist("locked", &["echo".into()])
+            .unwrap();
+        let executor =
+            ToolPolicyNodeExecutor::command(Arc::new(ConsumedBeforeChildExecutor), store.clone());
+        let output = executor.execute_node(&NodeExecutionInput {
+            node_id: "node-tool".into(),
+            task_type: "command".into(),
+            run_id,
+            workflow_id,
+            node_metadata: json!({"profile_id": "locked", "command": "echo approved"}),
+        });
+        assert_eq!(
+            output.error_domain.as_deref(),
+            Some("cli_execution_cleanup_incomplete")
+        );
+        assert_eq!(
+            output.process_outcome.unwrap().boundary_mapping().effect,
+            crate::node_executor::ProcessEffectState::NotStarted
+        );
     }
 
     #[test]

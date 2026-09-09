@@ -706,6 +706,28 @@ pub struct ProcessOutcome {
 }
 
 impl ProcessOutcome {
+    /// The launcher refused before creating either its gateway or child.
+    /// This is not inferred from a missing exit status or an error message.
+    pub(crate) fn admission_refused_before_spawn() -> Self {
+        Self::failure(
+            "admission_refused_before_spawn",
+            None,
+            "launcher admission rejected before gateway or child creation",
+        )
+    }
+
+    /// Store has consumed the one-use managed attempt lease, while the trusted
+    /// launcher proves that neither gateway forwarding nor child spawn began.
+    /// This phase is terminal for that attempt and must never be scheduler-
+    /// retried, even though the process effect itself is `NotStarted`.
+    pub(crate) fn store_lease_consumed_before_child() -> Self {
+        Self::failure(
+            "store_lease_consumed_before_child",
+            None,
+            "store attempt lease consumed before gateway forwarding or child spawn",
+        )
+    }
+
     pub fn exited(exit_code: i32) -> Self {
         Self {
             schema_version: "process_outcome.v1".to_string(),
@@ -762,6 +784,13 @@ impl ProcessOutcome {
     /// because this record cannot prove that no effect was sent.
     pub fn boundary_mapping(&self) -> ProcessBoundaryMapping {
         let effect = match self.state.as_str() {
+            "admission_refused_before_spawn" | "store_lease_consumed_before_child"
+                if self.schema_version == "process_outcome.v1"
+                    && self.exit_code.is_none()
+                    && self.signal.is_none() =>
+            {
+                ProcessEffectState::NotStarted
+            }
             "spawn_failed"
             | "process_tree_containment_unavailable"
             | "process_tree_containment_unsupported"
@@ -850,6 +879,19 @@ pub struct NodeExecutionOutput {
 }
 
 impl NodeExecutionOutput {
+    pub(crate) fn codex_nonretryable_pre_child(&self) -> bool {
+        self.executor_type == "codex_cli"
+            && self.process_outcome.as_ref().is_some_and(|outcome| {
+                outcome.schema_version == "process_outcome.v1"
+                    && matches!(
+                        outcome.state.as_str(),
+                        "admission_refused_before_spawn" | "store_lease_consumed_before_child"
+                    )
+                    && outcome.exit_code.is_none()
+                    && outcome.signal.is_none()
+            })
+    }
+
     pub fn to_value(&self) -> Value {
         let mut value = json!({
             "status": self.status,

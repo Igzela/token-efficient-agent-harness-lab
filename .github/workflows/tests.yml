@@ -364,12 +364,13 @@ jobs:
       - name: Report non-Rust diff lane
         if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust == 'false'
         run: echo "rust-tests not applicable to a diff with zero Rust impact"
-      - name: Install bubblewrap and mold linker
+      - name: Install bubblewrap, socat, and mold linker
         if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         run: |
           set -euo pipefail
-          sudo apt-get install -y --no-install-recommends bubblewrap mold clang
+          sudo apt-get install -y --no-install-recommends bubblewrap socat mold clang
           test -x /usr/bin/bwrap
+          test -x /usr/bin/socat
           /usr/bin/bwrap --version
           mold --version
       - name: Install Rust toolchain
@@ -489,12 +490,13 @@ jobs:
           done
           docker logs "${PG_CONTAINER}"
           exit 1
-      - name: Install bubblewrap and mold linker
+      - name: Install bubblewrap, socat, and mold linker
         if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
         run: |
           set -euo pipefail
-          sudo apt-get install -y --no-install-recommends bubblewrap mold clang
+          sudo apt-get install -y --no-install-recommends bubblewrap socat mold clang
           test -x /usr/bin/bwrap
+          test -x /usr/bin/socat
           mold --version
       - name: Install Rust toolchain
         if: needs.classify-change-impact.outputs.mode == 'full' && needs.classify-change-impact.outputs.has_rust != 'false'
