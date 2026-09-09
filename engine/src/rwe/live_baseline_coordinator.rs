@@ -81,7 +81,9 @@ pub const RWE_OPERATOR_LIVE_RUN_TOKEN: &str = "ACP_RWE_OPERATOR_LIVE_RUN";
 
 const CODEX_PREREQUISITE_PRIMARY_TASK_ID: &str = "rwe-minimum-t1-fix_flow_linkage";
 const CODEX_PREREQUISITE_FALLBACK_TASK_ID: &str = "rwe-minimum-t2-draft_contract_tests";
-const CODEX_PREREQUISITE_MAX_RECOVERY_GENERATIONS: u8 = 2;
+// Finite operator recovery remains bounded even when prior immutable attempts
+// are preserved after an upstream outcome-unknown response.
+const CODEX_PREREQUISITE_MAX_RECOVERY_GENERATIONS: u8 = 4;
 
 fn sort_value(value: &Value) -> Value {
     match value {
