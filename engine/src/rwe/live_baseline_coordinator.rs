@@ -6999,7 +6999,7 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
             .and_then(Value::as_str)
             .ok_or("Codex prerequisite ProductTask identity is missing")?
             .to_string();
-        let persisted_task = store
+        let mut persisted_task = store
             .get_product_task(&product_task_id)?
             .ok_or("Codex prerequisite ProductTask disappeared after admission")?;
         let status = persisted_task.get("status").and_then(Value::as_str);
@@ -7041,6 +7041,23 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
                     .into(),
             );
         }
+        if status == Some("admitted") {
+            // A prior bounded admission can leave an admitted row before its
+            // workspace-preparation owner resumes (for example after a gate
+            // failure immediately before the prepare call). Re-enter the
+            // existing Store-owned recovery path; it performs no provider
+            // effect and returns the same task only after workspace binding
+            // or an auditable terminal preparation result.
+            store
+                .recover_product_task_workspace(&product_task_id, "recovery-owner")
+                .map_err(|error| {
+                    format!("admitted prerequisite ProductTask workspace recovery failed: {error}")
+                })?;
+            persisted_task = store
+                .get_product_task(&product_task_id)?
+                .ok_or("Codex prerequisite ProductTask disappeared after workspace recovery")?;
+        }
+        let status = persisted_task.get("status").and_then(Value::as_str);
         if matches!(status, Some("completed" | "workspace_bound")) {
             if persisted_task.get("output_intent").and_then(Value::as_str) != Some("draft_pr")
                 || persisted_task
