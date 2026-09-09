@@ -1791,10 +1791,9 @@ mod tests {
             let report =
                 CodexMediatedCapabilityReport::evaluate(IsolationMode::BubblewrapFilesystem, true);
             assert!(
-                report
-                    .remaining_blocker
-                    .as_ref()
-                    .is_some_and(|b| b.contains("network") || b.contains("retry")),
+                report.remaining_blocker.as_ref().is_some_and(
+                    |b| b.contains("unshare-net") || b.contains("residual_admission_no_go")
+                ),
                 "partial admission must still record residual blockers when PID ns unavailable"
             );
             return;
