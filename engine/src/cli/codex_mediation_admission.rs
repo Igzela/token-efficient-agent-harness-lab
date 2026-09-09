@@ -1380,6 +1380,29 @@ mod tests {
         );
     }
 
+    fn require_netns_for_execution_test() -> bool {
+        require_bwrap();
+        if unprivileged_user_ns_available() {
+            return true;
+        }
+        // GitHub-hosted runners may provide bwrap filesystem support while
+        // forbidding unprivileged user/pid namespaces.  The production launch
+        // must remain fail-closed in that environment; namespace execution and
+        // runtime-owner attestation are meaningful only when the capability is
+        // actually available.
+        let report =
+            CodexMediatedCapabilityReport::evaluate(IsolationMode::BubblewrapFilesystem, true);
+        assert!(
+            report
+                .remaining_blocker
+                .as_ref()
+                .is_some_and(|blocker| blocker.contains("unshare-net")
+                    || blocker.contains("residual_admission_no_go")),
+            "namespace-unavailable launch must retain a residual admission blocker"
+        );
+        false
+    }
+
     #[cfg(unix)]
     #[test]
     fn sealed_helper_environment_drops_injected_parent_credentials() {
@@ -1603,7 +1626,9 @@ mod tests {
 
     #[test]
     fn runtime_attestation_uses_actual_gateway_and_parent_journal_owners() {
-        require_bwrap();
+        if !require_netns_for_execution_test() {
+            return;
+        }
         let worktree =
             std::env::temp_dir().join(format!("codex-owner-wt-{}", uuid::Uuid::new_v4()));
         let ephemeral_home =
@@ -1671,7 +1696,9 @@ mod tests {
 
     #[test]
     fn production_launch_executes_inside_netns_through_scoped_gateway_shape() {
-        require_bwrap();
+        if !require_netns_for_execution_test() {
+            return;
+        }
         let worktree =
             std::env::temp_dir().join(format!("codex-live-shape-wt-{}", uuid::Uuid::new_v4()));
         let ephemeral_home =
