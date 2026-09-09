@@ -4853,6 +4853,24 @@ fn validate_prerequisite_provider_identity(
             "completed prerequisite manifest does not match the exact frozen Codex binding".into(),
         );
     }
+    let provider_execution = projection
+        .get("provider_execution")
+        .ok_or("completed prerequisite provider execution evidence is missing")?;
+    if provider_execution
+        .get("schema_version")
+        .and_then(Value::as_str)
+        != Some("managed_deepseek_execution_evidence.v1")
+        || provider_execution
+            .get("provider_identity")
+            .and_then(Value::as_str)
+            != Some(expected_binding.provider_identity.as_str())
+        || provider_execution
+            .get("provider_kind")
+            .and_then(Value::as_str)
+            != Some(expected_binding.provider_kind.as_str())
+    {
+        return Err("completed prerequisite provider execution identity is not exact".into());
+    }
     let requests = projection
         .pointer("/provider_execution/requests")
         .and_then(Value::as_array)
@@ -4862,12 +4880,9 @@ fn validate_prerequisite_provider_identity(
         return Err("completed prerequisite provider request route is not exact".into());
     }
     for request in requests {
-        if request.get("provider_identity").and_then(Value::as_str)
-            != Some(expected_binding.provider_identity.as_str())
-            || request.get("provider_kind").and_then(Value::as_str)
-                != Some(expected_binding.provider_kind.as_str())
-            || request.get("protocol").and_then(Value::as_str)
-                != Some(expected_binding.protocol.as_str())
+        if request.get("provider_kind").and_then(Value::as_str)
+            != Some(expected_binding.provider_kind.as_str())
+            || request.get("protocol").and_then(Value::as_str) != Some("open_ai_compatible")
             || request.get("requested_model").and_then(Value::as_str)
                 != Some(expected_binding.admitted_model.as_str())
             || request.get("resolved_model").and_then(Value::as_str)
@@ -9284,15 +9299,17 @@ mod tests {
             },
         });
         let request = json!({
-            "provider_identity": "chatgpt-codex-subscription",
             "provider_kind": "chatgpt_subscription",
-            "protocol": "openai_compatible",
+            "protocol": "open_ai_compatible",
             "requested_model": "gpt-5.6-luna",
             "resolved_model": "gpt-5.6-luna",
             "usage": {"model": "gpt-5.6-luna"}
         });
         let projection = json!({
             "provider_execution": {
+                "schema_version": "managed_deepseek_execution_evidence.v1",
+                "provider_identity": "chatgpt-codex-subscription",
+                "provider_kind": "chatgpt_subscription",
                 "requests": [request.clone(), request.clone(), request.clone()]
             }
         });
@@ -9307,8 +9324,11 @@ mod tests {
             )
         };
         assert!(validate(&projection).is_ok());
+        let mut wrong_provider_identity = projection.clone();
+        wrong_provider_identity["provider_execution"]["provider_identity"] =
+            json!("different-identity");
+        assert!(validate(&wrong_provider_identity).is_err());
         for pointer in [
-            "/provider_identity",
             "/provider_kind",
             "/protocol",
             "/requested_model",
@@ -9317,12 +9337,9 @@ mod tests {
         ] {
             let mut wrong = request.clone();
             *wrong.pointer_mut(pointer).unwrap() = json!("different-identity");
-            assert!(validate(&json!({
-                "provider_execution": {
-                    "requests": [request.clone(), request.clone(), wrong]
-                }
-            }))
-            .is_err());
+            let mut wrong_projection = projection.clone();
+            wrong_projection["provider_execution"]["requests"][2] = wrong;
+            assert!(validate(&wrong_projection).is_err());
         }
         assert!(validate(&json!({"provider_execution": {"requests": []}})).is_err());
         assert!(validate(&json!({})).is_err());
