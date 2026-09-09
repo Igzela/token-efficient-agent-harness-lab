@@ -1382,14 +1382,20 @@ mod tests {
 
     fn require_netns_for_execution_test() -> bool {
         require_bwrap();
-        if unprivileged_user_ns_available() {
+        use crate::cli::codex_residual_admission::{
+            probe_unshare_net_available, CapabilityEvidenceClass,
+        };
+        if matches!(
+            probe_unshare_net_available(),
+            CapabilityEvidenceClass::Proved
+        ) {
             return true;
         }
         // GitHub-hosted runners may provide bwrap filesystem support while
-        // forbidding unprivileged user/pid namespaces.  The production launch
-        // must remain fail-closed in that environment; namespace execution and
-        // runtime-owner attestation are meaningful only when the capability is
-        // actually available.
+        // forbidding the network namespace needed by the production gateway
+        // bridge. The production launch must remain fail-closed in that
+        // environment; namespace execution and runtime-owner attestation are
+        // meaningful only when the actual network capability is proved.
         let report =
             CodexMediatedCapabilityReport::evaluate(IsolationMode::BubblewrapFilesystem, true);
         assert!(
