@@ -1226,11 +1226,21 @@ impl ManagedProviderCallAuthority {
             && contract.endpoint_path == request.endpoint_path
             && contract.credential_reference == request.credential_reference
             && contract.requested_model == request.requested_model;
+        // Historical Codex subscription authorities predate the explicit
+        // reasoning contract.  They remain compatible with their legacy
+        // request shape, but may not be upgraded in-place to the newly
+        // admitted xhigh route.  That route requires a frozen authority whose
+        // contract explicitly records xhigh.
+        let legacy_codex_xhigh_upgrade = contract.thinking.is_none()
+            && request.provider_kind == "chatgpt_subscription"
+            && request.schema_version == "codex_responses_api.v1"
+            && request.thinking.reasoning_effort.as_deref() == Some("xhigh");
         if !provider_matches
             || contract
                 .thinking
                 .as_ref()
                 .is_some_and(|thinking| thinking != &request.thinking)
+            || legacy_codex_xhigh_upgrade
             || contract.protocol != request.protocol
             || contract.request_schema_version != request.schema_version
             || contract.response_schema_version != request.response_schema_version
@@ -2919,6 +2929,7 @@ followed by a one-sentence summary of the change.";
 
     struct StaticAuthority {
         limits: ManagedCallLimits,
+        execution_contract: Option<PersistedManagedExecutionContract>,
     }
 
     impl ManagedAuthoritySource for StaticAuthority {
@@ -2936,22 +2947,24 @@ followed by a one-sentence summary of the change.";
                 spend_status: "consumed".into(),
                 consumed_by_attempt_id: Some(binding.attempt_id.clone()),
                 lease_status: "current".into(),
-                execution_contract: Some(PersistedManagedExecutionContract {
-                    thinking: None,
-                    provider_identity: DEEPSEEK_PROVIDER_ID.into(),
-                    provider_kind: DEEPSEEK_PROVIDER_KIND.into(),
-                    protocol: DeepSeekProtocol::OpenAiCompatible,
-                    host: "api.deepseek.com".into(),
-                    base_url: DEEPSEEK_OPENAI_BASE_URL.into(),
-                    endpoint_path: DEEPSEEK_OPENAI_PATH.into(),
-                    credential_reference: DEEPSEEK_CREDENTIAL_REFERENCE.into(),
-                    request_schema_version: MANAGED_PROVIDER_CALL_SCHEMA.into(),
-                    response_schema_version: MANAGED_PROVIDER_RESPONSE_SCHEMA.into(),
-                    usage_parser_version: DEEPSEEK_USAGE_PARSER_VERSION.into(),
-                    requested_model: "deepseek-v4-pro".into(),
-                    limits: self.limits.clone(),
-                    price_profile: DeepSeekPriceProfile::default(),
-                }),
+                execution_contract: Some(self.execution_contract.clone().unwrap_or_else(|| {
+                    PersistedManagedExecutionContract {
+                        thinking: None,
+                        provider_identity: DEEPSEEK_PROVIDER_ID.into(),
+                        provider_kind: DEEPSEEK_PROVIDER_KIND.into(),
+                        protocol: DeepSeekProtocol::OpenAiCompatible,
+                        host: "api.deepseek.com".into(),
+                        base_url: DEEPSEEK_OPENAI_BASE_URL.into(),
+                        endpoint_path: DEEPSEEK_OPENAI_PATH.into(),
+                        credential_reference: DEEPSEEK_CREDENTIAL_REFERENCE.into(),
+                        request_schema_version: MANAGED_PROVIDER_CALL_SCHEMA.into(),
+                        response_schema_version: MANAGED_PROVIDER_RESPONSE_SCHEMA.into(),
+                        usage_parser_version: DEEPSEEK_USAGE_PARSER_VERSION.into(),
+                        requested_model: "deepseek-v4-pro".into(),
+                        limits: self.limits.clone(),
+                        price_profile: DeepSeekPriceProfile::default(),
+                    }
+                })),
             })
         }
 
@@ -2970,6 +2983,59 @@ followed by a one-sentence summary of the change.";
         ) -> Result<(), String> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn legacy_codex_authority_cannot_upgrade_to_xhigh() {
+        let limits = ManagedCallLimits::default();
+        let mut req = request(DeepSeekProtocol::OpenAiCompatible);
+        req.provider_identity = "chatgpt-codex-subscription".into();
+        req.provider_kind = "chatgpt_subscription".into();
+        req.schema_version = "codex_responses_api.v1".into();
+        req.response_schema_version = "codex_responses_sse.v1".into();
+        req.usage_parser_version = "codex_budget_gateway_sse.v1".into();
+        req.host = "chatgpt.com".into();
+        req.base_url = "https://chatgpt.com/backend-api/codex".into();
+        req.endpoint_path = "/responses".into();
+        req.credential_reference = "CHATGPT_CODEX_SUBSCRIPTION".into();
+        req.requested_model = "gpt-5.6-luna".into();
+        req.thinking = ThinkingConfiguration {
+            mode: "enabled".into(),
+            reasoning_effort: Some("xhigh".into()),
+        };
+        req.limits = limits.clone();
+
+        let contract = PersistedManagedExecutionContract {
+            thinking: None,
+            provider_identity: req.provider_identity.clone(),
+            provider_kind: req.provider_kind.clone(),
+            protocol: req.protocol,
+            host: req.host.clone(),
+            base_url: req.base_url.clone(),
+            endpoint_path: req.endpoint_path.clone(),
+            credential_reference: req.credential_reference.clone(),
+            request_schema_version: req.schema_version.clone(),
+            response_schema_version: req.response_schema_version.clone(),
+            usage_parser_version: req.usage_parser_version.clone(),
+            requested_model: req.requested_model.clone(),
+            limits: limits.clone(),
+            price_profile: req.price_profile.clone(),
+        };
+        let authority = ManagedProviderCallAuthority::new(
+            Arc::new(StaticAuthority {
+                limits,
+                execution_contract: Some(contract),
+            }),
+            req.limits.clone(),
+        )
+        .unwrap();
+
+        let error = authority.validate_current_authority(&req).unwrap_err();
+        assert_eq!(error.domain, "provider_request");
+        assert_eq!(
+            error.message,
+            "persisted managed authority is stale or mismatched"
+        );
     }
 
     fn manual_response() -> ManagedProviderResponse {
@@ -3013,6 +3079,7 @@ followed by a one-sentence summary of the change.";
         let authority = ManagedProviderCallAuthority::new(
             Arc::new(StaticAuthority {
                 limits: limits.clone(),
+                execution_contract: None,
             }),
             limits.clone(),
         )
@@ -3061,6 +3128,7 @@ followed by a one-sentence summary of the change.";
         let unknown_authority = ManagedProviderCallAuthority::new(
             Arc::new(StaticAuthority {
                 limits: unknown_limits.clone(),
+                execution_contract: None,
             }),
             unknown_limits.clone(),
         )
@@ -3108,6 +3176,7 @@ followed by a one-sentence summary of the change.";
         let failed_authority = ManagedProviderCallAuthority::new(
             Arc::new(StaticAuthority {
                 limits: failed_limits.clone(),
+                execution_contract: None,
             }),
             failed_limits.clone(),
         )
@@ -3170,6 +3239,7 @@ followed by a one-sentence summary of the change.";
         let authority = ManagedProviderCallAuthority::new(
             Arc::new(StaticAuthority {
                 limits: limits.clone(),
+                execution_contract: None,
             }),
             limits.clone(),
         )
