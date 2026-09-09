@@ -79,6 +79,9 @@ pub const RWE_LEDGER_CELL_COMPOSITION_SEAM: &str =
 /// `ACP_RWE_ARMED_LIVE_RUN` gate; CI never sets either).
 pub const RWE_OPERATOR_LIVE_RUN_TOKEN: &str = "ACP_RWE_OPERATOR_LIVE_RUN";
 
+const CODEX_PREREQUISITE_PRIMARY_TASK_ID: &str = "rwe-minimum-t1-fix_flow_linkage";
+const CODEX_PREREQUISITE_FALLBACK_TASK_ID: &str = "rwe-minimum-t2-draft_contract_tests";
+
 fn sort_value(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
@@ -95,6 +98,29 @@ fn sort_value(value: &Value) -> Value {
         Value::Array(items) => Value::Array(items.iter().map(sort_value).collect()),
         other => other.clone(),
     }
+}
+
+fn codex_prerequisite_candidate_indices(
+    frozen: &OperatorFrozenContractSet,
+) -> Result<Vec<usize>, String> {
+    let primary_index = frozen
+        .corpus
+        .tasks
+        .iter()
+        .position(|task| task.task_id == CODEX_PREREQUISITE_PRIMARY_TASK_ID)
+        .ok_or("frozen RWE corpus is missing the Codex prerequisite primary task")?;
+    let mut candidates = vec![primary_index];
+    if let Some(fallback_index) = frozen
+        .corpus
+        .tasks
+        .iter()
+        .position(|task| task.task_id == CODEX_PREREQUISITE_FALLBACK_TASK_ID)
+    {
+        if fallback_index != primary_index {
+            candidates.push(fallback_index);
+        }
+    }
+    Ok(candidates)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -4780,22 +4806,93 @@ fn mark_cleanup_failed(outcome: &mut CellOutcome, detail: impl Into<String>) {
 /// invalid, or mixed provenance fails closed with an error.
 fn validate_prerequisite_provider_identity(
     projection: &Value,
-    provider_kind: &str,
-    model: &str,
+    manifest_identity: &Value,
+    expected_binding: &crate::rwe::campaign_package::FrozenProviderExecutionBinding,
+    expected_package_id: &str,
+    product_task_id: &str,
+    attempt_id: &str,
 ) -> Result<(), String> {
+    let persisted_binding = manifest_identity
+        .get("provider_execution_binding")
+        .ok_or_else(|| {
+            "completed prerequisite manifest lacks provider execution binding".to_string()
+        })
+        .and_then(crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json)?;
+    if &persisted_binding != expected_binding
+        || manifest_identity
+            .get("campaign_package_id")
+            .and_then(Value::as_str)
+            != Some(expected_package_id)
+        || manifest_identity
+            .pointer("/target/main_sha")
+            .and_then(Value::as_str)
+            != Some(FROZEN_RWE_TARGET_MAIN_SHA)
+        || manifest_identity
+            .pointer("/execution/product_task_id")
+            .and_then(Value::as_str)
+            != Some(product_task_id)
+        || manifest_identity
+            .pointer("/execution/attempt_id")
+            .and_then(Value::as_str)
+            != Some(attempt_id)
+        || manifest_identity.get("models")
+            != Some(&json!({
+                "planner": expected_binding.admitted_model,
+                "implementer": expected_binding.admitted_model,
+                "reviewer": expected_binding.admitted_model,
+            }))
+        || manifest_identity.get("output")
+            != Some(&json!({
+                "draft_pr_only": true,
+                "target_main_write": false,
+                "merge": false,
+                "auto_merge": false,
+            }))
+    {
+        return Err(
+            "completed prerequisite manifest does not match the exact frozen Codex binding".into(),
+        );
+    }
+    let provider_execution = projection
+        .get("provider_execution")
+        .ok_or("completed prerequisite provider execution evidence is missing")?;
+    if provider_execution
+        .get("schema_version")
+        .and_then(Value::as_str)
+        != Some("managed_deepseek_execution_evidence.v1")
+        || provider_execution
+            .get("provider_identity")
+            .and_then(Value::as_str)
+            != Some(expected_binding.provider_identity.as_str())
+        || provider_execution
+            .get("provider_kind")
+            .and_then(Value::as_str)
+            != Some(expected_binding.provider_kind.as_str())
+    {
+        return Err("completed prerequisite provider execution identity is not exact".into());
+    }
     let requests = projection
         .pointer("/provider_execution/requests")
         .and_then(Value::as_array)
         .filter(|requests| !requests.is_empty())
         .ok_or("completed prerequisite lacks confirmed provider requests")?;
+    if requests.len() != 3 {
+        return Err("completed prerequisite provider request route is not exact".into());
+    }
     for request in requests {
-        if request.get("provider_kind").and_then(Value::as_str) != Some(provider_kind)
-            || request.get("requested_model").and_then(Value::as_str) != Some(model)
-            || request.get("resolved_model").and_then(Value::as_str) != Some(model)
-            || request.pointer("/usage/model").and_then(Value::as_str) != Some(model)
+        if request.get("provider_kind").and_then(Value::as_str)
+            != Some(expected_binding.provider_kind.as_str())
+            || request.get("protocol").and_then(Value::as_str) != Some("open_ai_compatible")
+            || request.get("requested_model").and_then(Value::as_str)
+                != Some(expected_binding.admitted_model.as_str())
+            || request.get("resolved_model").and_then(Value::as_str)
+                != Some(expected_binding.admitted_model.as_str())
+            || request.pointer("/usage/model").and_then(Value::as_str)
+                != Some(expected_binding.admitted_model.as_str())
         {
             return Err(
-                "completed prerequisite provider/model differs from selected freeze".into(),
+                "completed prerequisite provider route or model differs from selected freeze"
+                    .into(),
             );
         }
     }
@@ -6771,45 +6868,77 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
     }
 
     let frozen = freeze_current_operator_contract_set()?;
-    let frozen_task = frozen
-        .corpus
-        .tasks
-        .first()
-        .cloned()
-        .ok_or("frozen RWE corpus has no prerequisite task")?;
-    if frozen_task.source_commit != FROZEN_RWE_TARGET_MAIN_SHA {
-        return Err("frozen prerequisite task source revision is not exact".into());
-    }
-    let verifier = frozen_task
-        .expected_verification_commands
-        .first()
-        .cloned()
-        .ok_or("frozen prerequisite task verifier is missing")?;
-    let schedule_cell = frozen
-        .schedule
-        .body
-        .get("cells")
-        .and_then(Value::as_array)
-        .and_then(|cells| cells.first())
-        .cloned()
-        .ok_or("frozen schedule has no cell budget for prerequisite")?;
     // A prior attempt may have failed after Store admission but before the
     // provider request. Reconcile that exact task through the existing
     // ProductTask finalizer before making one bounded recovery admission. A
     // recovered attempt gets fresh immutable delegation/task identities; the
     // failed history remains in Store and is never overwritten or replayed.
+    //
+    // If the first frozen task has an unreconciled provider outcome, preserve
+    // that task and move to a different frozen task instead of replaying its
+    // objective. This keeps the prerequisite finite and real while respecting
+    // the no-replay boundary for an outcome-unknown provider effect.
+    let prerequisite_task_indices = codex_prerequisite_candidate_indices(&frozen)?;
+    let primary_task_index = prerequisite_task_indices[0];
+    let mut prerequisite_candidate_position = 0usize;
     let mut recovery_generation = 0u8;
-    let (product_task_id, persisted_task, ids) = loop {
-        let execution_run_id = if recovery_generation == 0 {
-            "codex-prerequisite".to_string()
+    let (product_task_id, persisted_task, ids, selected_task, selected_schedule_cell) = loop {
+        let prerequisite_task_index = prerequisite_task_indices[prerequisite_candidate_position];
+        let is_primary_prerequisite = prerequisite_task_index == primary_task_index;
+        let frozen_task = frozen
+            .corpus
+            .tasks
+            .get(prerequisite_task_index)
+            .cloned()
+            .ok_or("frozen RWE corpus has no remaining prerequisite task")?;
+        if frozen_task.source_commit != FROZEN_RWE_TARGET_MAIN_SHA {
+            return Err("frozen prerequisite task source revision is not exact".into());
+        }
+        let verifier = frozen_task
+            .expected_verification_commands
+            .first()
+            .cloned()
+            .ok_or("frozen prerequisite task verifier is missing")?;
+        let schedule_cell = frozen
+            .schedule
+            .body
+            .get("cells")
+            .and_then(Value::as_array)
+            .and_then(|cells| {
+                cells.iter().find(|cell| {
+                    cell.get("task_id").and_then(Value::as_str)
+                        == Some(frozen_task.task_id.as_str())
+                })
+            })
+            .cloned()
+            .ok_or("frozen schedule has no cell budget for prerequisite task")?;
+        let execution_run_id = if is_primary_prerequisite {
+            if recovery_generation == 0 {
+                "codex-prerequisite".to_string()
+            } else {
+                format!("codex-prerequisite-recovery-{recovery_generation}")
+            }
         } else {
-            format!("codex-prerequisite-recovery-{recovery_generation}")
+            let base = format!("codex-prerequisite-{}", frozen_task.task_id);
+            if recovery_generation == 0 {
+                base
+            } else {
+                format!("{base}-recovery-{recovery_generation}")
+            }
         };
         let ids = cell_identities_for(&execution_run_id, &schedule_cell, &frozen_task)?;
-        let idempotency_key = format!(
-            "rwe-golden-prerequisite-codex-luna-xhigh-v{}",
-            recovery_generation + 1
-        );
+        let idempotency_key = if is_primary_prerequisite {
+            format!(
+                "rwe-golden-prerequisite-codex-luna-xhigh-v{}",
+                recovery_generation + 1
+            )
+        } else {
+            format!(
+                "rwe-golden-prerequisite-codex-luna-xhigh-{}-v{}",
+                frozen_task.task_id,
+                recovery_generation + 1
+            )
+        };
         let workspace_id = idempotency_key.clone();
         let intake = ProductTaskIntakeRequest {
             objective: frozen_task.objective.clone(),
@@ -6888,7 +7017,29 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
                 })
             })
         {
-            return Err(format!("prerequisite attempt requires provider reconciliation; preserved task {product_task_id}"));
+            if prerequisite_candidate_position + 1 < prerequisite_task_indices.len() {
+                prerequisite_candidate_position += 1;
+                recovery_generation = 0;
+                continue;
+            }
+            return Err(format!(
+                "prerequisite attempt requires provider reconciliation; preserved task {product_task_id}"
+            ));
+        }
+        let intake_contract_matches = persisted_task
+            .get("intake_contract_sha256")
+            .and_then(Value::as_str)
+            == Some(validated.intake_contract_sha256.as_str());
+        if !intake_contract_matches
+            && !matches!(
+                status,
+                Some("failed" | "cancelled" | "killed" | "outcome_unknown")
+            )
+        {
+            return Err(
+                "persisted prerequisite ProductTask does not match the exact frozen intake contract"
+                    .into(),
+            );
         }
         if matches!(status, Some("completed" | "workspace_bound")) {
             if persisted_task.get("output_intent").and_then(Value::as_str) != Some("draft_pr")
@@ -6902,7 +7053,13 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
                         .into(),
                 );
             }
-            break (product_task_id, persisted_task, ids);
+            break (
+                product_task_id,
+                persisted_task,
+                ids,
+                frozen_task,
+                schedule_cell,
+            );
         }
 
         let run_status = persisted_task
@@ -7012,10 +7169,17 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
         if store_evidence_transport_provenance(&projection)? != "external" {
             return Err("completed prerequisite lacks external provider provenance".into());
         }
+        let manifest_identity =
+            store.project_delegated_execution_identity_for_attempt(&ids.delegated_attempt_id)?;
+        let expected_binding =
+            package.provider_execution_binding_for_model(&package.admitted_model)?;
         validate_prerequisite_provider_identity(
             &projection,
-            &package.provider_kind,
-            &package.admitted_model,
+            &manifest_identity,
+            &expected_binding,
+            &package.package_id,
+            &product_task_id,
+            &ids.delegated_attempt_id,
         )?;
         return Ok(sort_value(&json!({
             "schema_version": "codex_golden_path_prerequisite.v1",
@@ -7062,8 +7226,8 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
         &frozen,
         prerequisite_run_id,
         "",
-        &schedule_cell,
-        &frozen_task,
+        &selected_schedule_cell,
+        &selected_task,
         &ids,
         &product_task_id,
         None,
@@ -8672,6 +8836,30 @@ mod tests {
     }
 
     #[test]
+    fn codex_prerequisite_candidates_are_primary_then_explicit_fallback() {
+        let frozen = freeze_current_operator_contract_set().unwrap();
+        let indices = codex_prerequisite_candidate_indices(&frozen).unwrap();
+        let task_ids = indices
+            .iter()
+            .map(|index| frozen.corpus.tasks[*index].task_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            task_ids,
+            vec![
+                CODEX_PREREQUISITE_PRIMARY_TASK_ID,
+                CODEX_PREREQUISITE_FALLBACK_TASK_ID,
+            ]
+        );
+        for task_id in task_ids {
+            assert!(frozen.schedule.body["cells"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|cell| cell.get("task_id").and_then(Value::as_str) == Some(task_id)));
+        }
+    }
+
+    #[test]
     fn stale_and_wrong_principal_do_not_consume_fresh_authority() {
         let dir = tempdir().unwrap();
         let store = Arc::new(
@@ -9087,33 +9275,86 @@ mod tests {
     }
 
     #[test]
-    fn completed_prerequisite_requires_exact_provider_and_model() {
+    fn completed_prerequisite_requires_exact_codex_binding_and_model() {
+        let package =
+            crate::rwe::campaign_package::canonical_codex_luna_xhigh_v2_package().unwrap();
+        let binding = package
+            .provider_execution_binding_for_model(&package.admitted_model)
+            .unwrap();
+        let manifest_identity = json!({
+            "campaign_package_id": package.package_id.clone(),
+            "provider_execution_binding": binding.to_json(),
+            "models": {
+                "planner": package.admitted_model.clone(),
+                "implementer": package.admitted_model.clone(),
+                "reviewer": package.admitted_model.clone(),
+            },
+            "target": {"main_sha": FROZEN_RWE_TARGET_MAIN_SHA},
+            "execution": {"product_task_id": "ptask", "attempt_id": "attempt"},
+            "output": {
+                "draft_pr_only": true,
+                "target_main_write": false,
+                "merge": false,
+                "auto_merge": false,
+            },
+        });
         let request = json!({
-            "provider_kind": "codex-subscription",
+            "provider_kind": "chatgpt_subscription",
+            "protocol": "open_ai_compatible",
             "requested_model": "gpt-5.6-luna",
             "resolved_model": "gpt-5.6-luna",
             "usage": {"model": "gpt-5.6-luna"}
         });
-        let projection = json!({"provider_execution": {"requests": [request.clone()]}});
+        let projection = json!({
+            "provider_execution": {
+                "schema_version": "managed_deepseek_execution_evidence.v1",
+                "provider_identity": "chatgpt-codex-subscription",
+                "provider_kind": "chatgpt_subscription",
+                "requests": [request.clone(), request.clone(), request.clone()]
+            }
+        });
         let validate = |value: &Value| {
-            validate_prerequisite_provider_identity(value, "codex-subscription", "gpt-5.6-luna")
+            validate_prerequisite_provider_identity(
+                value,
+                &manifest_identity,
+                &binding,
+                &package.package_id,
+                "ptask",
+                "attempt",
+            )
         };
         assert!(validate(&projection).is_ok());
+        let mut wrong_provider_identity = projection.clone();
+        wrong_provider_identity["provider_execution"]["provider_identity"] =
+            json!("different-identity");
+        assert!(validate(&wrong_provider_identity).is_err());
         for pointer in [
             "/provider_kind",
+            "/protocol",
             "/requested_model",
             "/resolved_model",
             "/usage/model",
         ] {
             let mut wrong = request.clone();
             *wrong.pointer_mut(pointer).unwrap() = json!("different-identity");
-            assert!(validate(
-                &json!({"provider_execution": {"requests": [request.clone(), wrong]}})
-            )
-            .is_err());
+            let mut wrong_projection = projection.clone();
+            wrong_projection["provider_execution"]["requests"][2] = wrong;
+            assert!(validate(&wrong_projection).is_err());
         }
         assert!(validate(&json!({"provider_execution": {"requests": []}})).is_err());
         assert!(validate(&json!({})).is_err());
+
+        let mut wrong_manifest = manifest_identity.clone();
+        wrong_manifest["provider_execution_binding"]["reasoning_effort"] = json!("low");
+        assert!(validate_prerequisite_provider_identity(
+            &projection,
+            &wrong_manifest,
+            &binding,
+            &package.package_id,
+            "ptask",
+            "attempt",
+        )
+        .is_err());
     }
 
     #[test]
