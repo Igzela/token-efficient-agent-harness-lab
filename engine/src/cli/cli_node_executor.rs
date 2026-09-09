@@ -1237,11 +1237,17 @@ fn failed_after_pre_child_managed_codex_start_cleanup(
 fn failed_after_pre_child_managed_codex_cleanup_result(
     cleanup_complete: bool,
     stage: &'static str,
-    message: String,
+    _message: String,
     start: std::time::Instant,
 ) -> NodeExecutionOutput {
     let (error_domain, message) = if cleanup_complete {
-        ("cli_execution_authority_invalid", message)
+        // Keep pre-child authority details bounded.  The detailed launch or
+        // gateway error can contain host capability and path information;
+        // callers only need the stable blocker class before a child exists.
+        (
+            "cli_execution_authority_invalid",
+            format!("managed Codex owner-derived preflight blocked: blocked_{stage}"),
+        )
     } else {
         (
             "cli_execution_cleanup_incomplete",
