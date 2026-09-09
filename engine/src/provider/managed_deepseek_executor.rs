@@ -35,6 +35,7 @@ fn managed_workspace_action_tool() -> super::managed_deepseek::ManagedTool {
             description: "Apply one bounded replacement in one concrete regular file from allowed_file_paths; never target a directory.".to_string(),
             parameters: json!({
                 "type": "object",
+                "additionalProperties": false,
                 "properties": {
                     "schema_version": {"type": "string", "description": "Always managed_workspace_action.v1"},
                     "action": {"type": "string", "description": "Always replace_text"},
@@ -997,6 +998,14 @@ mod tests {
             MANAGED_WORKSPACE_ACTION_TOOL
         );
         assert!(request.tools[0].strict);
+        assert_eq!(
+            request.tools[0]
+                .function
+                .parameters
+                .get("additionalProperties")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
         assert_eq!(
             request.tool_choice,
             Some(json!({
