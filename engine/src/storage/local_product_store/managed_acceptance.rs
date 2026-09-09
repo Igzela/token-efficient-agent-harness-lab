@@ -1056,7 +1056,11 @@ pub fn confirm_delegated_artifact_output(
         "review": review,
         "provider_execution": provider_execution,
         "target_main_sha": target_main_sha,
-        "realized_cost_usd": realized_cost_usd,
+        "realized_cost_usd": if provider_binding.cost_unavailable {
+            Value::Null
+        } else {
+            json!(realized_cost_usd)
+        },
         "output": {"draft_pr_only": true, "merged": false, "authorized": true}
     })))
 }
@@ -3086,10 +3090,35 @@ impl LocalProductStore {
         receipt: &Value,
         realized_cost_usd: f64,
     ) -> Result<Value, String> {
+        self.complete_delegated_attempt_with_cost_evidence(
+            delegation_id,
+            attempt_id,
+            lease_token,
+            status,
+            receipt,
+            Some(realized_cost_usd),
+            false,
+        )
+    }
+
+    fn complete_delegated_attempt_with_cost_evidence(
+        &self,
+        delegation_id: &str,
+        attempt_id: &str,
+        lease_token: &str,
+        status: &str,
+        receipt: &Value,
+        realized_cost_usd: Option<f64>,
+        cost_unavailable: bool,
+    ) -> Result<Value, String> {
         validate_attempt_terminal_status(status)?;
-        if !realized_cost_usd.is_finite() || realized_cost_usd < 0.0 {
+        if (!cost_unavailable && realized_cost_usd.is_none())
+            || (cost_unavailable && realized_cost_usd.is_some())
+            || realized_cost_usd.is_some_and(|cost| !cost.is_finite() || cost < 0.0)
+        {
             return Err("realized delegated cost is invalid".into());
         }
+        let stored_cost_usd = realized_cost_usd.unwrap_or(0.0);
         let mut receipt = sort_value(receipt);
         let receipt_object = receipt
             .as_object_mut()
@@ -3099,6 +3128,8 @@ impl LocalProductStore {
             || receipt_object.contains_key("attempt_lease_state")
             || receipt_object.contains_key("delegation_state")
             || receipt_object.contains_key("realized_cost_usd")
+            || receipt_object.contains_key("cost_unavailable")
+            || receipt_object.contains_key("cost_evidence")
         {
             return Err("delegated terminal receipt contains store-owned state fields".into());
         }
@@ -3106,7 +3137,21 @@ impl LocalProductStore {
         receipt_object.insert("spend_authorization_state".into(), json!("expired"));
         receipt_object.insert("attempt_lease_state".into(), json!("closed"));
         receipt_object.insert("delegation_state".into(), json!("expired"));
-        receipt_object.insert("realized_cost_usd".into(), json!(realized_cost_usd));
+        receipt_object.insert(
+            "realized_cost_usd".into(),
+            realized_cost_usd.map_or(Value::Null, |cost| json!(cost)),
+        );
+        receipt_object.insert("cost_unavailable".into(), json!(cost_unavailable));
+        receipt_object.insert(
+            "cost_evidence".into(),
+            json!(if status == "outcome_unknown" {
+                "conservative_reservation"
+            } else if cost_unavailable {
+                "unavailable"
+            } else {
+                "reconciled"
+            }),
+        );
         let receipt = sort_value(&receipt);
         let receipt_sha256 = sha256_hex(canonical_json(&receipt)?.as_bytes());
         let receipt_json = receipt.to_string();
@@ -3144,20 +3189,25 @@ impl LocalProductStore {
                     return Err("delegated attempt lease ownership mismatch".into());
                 }
                 if let Some(existing) = row.2 {
+                    let existing_cost_unavailable = serde_json::from_str::<Value>(&existing)
+                        .ok()
+                        .and_then(|value| value.get("cost_unavailable").and_then(Value::as_bool))
+                        .unwrap_or(false);
                     if existing == receipt_json
                         && row.3 == "expired"
-                        && (row.5 - realized_cost_usd).abs() <= 1e-12
+                        && (row.5 - stored_cost_usd).abs() <= 1e-12
+                        && existing_cost_unavailable == cost_unavailable
                     {
                         return Ok(json!({"status":"closed","terminal_class":status,"spend_authorization_state":"expired","attempt_lease_state":"closed","delegation_state":"expired","receipt_sha256":receipt_sha256,"replayed":true}));
                     }
                     return Err("late or conflicting delegated terminal write".into());
                 }
-                if realized_cost_usd > row.4 {
+                if stored_cost_usd > row.4 {
                     return Err("delegated cumulative cost ceiling exceeded".into());
                 }
                 tx.execute(
                     "UPDATE managed_acceptance_delegations SET status=CASE WHEN status='revoked' THEN 'revoked' ELSE 'expired' END, total_cost_usd=?1, spend_status=CASE WHEN status='revoked' THEN 'revoked' ELSE 'expired' END, attempt_status='closed', terminal_receipt_json=?2, terminal_at=?3, updated_at=?3 WHERE delegation_id=?4 AND attempt_id=?5 AND attempt_lease_token=?6",
-                    params![realized_cost_usd, receipt_json, now, delegation_id, attempt_id, lease_token],
+                    params![stored_cost_usd, receipt_json, now, delegation_id, attempt_id, lease_token],
                 )
                 .map_err(|e| e.to_string())?;
                 tx.commit().map_err(|e| e.to_string())?;
@@ -3177,17 +3227,22 @@ impl LocalProductStore {
                     return Err("delegated attempt lease ownership mismatch".into());
                 }
                 if let Some(existing) = existing {
+                    let existing_cost_unavailable = serde_json::from_str::<Value>(&existing)
+                        .ok()
+                        .and_then(|value| value.get("cost_unavailable").and_then(Value::as_bool))
+                        .unwrap_or(false);
                     if existing == receipt_json
                         && stored_status == "expired"
-                        && (stored_cost - realized_cost_usd).abs() <= 1e-12
+                        && ((stored_cost - stored_cost_usd).abs() <= 1e-12)
+                        && existing_cost_unavailable == cost_unavailable
                     {
                         tx.commit().map_err(|e| e.to_string())?;
                         return Ok(json!({"status":"closed","terminal_class":status,"spend_authorization_state":"expired","attempt_lease_state":"closed","delegation_state":"expired","receipt_sha256":receipt_sha256,"replayed":true}));
                     }
                     return Err("late or conflicting delegated terminal write".into());
                 }
-                if realized_cost_usd > max_cost { return Err("delegated cumulative cost ceiling exceeded".into()); }
-                tx.execute("UPDATE managed_acceptance_delegations SET status=CASE WHEN status='revoked' THEN 'revoked' ELSE 'expired' END, total_cost_usd=$1, spend_status=CASE WHEN status='revoked' THEN 'revoked' ELSE 'expired' END, attempt_status='closed', terminal_receipt_json=$2, terminal_at=$3, updated_at=$3 WHERE delegation_id=$4 AND attempt_id=$5 AND attempt_lease_token=$6", &[&realized_cost_usd, &receipt_json, &now, &delegation_id, &attempt_id, &lease_token]).map_err(|e| e.to_string())?;
+                if stored_cost_usd > max_cost { return Err("delegated cumulative cost ceiling exceeded".into()); }
+                tx.execute("UPDATE managed_acceptance_delegations SET status=CASE WHEN status='revoked' THEN 'revoked' ELSE 'expired' END, total_cost_usd=$1, spend_status=CASE WHEN status='revoked' THEN 'revoked' ELSE 'expired' END, attempt_status='closed', terminal_receipt_json=$2, terminal_at=$3, updated_at=$3 WHERE delegation_id=$4 AND attempt_id=$5 AND attempt_lease_token=$6", &[&stored_cost_usd, &receipt_json, &now, &delegation_id, &attempt_id, &lease_token]).map_err(|e| e.to_string())?;
                 tx.commit().map_err(|e| e.to_string())?;
                 Ok(json!({"status":"closed","terminal_class":status,"spend_authorization_state":"expired","attempt_lease_state":"closed","delegation_state":"expired","receipt_sha256":receipt_sha256,"replayed":false}))
             }),
@@ -3413,10 +3468,24 @@ impl LocalProductStore {
         if cleanup.get("status").and_then(Value::as_str) != Some("cleaned") {
             return Err("delegated terminal workspace cleanup is incomplete".into());
         }
-        let realized_cost_usd = confirmation
-            .get("realized_cost_usd")
-            .and_then(Value::as_f64)
-            .ok_or("delegated artifact confirmation realized cost is missing")?;
+        let provider_binding = manifest
+            .get("provider_execution_binding")
+            .map(crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json)
+            .transpose()?
+            .unwrap_or_else(crate::rwe::campaign_package::canonical_deepseek_provider_binding);
+        let cost_unavailable = provider_binding.cost_unavailable;
+        let realized_cost_usd = match confirmation.get("realized_cost_usd") {
+            Some(Value::Null) if cost_unavailable => None,
+            Some(Value::Number(_)) if cost_unavailable => {
+                return Err("delegated artifact confirmation cost must remain unavailable".into())
+            }
+            Some(value) => Some(
+                value
+                    .as_f64()
+                    .ok_or("delegated artifact confirmation realized cost is invalid")?,
+            ),
+            None => return Err("delegated artifact confirmation realized cost is missing".into()),
+        };
         let mut receipt = json!({
             "schema_version": "managed_delegated_terminal_evidence.v1",
             "product_task_id": product_task_id,
@@ -3440,13 +3509,14 @@ impl LocalProductStore {
             }
             _ => return Err("delegated terminal output mode is ambiguous".into()),
         }
-        let terminal = self.complete_delegated_attempt(
+        let terminal = self.complete_delegated_attempt_with_cost_evidence(
             delegation_id,
             attempt_id,
             &lease_token,
             "succeeded",
             &receipt,
             realized_cost_usd,
+            cost_unavailable,
         )?;
         Ok(json!({
             "terminal": terminal,
@@ -3574,6 +3644,12 @@ impl LocalProductStore {
         let ((delegation_id, attempt_id, lease_token, _manifest_json, journal_json), manifest) =
             matched.pop().expect("one matched delegated attempt");
         validate_delegated_manifest_policy(&manifest)?;
+        let provider_binding = manifest
+            .get("provider_execution_binding")
+            .map(crate::rwe::campaign_package::FrozenProviderExecutionBinding::from_json)
+            .transpose()?
+            .unwrap_or_else(crate::rwe::campaign_package::canonical_deepseek_provider_binding);
+        let cost_unavailable = provider_binding.cost_unavailable;
         let task_tenant_id = task
             .get("tenant_id")
             .and_then(Value::as_str)
@@ -3607,14 +3683,20 @@ impl LocalProductStore {
                 return Err("delegated failure provider journal status is invalid".into());
             }
             uncertain_provider_effect |= matches!(status, "sending" | "outcome_unknown");
-            let cost = entry
-                .get("effective_cost_usd")
-                .and_then(Value::as_f64)
-                .ok_or("delegated failure provider journal cost is missing")?;
-            if !cost.is_finite() || cost < 0.0 {
-                return Err("delegated failure provider journal cost is invalid".into());
-            }
-            realized_or_reserved_cost_usd += cost;
+            let cost = match entry.get("effective_cost_usd") {
+                Some(Value::Null) if cost_unavailable => None,
+                Some(value) => {
+                    let cost = value
+                        .as_f64()
+                        .ok_or("delegated failure provider journal cost is invalid")?;
+                    if !cost.is_finite() || cost < 0.0 {
+                        return Err("delegated failure provider journal cost is invalid".into());
+                    }
+                    Some(cost)
+                }
+                None => return Err("delegated failure provider journal cost is missing".into()),
+            };
+            realized_or_reserved_cost_usd += cost.unwrap_or(0.0);
             provider_states.push(json!({
                 "ordinal": entry.get("ordinal"),
                 "node_id": entry.get("node_id"),
@@ -3656,19 +3738,19 @@ impl LocalProductStore {
             "cleanup_status": cleanup.get("status"),
             "product_task_status": task_status,
             "target_main_sha": manifest.pointer("/target/main_sha"),
-            "cost_evidence": if uncertain_provider_effect {
-                "conservative_reservation"
-            } else {
-                "reconciled"
-            },
         });
-        let terminal = self.complete_delegated_attempt(
+        let terminal = self.complete_delegated_attempt_with_cost_evidence(
             &delegation_id,
             &attempt_id,
             &lease_token,
             terminal_class,
             &receipt,
-            realized_or_reserved_cost_usd,
+            if cost_unavailable {
+                None
+            } else {
+                Some(realized_or_reserved_cost_usd)
+            },
+            cost_unavailable,
         )?;
         Ok(Some(json!({
             "terminal": terminal,
@@ -12202,6 +12284,51 @@ fn reconcile_provider_journal_entry(
 }
 
 impl crate::provider::managed_deepseek::ManagedAuthoritySource for LocalProductStore {
+    fn durable_token_reservation(
+        &self,
+        binding: &crate::provider::managed_deepseek::ManagedCallBinding,
+    ) -> Result<u64, String> {
+        let journal_json: String = match &self.db {
+            DatabaseConnection::Sqlite(_) => self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT provider_request_journal_json
+                     FROM managed_acceptance_delegations
+                     WHERE attempt_id=?1 AND spend_authorization_id=?2
+                       AND attempt_status='admitted'",
+                    params![binding.attempt_id, binding.spend_authorization_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())
+            })?,
+            #[cfg(feature = "pg")]
+            DatabaseConnection::Pg(_) => self.with_pg_conn(|client| {
+                client
+                    .query_one(
+                        "SELECT provider_request_journal_json
+                         FROM managed_acceptance_delegations
+                         WHERE attempt_id=$1 AND spend_authorization_id=$2
+                           AND attempt_status='admitted'",
+                        &[&binding.attempt_id, &binding.spend_authorization_id],
+                    )
+                    .map(|row| row.get(0))
+                    .map_err(|error| error.to_string())
+            })?,
+        };
+        let journal: Vec<Value> = serde_json::from_str(&journal_json)
+            .map_err(|error| format!("durable provider request journal is invalid: {error}"))?;
+        journal.iter().try_fold(0_u64, |total, entry| {
+            let tokens = entry
+                .get("effective_tokens")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| {
+                    "durable provider journal token reservation is missing".to_string()
+                })?;
+            total
+                .checked_add(tokens)
+                .ok_or_else(|| "durable provider journal token reservation overflow".to_string())
+        })
+    }
+
     fn claim_provider_request(
         &self,
         request: &crate::provider::managed_deepseek::ManagedProviderCallRequest,

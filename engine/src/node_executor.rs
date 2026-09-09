@@ -728,6 +728,17 @@ impl ProcessOutcome {
         )
     }
 
+    /// A managed provider authority rejected a request before the provider
+    /// effect boundary.  This reuses the existing typed process-boundary
+    /// evidence channel; it is not inferred from an error string.
+    pub(crate) fn provider_no_external_effect() -> Self {
+        Self::failure(
+            "provider_no_external_effect",
+            None,
+            "managed provider request was rejected before an external effect",
+        )
+    }
+
     pub fn exited(exit_code: i32) -> Self {
         Self {
             schema_version: "process_outcome.v1".to_string(),
@@ -794,7 +805,14 @@ impl ProcessOutcome {
             "spawn_failed"
             | "process_tree_containment_unavailable"
             | "process_tree_containment_unsupported"
-            | "invalid_output_limits" => ProcessEffectState::NotStarted,
+            | "invalid_output_limits"
+            | "provider_no_external_effect"
+                if self.schema_version == "process_outcome.v1"
+                    && self.exit_code.is_none()
+                    && self.signal.is_none() =>
+            {
+                ProcessEffectState::NotStarted
+            }
             "exited"
             | "signaled"
             | "output_read_failed"
@@ -889,6 +907,15 @@ impl NodeExecutionOutput {
                     )
                     && outcome.exit_code.is_none()
                     && outcome.signal.is_none()
+            })
+    }
+
+    pub(crate) fn managed_provider_no_external_effect(&self) -> bool {
+        self.executor_type
+            == crate::provider::managed_deepseek_executor::MANAGED_DEEPSEEK_EXECUTOR_TYPE
+            && self.process_outcome.as_ref().is_some_and(|outcome| {
+                outcome.state == "provider_no_external_effect"
+                    && outcome.boundary_mapping().effect == ProcessEffectState::NotStarted
             })
     }
 

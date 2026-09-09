@@ -746,7 +746,11 @@ fn failed_provider(error: ManagedProviderCallError, latency_ms: i64) -> NodeExec
         output_tokens: None,
         estimated_cost: None,
         latency_ms: Some(latency_ms),
-        process_outcome: None,
+        process_outcome: (!matches!(
+            error.effect,
+            super::managed_deepseek::ManagedFailureEffect::OutcomeUnknown
+        ))
+        .then(crate::node_executor::ProcessOutcome::provider_no_external_effect),
         resolved_model: None,
     }
 }

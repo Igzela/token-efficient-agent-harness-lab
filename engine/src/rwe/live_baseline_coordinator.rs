@@ -81,6 +81,7 @@ pub const RWE_OPERATOR_LIVE_RUN_TOKEN: &str = "ACP_RWE_OPERATOR_LIVE_RUN";
 
 const CODEX_PREREQUISITE_PRIMARY_TASK_ID: &str = "rwe-minimum-t1-fix_flow_linkage";
 const CODEX_PREREQUISITE_FALLBACK_TASK_ID: &str = "rwe-minimum-t2-draft_contract_tests";
+const CODEX_PREREQUISITE_MAX_RECOVERY_GENERATIONS: u8 = 2;
 
 fn sort_value(value: &Value) -> Value {
     match value {
@@ -1401,16 +1402,20 @@ impl LiveLedgerProviderAdapter for OpenAiCompatibleProviderAdapter {
         authority: &ManagedProviderCallAuthority,
         request: &ManagedProviderCallRequest,
     ) -> Result<crate::provider::managed_deepseek::ManagedProviderResponse, String> {
+        let mut effective_request = request.clone();
+        authority
+            .prepare_request_for_budget(&mut effective_request)
+            .map_err(|error| format!("{}: {}", error.domain, error.message))?;
         let provider_config = ProviderConfig::new(
-            &request.provider_identity,
-            &request.provider_kind,
-            &request.base_url,
-            &request.requested_model,
-            &request.credential_reference,
+            &effective_request.provider_identity,
+            &effective_request.provider_kind,
+            &effective_request.base_url,
+            &effective_request.requested_model,
+            &effective_request.credential_reference,
             "2026-07-30T00:00:00Z",
         );
         let credential = CredentialRef::new(
-            &request.credential_reference,
+            &effective_request.credential_reference,
             "env",
             "***",
             &self.provider_subject,
@@ -1420,7 +1425,7 @@ impl LiveLedgerProviderAdapter for OpenAiCompatibleProviderAdapter {
             CredentialBoundary::new("env").map_err(|e| format!("credential boundary: {e}"))?;
         let transport = std::sync::Arc::clone(&self.transport);
         let authority_clone = std::sync::Arc::new(authority.clone());
-        let request_clone = request.clone();
+        let request_clone = effective_request;
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1522,6 +1527,11 @@ impl LiveLedgerProviderAdapter for CodexSubscriptionProviderAdapter {
         {
             return Err("Codex subscription adapter received a non-subscription request".into());
         }
+        let mut effective_request = request.clone();
+        authority
+            .prepare_request_for_budget(&mut effective_request)
+            .map_err(|error| format!("{}: {}", error.domain, error.message))?;
+        let request = &effective_request;
         let permit = self
             .store
             .codex_gateway_start_permit_for_delegated_attempt(&request.binding)?;
@@ -1554,7 +1564,7 @@ impl LiveLedgerProviderAdapter for CodexSubscriptionProviderAdapter {
             max_provider_requests: 1,
             max_retries: request.limits.max_retries,
             max_input_tokens_per_request: request.limits.max_input_tokens,
-            max_output_tokens_per_request: request.limits.max_output_tokens,
+            max_output_tokens_per_request: request.max_output_tokens,
             max_cumulative_tokens: request.limits.max_cumulative_tokens,
             max_cost_usd: None,
             timeout_ms: request.limits.timeout_ms,
@@ -1617,6 +1627,7 @@ fn codex_error_from_adapter_message(error: String) -> ManagedProviderCallError {
         |(domain, message)| (domain, message),
     );
     let pre_send = domain == "provider_pre_send";
+    let no_external_effect = matches!(domain, "provider_request" | "gateway_pre_call");
     let provider_effect = domain.starts_with("provider_");
     codex_error(
         domain,
@@ -1624,6 +1635,8 @@ fn codex_error_from_adapter_message(error: String) -> ManagedProviderCallError {
         pre_send,
         if pre_send {
             ManagedFailureEffect::PreSend
+        } else if no_external_effect {
+            ManagedFailureEffect::NoExternalEffect
         } else if provider_effect {
             ManagedFailureEffect::OutcomeUnknown
         } else {
@@ -7005,7 +7018,7 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
         let status = persisted_task.get("status").and_then(Value::as_str);
         let historical_evidence =
             store.project_rwe_cell_store_evidence(&product_task_id, &ids.delegated_attempt_id)?;
-        if historical_evidence
+        let has_uncertain_provider_effect = historical_evidence
             .get("provider_request_journal")
             .and_then(Value::as_array)
             .is_some_and(|entries| {
@@ -7015,16 +7028,53 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
                         Some("sending" | "outcome_unknown")
                     )
                 })
-            })
-        {
+            });
+        if has_uncertain_provider_effect {
+            let run_status = persisted_task
+                .get("run_id")
+                .and_then(Value::as_str)
+                .map(|run_id| store.get_workflow_run(run_id))
+                .transpose()?
+                .flatten()
+                .and_then(|run| {
+                    run.get("status")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                });
+            if !matches!(
+                run_status.as_deref(),
+                Some("failed" | "cancelled" | "killed")
+            ) {
+                return Err(format!(
+                    "prerequisite attempt requires provider reconciliation; preserved task {product_task_id}"
+                ));
+            }
+            // Close the failed run through the existing Store owner before
+            // selecting any fresh candidate. This records conservative
+            // outcome-unknown terminal evidence, closes its lease, and never
+            // replays or declares the old effect absent.
+            store
+                .finalize_product_task_after_execution(&product_task_id, "recovery-owner")
+                .map_err(|error| {
+                    format!(
+                        "failed prerequisite unknown outcome could not be reconciled through Store: {error}"
+                    )
+                })?;
             if prerequisite_candidate_position + 1 < prerequisite_task_indices.len() {
                 prerequisite_candidate_position += 1;
                 recovery_generation = 0;
                 continue;
             }
-            return Err(format!(
-                "prerequisite attempt requires provider reconciliation; preserved task {product_task_id}"
-            ));
+            if recovery_generation >= CODEX_PREREQUISITE_MAX_RECOVERY_GENERATIONS {
+                return Err(format!(
+                    "prerequisite attempt requires provider reconciliation; preserved task {product_task_id}"
+                ));
+            }
+            // The unknown attempt remains preserved and unreplayable. A new
+            // ProductTask identity is permitted only as a bounded acquisition
+            // of this same frozen prerequisite definition.
+            recovery_generation += 1;
+            continue;
         }
         let intake_contract_matches = persisted_task
             .get("intake_contract_sha256")
@@ -7152,14 +7202,66 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
                         .get("provider_request_count")
                         .and_then(Value::as_u64)
                         == Some(0)
-                    && receipt.get("cost_evidence").and_then(Value::as_str) == Some("reconciled")
+                    && matches!(
+                        receipt.get("cost_evidence").and_then(Value::as_str),
+                        Some("reconciled" | "unavailable")
+                    )
                     && receipt.get("cleanup_status").and_then(Value::as_str) == Some("cleaned")
             });
-            if terminal_class != Some("failed") || !reconciled_before_provider {
+            let reconciled_known_failure_after_provider = failure_receipt.is_some_and(|receipt| {
+                receipt.get("schema_version").and_then(Value::as_str)
+                    == Some("managed_delegated_failure_terminal_evidence.v1")
+                    && receipt.get("product_task_id").and_then(Value::as_str)
+                        == Some(product_task_id.as_str())
+                    && receipt
+                        .get("provider_request_states")
+                        .and_then(Value::as_array)
+                        .is_some_and(|states| {
+                            states.iter().any(|state| {
+                                state.get("status").and_then(Value::as_str) == Some("succeeded")
+                            })
+                        })
+                    && matches!(
+                        receipt.get("cost_evidence").and_then(Value::as_str),
+                        Some("reconciled" | "unavailable")
+                    )
+                    && receipt.get("cleanup_status").and_then(Value::as_str) == Some("cleaned")
+            });
+            if terminal_class != Some("failed")
+                || (!reconciled_before_provider && !reconciled_known_failure_after_provider)
+            {
                 return Err(
                     "failed prerequisite recovery did not produce a reconciled non-effect failure terminal"
                         .into(),
                 );
+            }
+            if reconciled_known_failure_after_provider {
+                // This attempt already has a known provider effect.  It is
+                // therefore never replayable, even though its later stage
+                // failed before send.  Consume the existing explicit corpus
+                // fallback instead; it has a fresh ProductTask/delegation
+                // identity and remains within the frozen prerequisite scope.
+                if prerequisite_candidate_position + 1 >= prerequisite_task_indices.len() {
+                    // Both explicit frozen candidates may themselves have
+                    // terminal, known failures after a composition defect.
+                    // Permit exactly one additional fresh ProductTask for the
+                    // same frozen fallback definition. This is not a replay:
+                    // it gets new Store/delegation/lease identities, while
+                    // every prior effect and terminal receipt remains closed
+                    // and immutable. Keep the retry bounded to one fresh
+                    // prerequisite admission.
+                    if recovery_generation >= 1 {
+                        return Err(
+                            "known prerequisite provider effect has no remaining bounded recovery"
+                                .into(),
+                        );
+                    }
+                    recovery_generation += 1;
+                    continue;
+                }
+                prerequisite_candidate_position += 1;
+                recovery_generation = 0;
+                continue;
             }
             if recovery_generation >= 1 {
                 return Err("bounded Codex prerequisite recovery attempts exhausted".into());
@@ -7317,6 +7419,18 @@ mod tests {
         assert!(!error.retryable);
         assert_eq!(error.effect, ManagedFailureEffect::NoExternalEffect);
         assert_eq!(error.domain, "adapter_pre_gateway");
+    }
+
+    #[test]
+    fn codex_adapter_request_rejection_preserves_no_effect_classification() {
+        for domain in ["provider_request", "gateway_pre_call"] {
+            let error = codex_error_from_adapter_message(format!(
+                "{domain}: bounded request was rejected before provider send"
+            ));
+            assert!(!error.retryable);
+            assert_eq!(error.effect, ManagedFailureEffect::NoExternalEffect);
+            assert_eq!(error.domain, domain);
+        }
     }
 
     #[test]

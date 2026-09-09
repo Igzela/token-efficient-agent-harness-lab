@@ -1126,6 +1126,13 @@ pub trait ManagedAuthoritySource: Send + Sync {
         binding: &ManagedCallBinding,
     ) -> Result<PersistedAuthoritySnapshot, String>;
 
+    /// Read the current durable reservation/cumulative token total from the
+    /// existing Store owner.  Implementations must return zero only when no
+    /// durable journal is applicable; they must not manufacture usage.
+    fn durable_token_reservation(&self, _binding: &ManagedCallBinding) -> Result<u64, String> {
+        Ok(0)
+    }
+
     /// Atomically persist a redacted pre-send network-effect claim through the
     /// existing authority owner. A production source must reject duplicate,
     /// recovered, or outcome-unknown claims before transport.
@@ -1186,6 +1193,51 @@ impl ManagedProviderCallAuthority {
 
     pub fn budget(&self) -> &ManagedBudgetLedger {
         &self.budget
+    }
+
+    /// Lower a stage request to the remaining cumulative envelope before the
+    /// Store claim is made.  The ProductTask/Store still owns the durable
+    /// budget; this only projects its current in-memory ledger state onto the
+    /// request that will be claimed and sent.  Without this projection, a
+    /// later sequential stage can reserve its full max-output allowance even
+    /// when the prior stage has already consumed part of the task envelope.
+    pub fn prepare_request_for_budget(
+        &self,
+        request: &mut ManagedProviderCallRequest,
+    ) -> Result<(), ManagedProviderCallError> {
+        request
+            .validate()
+            .map_err(ManagedProviderCallError::invalid_request)?;
+        let snapshot = self
+            .budget
+            .snapshot()
+            .map_err(ManagedProviderCallError::invalid_request)?;
+        let durable_reserved = self
+            .source
+            .durable_token_reservation(&request.binding)
+            .map_err(ManagedProviderCallError::invalid_request)?;
+        let already_reserved = snapshot
+            .cumulative_tokens
+            .saturating_add(snapshot.reserved_input_tokens)
+            .saturating_add(snapshot.reserved_output_tokens)
+            .max(durable_reserved);
+        let remaining = self
+            .budget
+            .limits
+            .max_cumulative_tokens
+            .saturating_sub(already_reserved);
+        let input_tokens = request.estimated_input_tokens();
+        let remaining_output = remaining.saturating_sub(input_tokens);
+        let bounded_output = request.max_output_tokens.min(remaining_output);
+        if bounded_output == 0 {
+            return Err(ManagedProviderCallError::invalid_request(
+                "managed cumulative token ceiling leaves no output budget before send",
+            ));
+        }
+        request.max_output_tokens = bounded_output;
+        request
+            .validate()
+            .map_err(ManagedProviderCallError::invalid_request)
     }
 
     pub fn validate_current_authority(
@@ -1483,8 +1535,10 @@ impl ManagedDeepSeekProvider {
         authority: &ManagedProviderCallAuthority,
         request: &ManagedProviderCallRequest,
     ) -> Result<ManagedProviderResponse, ManagedProviderCallError> {
+        let mut effective_request = request.clone();
+        authority.prepare_request_for_budget(&mut effective_request)?;
         authority
-            .invoke_with_retry(request, || self.invoke(request))
+            .invoke_with_retry(&effective_request, || self.invoke(&effective_request))
             .await
     }
 }
@@ -2653,6 +2707,79 @@ followed by a one-sentence summary of the change.";
         .unwrap();
         ledger.reserve_before_send(1, 10).unwrap();
         assert!(ledger.reserve_before_send(1, 1).is_err());
+    }
+
+    #[test]
+    fn authority_caps_later_stage_to_remaining_cumulative_envelope() {
+        let limits = ManagedCallLimits {
+            max_requests: 3,
+            max_retries: 0,
+            max_input_tokens: 800,
+            max_output_tokens: 400,
+            max_cumulative_tokens: 1_200,
+            ..ManagedCallLimits::default()
+        };
+        let authority = ManagedProviderCallAuthority::new(
+            Arc::new(StaticAuthority {
+                limits: limits.clone(),
+                execution_contract: None,
+            }),
+            limits.clone(),
+        )
+        .unwrap();
+
+        let mut first = request(DeepSeekProtocol::OpenAiCompatible);
+        first.limits = limits.clone();
+        first.max_output_tokens = limits.max_output_tokens;
+        authority.prepare_request_for_budget(&mut first).unwrap();
+        assert_eq!(first.max_output_tokens, limits.max_output_tokens);
+
+        let mut response = manual_response();
+        response.usage.cumulative_tokens = 900;
+        authority.budget().reconcile(Some(&response)).unwrap();
+
+        let input_tokens = first.estimated_input_tokens();
+        let mut later = first.clone();
+        authority.prepare_request_for_budget(&mut later).unwrap();
+        assert_eq!(
+            later.max_output_tokens,
+            (limits.max_cumulative_tokens - response.usage.cumulative_tokens)
+                .saturating_sub(input_tokens)
+                .min(limits.max_output_tokens)
+        );
+        assert!(later.max_output_tokens < first.max_output_tokens);
+    }
+
+    #[test]
+    fn authority_rejects_later_stage_when_no_output_budget_remains() {
+        let limits = ManagedCallLimits {
+            max_requests: 3,
+            max_retries: 0,
+            max_input_tokens: 800,
+            max_output_tokens: 400,
+            max_cumulative_tokens: 1_200,
+            ..ManagedCallLimits::default()
+        };
+        let authority = ManagedProviderCallAuthority::new(
+            Arc::new(StaticAuthority {
+                limits: limits.clone(),
+                execution_contract: None,
+            }),
+            limits.clone(),
+        )
+        .unwrap();
+        let mut response = manual_response();
+        response.usage.cumulative_tokens = limits.max_cumulative_tokens;
+        authority.budget().reconcile(Some(&response)).unwrap();
+
+        let mut later = request(DeepSeekProtocol::OpenAiCompatible);
+        later.limits = limits.clone();
+        later.max_output_tokens = limits.max_output_tokens;
+        let error = authority
+            .prepare_request_for_budget(&mut later)
+            .unwrap_err();
+        assert_eq!(error.effect, ManagedFailureEffect::NoExternalEffect);
+        assert!(error.message.contains("leaves no output budget"));
     }
 
     #[test]
