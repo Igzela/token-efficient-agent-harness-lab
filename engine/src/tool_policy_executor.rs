@@ -844,8 +844,9 @@ impl NodeExecutor for ToolPolicyNodeExecutor<'_> {
         // Only an explicit launcher observation can establish this boundary.
         // An absent process outcome, or an authority error string, cannot.
         // The consumed tool receipt is deliberately not reactivated here.
-        let codex_effect_not_started = output.codex_nonretryable_pre_child();
-        if output.status == "failed" && !codex_effect_not_started {
+        let effect_not_started =
+            output.codex_nonretryable_pre_child() || output.managed_provider_no_external_effect();
+        if output.status == "failed" && !effect_not_started {
             let inner_domain = output.error_domain.as_deref().unwrap_or("unknown");
             output.error_message = Some(format!(
                 "tool execution began and failed with domain {inner_domain}; effect outcome is unknown"
