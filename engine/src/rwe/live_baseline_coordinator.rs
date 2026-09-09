@@ -79,6 +79,9 @@ pub const RWE_LEDGER_CELL_COMPOSITION_SEAM: &str =
 /// `ACP_RWE_ARMED_LIVE_RUN` gate; CI never sets either).
 pub const RWE_OPERATOR_LIVE_RUN_TOKEN: &str = "ACP_RWE_OPERATOR_LIVE_RUN";
 
+const CODEX_PREREQUISITE_PRIMARY_TASK_ID: &str = "rwe-minimum-t1-fix_flow_linkage";
+const CODEX_PREREQUISITE_FALLBACK_TASK_ID: &str = "rwe-minimum-t2-draft_contract_tests";
+
 fn sort_value(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
@@ -95,6 +98,29 @@ fn sort_value(value: &Value) -> Value {
         Value::Array(items) => Value::Array(items.iter().map(sort_value).collect()),
         other => other.clone(),
     }
+}
+
+fn codex_prerequisite_candidate_indices(
+    frozen: &OperatorFrozenContractSet,
+) -> Result<Vec<usize>, String> {
+    let primary_index = frozen
+        .corpus
+        .tasks
+        .iter()
+        .position(|task| task.task_id == CODEX_PREREQUISITE_PRIMARY_TASK_ID)
+        .ok_or("frozen RWE corpus is missing the Codex prerequisite primary task")?;
+    let mut candidates = vec![primary_index];
+    if let Some(fallback_index) = frozen
+        .corpus
+        .tasks
+        .iter()
+        .position(|task| task.task_id == CODEX_PREREQUISITE_FALLBACK_TASK_ID)
+    {
+        if fallback_index != primary_index {
+            candidates.push(fallback_index);
+        }
+    }
+    Ok(candidates)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -6771,45 +6797,77 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
     }
 
     let frozen = freeze_current_operator_contract_set()?;
-    let frozen_task = frozen
-        .corpus
-        .tasks
-        .first()
-        .cloned()
-        .ok_or("frozen RWE corpus has no prerequisite task")?;
-    if frozen_task.source_commit != FROZEN_RWE_TARGET_MAIN_SHA {
-        return Err("frozen prerequisite task source revision is not exact".into());
-    }
-    let verifier = frozen_task
-        .expected_verification_commands
-        .first()
-        .cloned()
-        .ok_or("frozen prerequisite task verifier is missing")?;
-    let schedule_cell = frozen
-        .schedule
-        .body
-        .get("cells")
-        .and_then(Value::as_array)
-        .and_then(|cells| cells.first())
-        .cloned()
-        .ok_or("frozen schedule has no cell budget for prerequisite")?;
     // A prior attempt may have failed after Store admission but before the
     // provider request. Reconcile that exact task through the existing
     // ProductTask finalizer before making one bounded recovery admission. A
     // recovered attempt gets fresh immutable delegation/task identities; the
     // failed history remains in Store and is never overwritten or replayed.
+    //
+    // If the first frozen task has an unreconciled provider outcome, preserve
+    // that task and move to a different frozen task instead of replaying its
+    // objective. This keeps the prerequisite finite and real while respecting
+    // the no-replay boundary for an outcome-unknown provider effect.
+    let prerequisite_task_indices = codex_prerequisite_candidate_indices(&frozen)?;
+    let primary_task_index = prerequisite_task_indices[0];
+    let mut prerequisite_candidate_position = 0usize;
     let mut recovery_generation = 0u8;
-    let (product_task_id, persisted_task, ids) = loop {
-        let execution_run_id = if recovery_generation == 0 {
-            "codex-prerequisite".to_string()
+    let (product_task_id, persisted_task, ids, selected_task, selected_schedule_cell) = loop {
+        let prerequisite_task_index = prerequisite_task_indices[prerequisite_candidate_position];
+        let is_primary_prerequisite = prerequisite_task_index == primary_task_index;
+        let frozen_task = frozen
+            .corpus
+            .tasks
+            .get(prerequisite_task_index)
+            .cloned()
+            .ok_or("frozen RWE corpus has no remaining prerequisite task")?;
+        if frozen_task.source_commit != FROZEN_RWE_TARGET_MAIN_SHA {
+            return Err("frozen prerequisite task source revision is not exact".into());
+        }
+        let verifier = frozen_task
+            .expected_verification_commands
+            .first()
+            .cloned()
+            .ok_or("frozen prerequisite task verifier is missing")?;
+        let schedule_cell = frozen
+            .schedule
+            .body
+            .get("cells")
+            .and_then(Value::as_array)
+            .and_then(|cells| {
+                cells.iter().find(|cell| {
+                    cell.get("task_id").and_then(Value::as_str)
+                        == Some(frozen_task.task_id.as_str())
+                })
+            })
+            .cloned()
+            .ok_or("frozen schedule has no cell budget for prerequisite task")?;
+        let execution_run_id = if is_primary_prerequisite {
+            if recovery_generation == 0 {
+                "codex-prerequisite".to_string()
+            } else {
+                format!("codex-prerequisite-recovery-{recovery_generation}")
+            }
         } else {
-            format!("codex-prerequisite-recovery-{recovery_generation}")
+            let base = format!("codex-prerequisite-{}", frozen_task.task_id);
+            if recovery_generation == 0 {
+                base
+            } else {
+                format!("{base}-recovery-{recovery_generation}")
+            }
         };
         let ids = cell_identities_for(&execution_run_id, &schedule_cell, &frozen_task)?;
-        let idempotency_key = format!(
-            "rwe-golden-prerequisite-codex-luna-xhigh-v{}",
-            recovery_generation + 1
-        );
+        let idempotency_key = if is_primary_prerequisite {
+            format!(
+                "rwe-golden-prerequisite-codex-luna-xhigh-v{}",
+                recovery_generation + 1
+            )
+        } else {
+            format!(
+                "rwe-golden-prerequisite-codex-luna-xhigh-{}-v{}",
+                frozen_task.task_id,
+                recovery_generation + 1
+            )
+        };
         let workspace_id = idempotency_key.clone();
         let intake = ProductTaskIntakeRequest {
             objective: frozen_task.objective.clone(),
@@ -6888,7 +6946,14 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
                 })
             })
         {
-            return Err(format!("prerequisite attempt requires provider reconciliation; preserved task {product_task_id}"));
+            if prerequisite_candidate_position + 1 < prerequisite_task_indices.len() {
+                prerequisite_candidate_position += 1;
+                recovery_generation = 0;
+                continue;
+            }
+            return Err(format!(
+                "prerequisite attempt requires provider reconciliation; preserved task {product_task_id}"
+            ));
         }
         if matches!(status, Some("completed" | "workspace_bound")) {
             if persisted_task.get("output_intent").and_then(Value::as_str) != Some("draft_pr")
@@ -6902,7 +6967,13 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
                         .into(),
                 );
             }
-            break (product_task_id, persisted_task, ids);
+            break (
+                product_task_id,
+                persisted_task,
+                ids,
+                frozen_task,
+                schedule_cell,
+            );
         }
 
         let run_status = persisted_task
@@ -7062,8 +7133,8 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
         &frozen,
         prerequisite_run_id,
         "",
-        &schedule_cell,
-        &frozen_task,
+        &selected_schedule_cell,
+        &selected_task,
         &ids,
         &product_task_id,
         None,
@@ -8669,6 +8740,30 @@ mod tests {
         let b = cell_identities_for("run-x", cell, task).unwrap();
         assert_eq!(a, b);
         assert!(a.branch_name.starts_with("acp/rwe/"));
+    }
+
+    #[test]
+    fn codex_prerequisite_candidates_are_primary_then_explicit_fallback() {
+        let frozen = freeze_current_operator_contract_set().unwrap();
+        let indices = codex_prerequisite_candidate_indices(&frozen).unwrap();
+        let task_ids = indices
+            .iter()
+            .map(|index| frozen.corpus.tasks[*index].task_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            task_ids,
+            vec![
+                CODEX_PREREQUISITE_PRIMARY_TASK_ID,
+                CODEX_PREREQUISITE_FALLBACK_TASK_ID,
+            ]
+        );
+        for task_id in task_ids {
+            assert!(frozen.schedule.body["cells"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|cell| cell.get("task_id").and_then(Value::as_str) == Some(task_id)));
+        }
     }
 
     #[test]
