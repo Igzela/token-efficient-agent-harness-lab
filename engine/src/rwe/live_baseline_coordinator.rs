@@ -1851,20 +1851,35 @@ fn codex_tool_calls(response: &Value) -> Vec<ManagedToolCall> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|item| item.get("type").and_then(Value::as_str) == Some("function_call"))
+        .filter(|item| {
+            matches!(
+                item.get("type").and_then(Value::as_str),
+                Some("function_call") | Some("function")
+            )
+        })
         .filter_map(|item| {
             let id = item
                 .get("call_id")
                 .or_else(|| item.get("id"))
+                .and_then(Value::as_str)
+                .unwrap_or("call_generated");
+            let name = item
+                .get("name")
+                .or_else(|| item.pointer("/function/name"))
                 .and_then(Value::as_str)?;
-            let name = item.get("name").and_then(Value::as_str)?;
-            let arguments = item.get("arguments").and_then(Value::as_str)?;
+            let arguments_val = item
+                .get("arguments")
+                .or_else(|| item.pointer("/function/arguments"))?;
+            let arguments = match arguments_val {
+                Value::String(s) => s.clone(),
+                other => serde_json::to_string(other).ok()?,
+            };
             Some(ManagedToolCall {
                 id: id.to_string(),
                 call_type: "function".into(),
                 function: ManagedFunctionCall {
                     name: name.to_string(),
-                    arguments: arguments.to_string(),
+                    arguments,
                 },
             })
         })
@@ -2735,15 +2750,9 @@ impl LedgerWorker for LiveLedgerCellWorker {
                         "provider response conflicts with the reconciled journal entry",
                     ));
                 }
-                let trimmed = response.output_text.trim();
-                let candidate = if let Some(body) = trimmed.strip_prefix("```json") {
-                    body.strip_suffix("```").map(str::trim).unwrap_or("")
-                } else if let Some(body) = trimmed.strip_prefix("```") {
-                    body.strip_suffix("```").map(str::trim).unwrap_or("")
-                } else {
-                    trimmed
-                };
-                if let Ok(action_val) = serde_json::from_str::<Value>(candidate) {
+                if let Ok(action_val) =
+                    LocalProductStore::parse_managed_workspace_action(&response.output_text)
+                {
                     if action_val.get("schema_version").and_then(Value::as_str)
                         == Some("managed_workspace_action.v1")
                     {
@@ -7667,6 +7676,64 @@ mod tests {
         );
         assert!(body.get("max_output_tokens").is_none());
         assert_eq!(body["tools"][0]["type"], json!("function"));
+    }
+
+    #[test]
+    fn codex_tool_calls_parses_string_and_object_arguments() {
+        let response = json!({
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "apply_workspace_action",
+                    "arguments": "{\"action\":\"replace_text\"}"
+                },
+                {
+                    "type": "function_call",
+                    "id": "call_2",
+                    "name": "apply_workspace_action",
+                    "arguments": {"action": "replace_text", "path": "src/lib.rs"}
+                },
+                {
+                    "type": "function",
+                    "id": "call_3",
+                    "function": {
+                        "name": "apply_workspace_action",
+                        "arguments": {"action": "replace_text"}
+                    }
+                }
+            ]
+        });
+        let calls = codex_tool_calls(&response);
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0].id, "call_1");
+        assert_eq!(calls[0].function.name, "apply_workspace_action");
+        assert_eq!(calls[0].function.arguments, "{\"action\":\"replace_text\"}");
+        assert_eq!(calls[1].id, "call_2");
+        assert_eq!(calls[1].function.name, "apply_workspace_action");
+        assert!(calls[1].function.arguments.contains("\"src/lib.rs\""));
+        assert_eq!(calls[2].id, "call_3");
+        assert_eq!(calls[2].function.name, "apply_workspace_action");
+    }
+
+    #[test]
+    fn coordinator_recognizes_workspace_action_fence_variants() {
+        let action = r#"{"schema_version":"managed_workspace_action.v1","action":"replace_text","path":"src/lib.rs"}"#;
+        let variants = [
+            action.to_string(),
+            format!("```json\n{action}\n```"),
+            format!("```JSON\r\n{action}\r\n```"),
+            format!("```\n{action}\n```"),
+            format!("```json {action} ```"),
+            format!("``` {action} ```"),
+        ];
+        for output in &variants {
+            let parsed = LocalProductStore::parse_managed_workspace_action(output).unwrap();
+            assert_eq!(
+                parsed.get("schema_version").and_then(Value::as_str),
+                Some("managed_workspace_action.v1")
+            );
+        }
     }
 
     #[test]

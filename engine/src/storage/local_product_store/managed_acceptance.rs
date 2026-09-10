@@ -11653,13 +11653,34 @@ impl LocalProductStore {
     /// Accept the exact action object either bare or inside one complete JSON
     /// markdown fence. No prose extraction is allowed; the downstream owner
     /// still validates the parsed action against every persisted boundary.
-    fn parse_managed_workspace_action(model_output: &str) -> Result<Value, serde_json::Error> {
+    pub(crate) fn parse_managed_workspace_action(
+        model_output: &str,
+    ) -> Result<Value, serde_json::Error> {
         let trimmed = model_output.trim();
-        let candidate = if let Some(body) = trimmed.strip_prefix("```json") {
-            body.strip_suffix("```").map(str::trim).unwrap_or("")
-        } else {
-            trimmed
-        };
+        let candidate =
+            if trimmed.starts_with("```") && trimmed.ends_with("```") && trimmed.len() >= 6 {
+                let inner = &trimmed[3..trimmed.len() - 3];
+                if let Some(first_newline) = inner.find('\n') {
+                    let first_line = inner[..first_newline].trim();
+                    if first_line.is_empty() || first_line.eq_ignore_ascii_case("json") {
+                        inner[first_newline + 1..].trim()
+                    } else {
+                        trimmed
+                    }
+                } else {
+                    let inner_trimmed = inner.trim();
+                    if let Some(rest) = inner_trimmed
+                        .strip_prefix("json")
+                        .or_else(|| inner_trimmed.strip_prefix("JSON"))
+                    {
+                        rest.trim()
+                    } else {
+                        inner_trimmed
+                    }
+                }
+            } else {
+                trimmed
+            };
         serde_json::from_str(candidate)
     }
 
@@ -16305,9 +16326,39 @@ mod tests {
     #[test]
     fn managed_workspace_action_parser_allows_only_one_json_fence() {
         let action = r#"{"schema_version":"managed_workspace_action.v1","action":"replace_text"}"#;
-        let fenced = format!("```json\n{action}\n```");
+        let fenced_json = format!("```json\n{action}\n```");
         assert_eq!(
-            LocalProductStore::parse_managed_workspace_action(&fenced).unwrap()["schema_version"],
+            LocalProductStore::parse_managed_workspace_action(&fenced_json).unwrap()
+                ["schema_version"],
+            "managed_workspace_action.v1"
+        );
+        let fenced_plain = format!("```\n{action}\n```");
+        assert_eq!(
+            LocalProductStore::parse_managed_workspace_action(&fenced_plain).unwrap()
+                ["schema_version"],
+            "managed_workspace_action.v1"
+        );
+        let fenced_caps = format!("```JSON\r\n{action}\r\n```");
+        assert_eq!(
+            LocalProductStore::parse_managed_workspace_action(&fenced_caps).unwrap()
+                ["schema_version"],
+            "managed_workspace_action.v1"
+        );
+        let single_line_json = format!("```json {action} ```");
+        assert_eq!(
+            LocalProductStore::parse_managed_workspace_action(&single_line_json).unwrap()
+                ["schema_version"],
+            "managed_workspace_action.v1"
+        );
+        let single_line_plain = format!("``` {action} ```");
+        assert_eq!(
+            LocalProductStore::parse_managed_workspace_action(&single_line_plain).unwrap()
+                ["schema_version"],
+            "managed_workspace_action.v1"
+        );
+        let bare = action;
+        assert_eq!(
+            LocalProductStore::parse_managed_workspace_action(bare).unwrap()["schema_version"],
             "managed_workspace_action.v1"
         );
         assert!(
@@ -16316,6 +16367,7 @@ mod tests {
         assert!(
             LocalProductStore::parse_managed_workspace_action("```json\n{}\n```\nafter").is_err()
         );
+        assert!(LocalProductStore::parse_managed_workspace_action("```python\n{}\n```").is_err());
     }
 
     #[test]
