@@ -6104,6 +6104,15 @@ fn execute_armed_delegated_rwe_cell(
     if product_task.get("output_intent").and_then(Value::as_str) != Some("draft_pr") {
         return Err("delegated RWE execution requires the frozen draft_pr output contract".into());
     }
+    if let Some(workspace_path_str) = product_task
+        .pointer("/workspace_binding/workspace_path")
+        .and_then(Value::as_str)
+    {
+        crate::rwe::frozen_rwe_bindings::ensure_frozen_rwe_workspace_active_baseline(
+            std::path::Path::new(workspace_path_str),
+            Some(target_repo_path),
+        )?;
+    }
     let delegation_id = format!("rwe-del:{run_id}:{}", ids.cell_id);
     let attempt_id = ids.delegated_attempt_id.clone();
     let now = store.require_now()?;
@@ -7402,7 +7411,7 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
         &product_task_id,
         None,
         Some(&package),
-        std::path::Path::new(&workspace_path),
+        &target_repo_path,
         &None,
     )?;
     let evidence = store.get_product_task_terminal_evidence(&product_task_id)?;
