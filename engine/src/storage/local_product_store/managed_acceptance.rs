@@ -11653,7 +11653,9 @@ impl LocalProductStore {
     /// Accept the exact action object either bare or inside one complete JSON
     /// markdown fence. No prose extraction is allowed; the downstream owner
     /// still validates the parsed action against every persisted boundary.
-    fn parse_managed_workspace_action(model_output: &str) -> Result<Value, serde_json::Error> {
+    pub(crate) fn parse_managed_workspace_action(
+        model_output: &str,
+    ) -> Result<Value, serde_json::Error> {
         let trimmed = model_output.trim();
         let candidate =
             if trimmed.starts_with("```") && trimmed.ends_with("```") && trimmed.len() >= 6 {
