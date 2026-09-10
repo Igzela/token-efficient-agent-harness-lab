@@ -521,6 +521,7 @@ pub fn prepare_git_worktree(
     .map_err(|error| format!("{GIT_WORKTREE_ADD_OUTCOME_UNKNOWN}: {error}"))?;
     let canonical_workspace = canonical_existing_dir(&planned_workspace, "workspace_path")
         .map_err(|error| format!("{GIT_WORKTREE_ADD_OUTCOME_UNKNOWN}: {error}"))?;
+    copy_untracked_runtime_fixtures(&target_repo, &canonical_workspace)?;
 
     let origin_remote_fingerprint = hex::encode(Sha256::digest(origin_remote.as_bytes()));
     Ok(GitWorkspaceInfo {
@@ -598,6 +599,7 @@ pub fn inspect_registered_git_worktree(
     }
     let (default_branch, origin_remote, default_branch_sha) =
         inspect_git_source_identity(config, &target_repo)?;
+    copy_untracked_runtime_fixtures(&target_repo, &workspace)?;
 
     let origin_remote_fingerprint = hex::encode(Sha256::digest(origin_remote.as_bytes()));
     Ok(GitWorkspaceInfo {
@@ -610,6 +612,35 @@ pub fn inspect_registered_git_worktree(
         default_branch_sha,
         workspace_mode: "git_worktree".to_string(),
     })
+}
+
+fn copy_untracked_runtime_fixtures(
+    target_repo: &Path,
+    workspace: &Path,
+) -> Result<(), String> {
+    let target_current = target_repo.join("alters").join("current");
+    let ws_current = workspace.join("alters").join("current");
+    if target_current.is_dir() && !ws_current.exists() {
+        copy_dir_recursive(&target_current, &ws_current)
+            .map_err(|err| format!("failed to copy runtime fixture: {err}"))?;
+    }
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let src_child = entry.path();
+        let dst_child = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_child, &dst_child)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&src_child, &dst_child)?;
+        }
+    }
+    Ok(())
 }
 
 /// Capture the stable target identity used both at workspace admission and

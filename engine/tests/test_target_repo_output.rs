@@ -444,6 +444,26 @@ fn target_output_rejects_workspace_symlinks() {
     assert!(error.contains("symlink"));
 }
 
+#[test]
+fn prepare_git_worktree_copies_untracked_runtime_fixtures() {
+    let (target, _, workspace_root) = fixture();
+    let workspace = workspace_root.path().join("workspace");
+    let config = TargetRepoOutputConfig::for_test(true, false);
+
+    // Create an alters/current fixture in target
+    let target_current = target.path().join("alters").join("current");
+    std::fs::create_dir_all(&target_current).unwrap();
+    std::fs::write(target_current.join("snapshot.yaml"), "version: 1\n").unwrap();
+
+    let prepared = prepare_git_worktree(&config, target.path(), &workspace, "main").unwrap();
+    assert_eq!(prepared.workspace_path, workspace.canonicalize().unwrap().to_string_lossy());
+    assert!(workspace.join("alters").join("current").join("snapshot.yaml").is_file());
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("alters").join("current").join("snapshot.yaml")).unwrap(),
+        "version: 1\n"
+    );
+}
+
 fn prepared_hash(patch: &str) -> String {
     use sha2::{Digest, Sha256};
     format!("sha256:{}", hex::encode(Sha256::digest(patch.as_bytes())))
