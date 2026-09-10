@@ -83,10 +83,16 @@ const CODEX_PREREQUISITE_PRIMARY_TASK_ID: &str = "rwe-minimum-t1-fix_flow_linkag
 const CODEX_PREREQUISITE_FALLBACK_TASK_ID: &str = "rwe-minimum-t2-draft_contract_tests";
 // Finite operator recovery remains bounded even when prior immutable attempts
 // are preserved after an upstream outcome-unknown response.
-const CODEX_PREREQUISITE_MAX_RECOVERY_GENERATIONS: u8 = 5;
+pub const RWE_CODEX_PREREQUISITE_MAX_RECOVERY_GENERATIONS_TOKEN: &str =
+    "ACP_CODEX_PREREQUISITE_MAX_RECOVERY_GENERATIONS";
+const CODEX_PREREQUISITE_DEFAULT_MAX_RECOVERY_GENERATIONS: u8 = 10;
 
 fn codex_prerequisite_recovery_available(recovery_generation: u8) -> bool {
-    recovery_generation < CODEX_PREREQUISITE_MAX_RECOVERY_GENERATIONS
+    let limit = std::env::var(RWE_CODEX_PREREQUISITE_MAX_RECOVERY_GENERATIONS_TOKEN)
+        .ok()
+        .and_then(|val| val.parse::<u8>().ok())
+        .unwrap_or(CODEX_PREREQUISITE_DEFAULT_MAX_RECOVERY_GENERATIONS);
+    recovery_generation < limit
 }
 
 fn recovered_failure_terminal_receipt(
@@ -9080,9 +9086,9 @@ mod tests {
     }
 
     #[test]
-    fn codex_prerequisite_recovery_stops_after_v6() {
-        assert!(codex_prerequisite_recovery_available(4));
-        assert!(!codex_prerequisite_recovery_available(5));
+    fn codex_prerequisite_recovery_stops_at_ceiling() {
+        assert!(codex_prerequisite_recovery_available(9));
+        assert!(!codex_prerequisite_recovery_available(10));
     }
 
     #[test]
