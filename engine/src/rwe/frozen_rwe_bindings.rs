@@ -1005,7 +1005,9 @@ mod tests {
             .status()
             .unwrap();
         assert!(status2.success());
-        assert!(ensure_frozen_rwe_workspace_active_baseline(temp2.path(), Some(temp.path())).is_ok());
+        assert!(
+            ensure_frozen_rwe_workspace_active_baseline(temp2.path(), Some(temp.path())).is_ok()
+        );
         assert!(validate_frozen_rwe_active_baseline(temp2.path()).is_ok());
     }
 }

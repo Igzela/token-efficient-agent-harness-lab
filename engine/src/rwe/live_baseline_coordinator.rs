@@ -7391,6 +7391,10 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
         .and_then(Value::as_str)
         .ok_or("Codex prerequisite workspace binding path is missing")?
         .to_string();
+    crate::rwe::frozen_rwe_bindings::ensure_frozen_rwe_workspace_active_baseline(
+        std::path::Path::new(&workspace_path),
+        Some(&target_repo_path),
+    )?;
     let prerequisite_run_id = ids
         .workflow_id
         .strip_prefix("rwe-wf:")
