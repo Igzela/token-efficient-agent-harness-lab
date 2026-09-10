@@ -336,15 +336,15 @@ async fn create_or_reconcile_github_pull_request(
         .await
         .map_err(|error| format!("github_pr_create_outcome_unknown: {error}"))?;
     if !created.status().is_success() {
-        if matches!(created.status().as_u16(), 403 | 429) {
+        let status = created.status();
+        let body_text = created.text().await.unwrap_or_default();
+        if matches!(status.as_u16(), 403 | 429) {
             return Err(format!(
-                "github_pr_rate_limited_or_forbidden_known: status {}",
-                created.status()
+                "github_pr_rate_limited_or_forbidden_known: status {status}: {body_text}"
             ));
         }
         return Err(format!(
-            "github_pr_create_failed_known: status {}",
-            created.status()
+            "github_pr_create_failed_known: status {status}: {body_text}"
         ));
     }
     let created_body: Value = created
@@ -594,7 +594,23 @@ pub fn inspect_registered_git_worktree(
     .trim()
     .to_string();
     if actual_source != expected_source {
-        return Err("workspace_path source revision does not match target repository".to_string());
+        let parent_source = run_git(
+            config,
+            &workspace,
+            &[
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                "HEAD^{commit}^",
+            ],
+        )
+        .map(|out| out.stdout.trim().to_string())
+        .unwrap_or_default();
+        if parent_source != expected_source {
+            return Err(
+                "workspace_path source revision does not match target repository".to_string(),
+            );
+        }
     }
     let (default_branch, origin_remote, default_branch_sha) =
         inspect_git_source_identity(config, &target_repo)?;
