@@ -89,6 +89,17 @@ fn codex_prerequisite_recovery_available(recovery_generation: u8) -> bool {
     recovery_generation < CODEX_PREREQUISITE_MAX_RECOVERY_GENERATIONS
 }
 
+fn recovered_failure_terminal_receipt(
+    durable_terminal: Option<Value>,
+    finalized: &Value,
+) -> Option<Value> {
+    durable_terminal.or_else(|| {
+        finalized
+            .pointer("/delegated_terminal/failure_terminal_evidence")
+            .cloned()
+    })
+}
+
 fn sort_value(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
@@ -7184,22 +7195,26 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
             } else {
                 None
             };
-            let terminal_class = finalized
-                .pointer("/delegated_terminal/terminal/terminal_class")
+            // The finalizer may reuse a task whose delegation was already
+            // closed. In that case its transient `delegated_terminal` is
+            // absent, while the same Store owner still has the durable
+            // terminal receipt. Prefer that durable state after every
+            // finalizer call rather than treating an omitted transient value
+            // as missing reconciliation evidence.
+            let failure_receipt = recovered_failure_terminal_receipt(durable_terminal, &finalized);
+            let terminal_class = failure_receipt
+                .as_ref()
+                .and_then(|receipt| receipt.get("terminal_class"))
                 .and_then(Value::as_str)
                 .or_else(|| {
-                    durable_terminal
-                        .as_ref()
-                        .and_then(|receipt| receipt.get("terminal_class"))
+                    finalized
+                        .pointer("/delegated_terminal/terminal/terminal_class")
                         .and_then(Value::as_str)
                 });
             // An absent journal/receipt does not prove reconciliation. Require
             // the Store finalizer's affirmative terminal evidence before any
             // recovery admission; historical replay needs the durable receipt.
-            let failure_receipt = finalized
-                .pointer("/delegated_terminal/failure_terminal_evidence")
-                .or(durable_terminal.as_ref());
-            let reconciled_before_provider = failure_receipt.is_some_and(|receipt| {
+            let reconciled_before_provider = failure_receipt.as_ref().is_some_and(|receipt| {
                 receipt.get("schema_version").and_then(Value::as_str)
                     == Some("managed_delegated_failure_terminal_evidence.v1")
                     && receipt.get("product_task_id").and_then(Value::as_str)
@@ -7214,25 +7229,26 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
                     )
                     && receipt.get("cleanup_status").and_then(Value::as_str) == Some("cleaned")
             });
-            let reconciled_known_failure_after_provider = failure_receipt.is_some_and(|receipt| {
-                receipt.get("schema_version").and_then(Value::as_str)
-                    == Some("managed_delegated_failure_terminal_evidence.v1")
-                    && receipt.get("product_task_id").and_then(Value::as_str)
-                        == Some(product_task_id.as_str())
-                    && receipt
-                        .get("provider_request_states")
-                        .and_then(Value::as_array)
-                        .is_some_and(|states| {
-                            states.iter().any(|state| {
-                                state.get("status").and_then(Value::as_str) == Some("succeeded")
+            let reconciled_known_failure_after_provider =
+                failure_receipt.as_ref().is_some_and(|receipt| {
+                    receipt.get("schema_version").and_then(Value::as_str)
+                        == Some("managed_delegated_failure_terminal_evidence.v1")
+                        && receipt.get("product_task_id").and_then(Value::as_str)
+                            == Some(product_task_id.as_str())
+                        && receipt
+                            .get("provider_request_states")
+                            .and_then(Value::as_array)
+                            .is_some_and(|states| {
+                                states.iter().any(|state| {
+                                    state.get("status").and_then(Value::as_str) == Some("succeeded")
+                                })
                             })
-                        })
-                    && matches!(
-                        receipt.get("cost_evidence").and_then(Value::as_str),
-                        Some("reconciled" | "unavailable")
-                    )
-                    && receipt.get("cleanup_status").and_then(Value::as_str) == Some("cleaned")
-            });
+                        && matches!(
+                            receipt.get("cost_evidence").and_then(Value::as_str),
+                            Some("reconciled" | "unavailable")
+                        )
+                        && receipt.get("cleanup_status").and_then(Value::as_str) == Some("cleaned")
+                });
             if terminal_class != Some("failed")
                 || (!reconciled_before_provider && !reconciled_known_failure_after_provider)
             {
@@ -9000,6 +9016,19 @@ mod tests {
     fn codex_prerequisite_recovery_stops_after_v6() {
         assert!(codex_prerequisite_recovery_available(4));
         assert!(!codex_prerequisite_recovery_available(5));
+    }
+
+    #[test]
+    fn recovery_prefers_durable_failure_terminal_over_reused_finalizer_output() {
+        let durable = json!({"terminal_class": "failed", "provider_request_count": 2});
+        let finalized = json!({
+            "delegated_terminal": {
+                "terminal": {"terminal_class": "outcome_unknown"},
+                "failure_terminal_evidence": {"terminal_class": "outcome_unknown"}
+            }
+        });
+        let receipt = recovered_failure_terminal_receipt(Some(durable), &finalized).unwrap();
+        assert_eq!(receipt["terminal_class"], "failed");
     }
 
     #[test]
