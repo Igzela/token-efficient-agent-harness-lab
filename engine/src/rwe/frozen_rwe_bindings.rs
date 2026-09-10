@@ -7,6 +7,8 @@ use super::operator_corpus::{
     freeze_current_operator_contract_set, OperatorFrozenContractSet, OPERATOR_TARGET_REPO,
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::path::Path;
 
 /// Exact target main SHA frozen for Minimum First RWE (Igzela/alters-lab).
 pub const FROZEN_RWE_TARGET_MAIN_SHA: &str = "6240768506320a324d68787b9eaa86971c8c930c";
@@ -50,6 +52,188 @@ pub const FROZEN_RWE_POST_AC_CARGO_LOCK_SHA256: &str =
     "cf68982734f8a72148950f119408b676dd5b42ce65d7af69c02eca017a551653";
 pub const FROZEN_RWE_POST_AC_RUST_TOOLCHAIN_SHA256: &str =
     "e59c5da37d1f9f4e0f815bc188cb6056fc7410c9cdaa9673c2d44da557c75d12";
+
+/// Exact hash-bound generated active baseline files from pre_ac_harness_snapshot.v2.json.
+/// These files reside under `alters/current` (which is in .gitignore in alters-lab).
+pub const FROZEN_RWE_ACTIVE_BASELINE_FILES: &[(&str, &str)] = &[
+    (
+        "alters/current/snapshot.yaml",
+        "589218e09ea1cc1cd64cf559d957a5f8158d7a6c656b743ecf8a2b0ff248972e",
+    ),
+    (
+        "alters/current/branches.yaml",
+        "6534c5d8af4af2783610c5f982e21f1632e9fb38aabd76e28fea828e6155f162",
+    ),
+    (
+        "alters/current/alters/alter_A.yaml",
+        "c65275430894d0f9adc6cdf0b64dc3a6f00c598a20f2b6bc1962a4876e04625e",
+    ),
+    (
+        "alters/current/alters/alter_B.yaml",
+        "793cab5f3650a94f3230e8cbbd0de1792f7a2127f6ff57bb9ab7c3f91b26f551",
+    ),
+    (
+        "alters/current/alters/alter_C.yaml",
+        "3ce18450debc66e1e6b35383e6250aa569d79bdae1ef6419efb64c8fdc725435",
+    ),
+    (
+        "alters/current/alters/alter_D.yaml",
+        "29bf4d14065c5437eda12044f874178514bcae50ee4ab60ad6a40e61135a9ce5",
+    ),
+    (
+        "alters/current/value_alignment/alignment_2026-05-19.yaml",
+        "717d5f6dcc4a423b9901ddc5439a4cfe6c71a24249d42a081975917c8b9c86a7",
+    ),
+    (
+        "alters/current/dialogue/dialogue_alter_D_2026-05-19.yaml",
+        "3fba7b41b9a5f4b52a1b0d0d1feafcfcd5012810455388188feddef114a96814",
+    ),
+    (
+        "alters/current/reality_trace.yaml",
+        "c02a3a07400fbff3e96fc1864468c3b046267f63c2ee8716d708df05695485cd",
+    ),
+];
+
+pub const FROZEN_RWE_ACTIVE_BASELINE_MATERIALIZER_SCRIPT: &str = r#"
+import glob, os, shutil, sys
+from pathlib import Path
+import yaml
+
+workspace = Path(sys.argv[1]).resolve()
+sample = workspace / 'alters' / 'sample'
+current = workspace / 'alters' / 'current'
+if not sample.is_dir():
+    sys.exit(1)
+
+current_alters = current / 'alters'
+current_dialogue = current / 'dialogue'
+current_alignment = current / 'value_alignment'
+
+current_alters.mkdir(parents=True, exist_ok=True)
+current_dialogue.mkdir(parents=True, exist_ok=True)
+current_alignment.mkdir(parents=True, exist_ok=True)
+
+for name in ('snapshot.yaml', 'branches.yaml', 'reality_trace.yaml'):
+    shutil.copy2(sample / name, current / name)
+for path in glob.glob(str(sample / 'alters' / 'alter_*.yaml')):
+    shutil.copy2(path, current_alters / Path(path).name)
+
+BASELINE_DATE = '2026-05-19'
+def _dump(path: Path, data: dict) -> None:
+    with path.open('w', encoding='utf-8') as handle:
+        yaml.dump(data, handle, default_flow_style=False)
+
+for path in sorted(current_alters.glob('alter_*.yaml')):
+    with path.open(encoding='utf-8') as handle:
+        data = yaml.safe_load(handle) or {}
+    data['generated_at'] = BASELINE_DATE
+    data['time_horizon'] = '1.5-2年后'
+    data['personality_drift'] = {'detected': False}
+    _dump(path, data)
+
+reality_trace = current / 'reality_trace.yaml'
+with reality_trace.open(encoding='utf-8') as handle:
+    data = yaml.safe_load(handle) or {}
+current_probe = data.get('reality_trace', {}).get('current_probe', {})
+if 'day_14_gate' in current_probe:
+    current_probe['day_14_gate']['status'] = 'completed'
+_dump(reality_trace, data)
+
+_dump(
+    current_alignment / f'alignment_{BASELINE_DATE}.yaml',
+    {
+        'value_alignment_report': {
+            'status': 'human_confirmed',
+            'final_interpretation': {'primary_candidate': 'branch_D'},
+            'provisional_commitment': {
+                'selected_branch': 'branch_D',
+                'selected_alter': 'alter_D',
+            },
+        }
+    },
+)
+_dump(
+    current_dialogue / f'dialogue_alter_D_{BASELINE_DATE}.yaml',
+    {
+        'dialogue': {
+            'status': 'human_confirmed_static_artifact',
+            'session': {'alter_ref': 'alters/current/alters/alter_D.yaml'},
+            'context_policy': {'provider_used': None, 'runtime_used': False},
+        }
+    },
+)
+"#;
+
+/// Validate that all 9 hash-bound active baseline files exist as regular files and
+/// match their exact frozen SHA256 hashes.
+pub fn validate_frozen_rwe_active_baseline(workspace_path: &Path) -> Result<(), String> {
+    for (rel, expected_hash) in FROZEN_RWE_ACTIVE_BASELINE_FILES {
+        let path = workspace_path.join(rel);
+        let meta = std::fs::symlink_metadata(&path)
+            .map_err(|e| format!("active baseline file missing: {rel}: {e}"))?;
+        if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+            return Err(format!("active baseline file is not a regular file: {rel}"));
+        }
+        let bytes = std::fs::read(&path)
+            .map_err(|e| format!("active baseline file unreadable: {rel}: {e}"))?;
+        let actual_hash = hex::encode(Sha256::digest(&bytes));
+        if actual_hash != *expected_hash {
+            return Err(format!(
+                "active baseline file hash mismatch for {rel}: expected {expected_hash}, got {actual_hash}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Ensure that the frozen active baseline fixtures are present and valid in the workspace.
+/// If already valid, this is a no-op.
+/// Otherwise, it copies them from target_repo_path if available and valid, or materializes
+/// them using python3 from workspace alters/sample, then validates all hashes fail-closed.
+pub fn ensure_frozen_rwe_workspace_active_baseline(
+    workspace_path: &Path,
+    target_repo_path: Option<&Path>,
+) -> Result<(), String> {
+    if !workspace_path.join("alters").join("sample").is_dir() {
+        return Ok(());
+    }
+
+    if validate_frozen_rwe_active_baseline(workspace_path).is_ok() {
+        return Ok(());
+    }
+
+    let mut copied = false;
+    if let Some(target) = target_repo_path {
+        if target != workspace_path && validate_frozen_rwe_active_baseline(target).is_ok() {
+            for (rel, _) in FROZEN_RWE_ACTIVE_BASELINE_FILES {
+                let src = target.join(rel);
+                let dst = workspace_path.join(rel);
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("failed creating parent dir for {rel}: {e}"))?;
+                }
+                std::fs::copy(&src, &dst)
+                    .map_err(|e| format!("failed copying active baseline file {rel}: {e}"))?;
+            }
+            copied = true;
+        }
+    }
+
+    if !copied {
+        let output = std::process::Command::new("python3")
+            .arg("-c")
+            .arg(FROZEN_RWE_ACTIVE_BASELINE_MATERIALIZER_SCRIPT)
+            .arg(workspace_path)
+            .output()
+            .map_err(|e| format!("failed to run active baseline materializer: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("active baseline materializer failed: {stderr}"));
+        }
+    }
+
+    validate_frozen_rwe_active_baseline(workspace_path)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrozenRweReconstructionBinding {
@@ -766,5 +950,64 @@ mod tests {
         assert!(!path_under_allowed_paths("src2", &["src".into()]));
         assert!(!path_under_allowed_paths("src2/main.py", &["src".into()]));
         assert!(path_under_allowed_paths("src/main.py", &["src".into()]));
+    }
+
+    #[test]
+    fn test_validate_frozen_rwe_active_baseline_detects_missing_and_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        // Missing files:
+        let err = validate_frozen_rwe_active_baseline(temp.path()).unwrap_err();
+        assert!(err.contains("active baseline file missing"));
+
+        // Corrupted file:
+        let sample_file = temp.path().join("alters/current/snapshot.yaml");
+        std::fs::create_dir_all(sample_file.parent().unwrap()).unwrap();
+        std::fs::write(&sample_file, b"corrupt").unwrap();
+        let err = validate_frozen_rwe_active_baseline(temp.path()).unwrap_err();
+        assert!(err.contains("hash mismatch"));
+    }
+
+    #[test]
+    fn test_ensure_frozen_rwe_workspace_active_baseline_ignores_non_alters() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(ensure_frozen_rwe_workspace_active_baseline(temp.path(), None).is_ok());
+        assert!(!temp.path().join("alters").exists());
+    }
+
+    #[test]
+    fn test_ensure_frozen_rwe_workspace_active_baseline_materialization() {
+        let sample_source = Path::new("/tmp/codex-rwe-target-QgG3Md/alters-lab/alters/sample");
+        if !sample_source.is_dir() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let ws_alters = temp.path().join("alters");
+        std::fs::create_dir_all(&ws_alters).unwrap();
+        let status = std::process::Command::new("cp")
+            .arg("-r")
+            .arg(sample_source.to_str().unwrap())
+            .arg(ws_alters.to_str().unwrap())
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        assert!(ensure_frozen_rwe_workspace_active_baseline(temp.path(), None).is_ok());
+        assert!(validate_frozen_rwe_active_baseline(temp.path()).is_ok());
+
+        // Test copy path from existing populated directory
+        let temp2 = tempfile::tempdir().unwrap();
+        let ws_alters2 = temp2.path().join("alters");
+        std::fs::create_dir_all(&ws_alters2).unwrap();
+        let status2 = std::process::Command::new("cp")
+            .arg("-r")
+            .arg(sample_source.to_str().unwrap())
+            .arg(ws_alters2.to_str().unwrap())
+            .status()
+            .unwrap();
+        assert!(status2.success());
+        assert!(
+            ensure_frozen_rwe_workspace_active_baseline(temp2.path(), Some(temp.path())).is_ok()
+        );
+        assert!(validate_frozen_rwe_active_baseline(temp2.path()).is_ok());
     }
 }
