@@ -6535,131 +6535,13 @@ fn execute_armed_delegated_rwe_cell(
     // effects here require ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT=1,
     // ACP_ENABLE_GITHUB_PR_OUTPUT=1, and populated token references; without
     // them the store returns a planned/blocked output and this fails closed.
-    let output = store
-        .output_product_task(
-            &product_task_id,
-            "executor",
-            task_version,
-            Some(approval_id),
-            true,
-        )
-        .map_err(|e| format!("delegated output failed (task {product_task_id}): {e}"))?;
-    let output_status = output.pointer("/output/status").and_then(Value::as_str);
-    if output_status != Some("pr_create_pending") {
-        let reason = output
-            .pointer("/output/reason")
-            .and_then(Value::as_str)
-            .unwrap_or("output operation did not claim Draft PR creation");
-        return Err(format!(
-            "delegated output did not reach Draft PR creation (status {output_status:?}): {reason}"
-        ));
-    }
-    let operation = output
-        .pointer("/output/operation")
-        .cloned()
-        .ok_or("delegated output operation missing")?;
-    let request = operation
-        .get("request")
-        .cloned()
-        .ok_or("delegated output request missing")?;
-    let target_repository = request
-        .get("target_repository")
-        .and_then(Value::as_str)
-        .ok_or("delegated output target repository missing")?;
-    let (owner, repository) = target_repository
-        .split_once('/')
-        .ok_or("delegated output target repository identity invalid")?;
-    let artifact_id = operation
-        .get("artifact_id")
-        .and_then(Value::as_str)
-        .ok_or("delegated output artifact identity missing")?;
-    let operation_id = operation
-        .get("operation_id")
-        .and_then(Value::as_str)
-        .ok_or("delegated output operation identity missing")?;
-    let operation_version = operation
-        .get("current_version")
-        .and_then(Value::as_u64)
-        .ok_or("delegated output operation version missing")?;
-    let completion_task_version = output
-        .pointer("/task/version")
-        .and_then(Value::as_u64)
-        .ok_or("delegated output task version missing")?;
-    let pull_request_request = crate::target_repo_output::GitHubPullRequestRequest {
-        repository: crate::target_repo_output::GitHubRepository {
-            host: request
-                .get("repository_host")
-                .and_then(Value::as_str)
-                .unwrap_or("github.com")
-                .to_string(),
-            owner: owner.to_string(),
-            repository: repository.to_string(),
-        },
-        head_branch: request
-            .get("head_branch")
-            .and_then(Value::as_str)
-            .ok_or("delegated output head branch missing")?
-            .to_string(),
-        base_branch: request
-            .get("base_branch")
-            .and_then(Value::as_str)
-            .ok_or("delegated output base branch missing")?
-            .to_string(),
-        title: request
-            .get("pr_title")
-            .and_then(Value::as_str)
-            .ok_or("delegated output PR title missing")?
-            .to_string(),
-        body: request
-            .get("pr_body")
-            .and_then(Value::as_str)
-            .ok_or("delegated output PR body missing")?
-            .to_string(),
-        expected_base_sha: operation
-            .get("source_revision")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        expected_head_sha: operation
-            .pointer("/branch_push/commit_sha")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-    };
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("delegated Draft PR runtime failed: {e}"))?;
-    let pull_request = runtime
-        .block_on(
-            crate::target_repo_output::create_or_reuse_github_pull_request(
-                &crate::target_repo_output::GitHubPullRequestConfig::from_env(),
-                &pull_request_request,
-            ),
-        )
-        .map_err(|e| format!("delegated Draft PR creation failed: {e}"))?;
-    let pull_request = serde_json::to_value(pull_request).map_err(|e| e.to_string())?;
-    let completed_output = store.complete_product_task_draft_pr_output(
+    let terminal = complete_delegated_draft_pr_output_and_terminal(
+        store,
         &product_task_id,
-        artifact_id,
-        operation_id,
-        operation_version,
-        completion_task_version,
-        &pull_request,
-        "executor",
-    )?;
-    if completed_output
-        .pointer("/task/status")
-        .and_then(Value::as_str)
-        != Some("completed")
-    {
-        return Err("delegated output completion did not complete the ProductTask".into());
-    }
-
-    // 9. Terminal closeout: store-owned receipt + cleanup + attempt terminal.
-    let terminal = store.complete_delegated_product_task_terminal(
+        task_version,
+        approval_id,
         &delegation_id,
         &attempt_id,
-        &product_task_id,
-        "executor",
     )?;
     let terminal_evidence = terminal
         .get("product_terminal_evidence")
@@ -6850,6 +6732,151 @@ pub fn project_first_baseline_evidence(run_aggregate: &Value) -> Value {
     }))
 }
 
+pub(crate) fn complete_delegated_draft_pr_output_and_terminal(
+    store: &std::sync::Arc<LocalProductStore>,
+    product_task_id: &str,
+    task_version: u64,
+    approval_id: &str,
+    delegation_id: &str,
+    attempt_id: &str,
+) -> Result<Value, String> {
+    // 8. Genuine output under the operator-authorized live-run environment: the
+    // store plans and claims the draft_pr operation, pushes the approved branch
+    // to the credential-free https origin, and records the pushed commit; the
+    // coordinator then creates the real GitHub Draft PR through the existing
+    // GitHub owner and completes the store-owned operation, which transitions
+    // the ProductTask to completed with a Draft PR terminal record. Network
+    // effects here require ACP_PRODUCT_GOLDEN_PATH_ALLOW_NETWORK_OUTPUT=1,
+    // ACP_ENABLE_GITHUB_PR_OUTPUT=1, and populated token references; without
+    // them the store returns a planned/blocked output and this fails closed.
+    let output = store
+        .output_product_task(
+            product_task_id,
+            "executor",
+            task_version,
+            Some(approval_id),
+            true,
+        )
+        .map_err(|e| format!("delegated output failed (task {product_task_id}): {e}"))?;
+    let output_status = output.pointer("/output/status").and_then(Value::as_str);
+    if output_status != Some("pr_create_pending") {
+        let reason = output
+            .pointer("/output/reason")
+            .and_then(Value::as_str)
+            .unwrap_or("output operation did not claim Draft PR creation");
+        return Err(format!(
+            "delegated output did not reach Draft PR creation (status {output_status:?}): {reason}"
+        ));
+    }
+    let operation = output
+        .pointer("/output/operation")
+        .cloned()
+        .ok_or("delegated output operation missing")?;
+    let request = operation
+        .get("request")
+        .cloned()
+        .ok_or("delegated output request missing")?;
+    let target_repository = request
+        .get("target_repository")
+        .and_then(Value::as_str)
+        .ok_or("delegated output target repository missing")?;
+    let (owner, repository) = target_repository
+        .split_once('/')
+        .ok_or("delegated output target repository identity invalid")?;
+    let artifact_id = operation
+        .get("artifact_id")
+        .and_then(Value::as_str)
+        .ok_or("delegated output artifact identity missing")?;
+    let operation_id = operation
+        .get("operation_id")
+        .and_then(Value::as_str)
+        .ok_or("delegated output operation identity missing")?;
+    let operation_version = operation
+        .get("current_version")
+        .and_then(Value::as_u64)
+        .ok_or("delegated output operation version missing")?;
+    let completion_task_version = output
+        .pointer("/task/version")
+        .and_then(Value::as_u64)
+        .ok_or("delegated output task version missing")?;
+    let pull_request_request = crate::target_repo_output::GitHubPullRequestRequest {
+        repository: crate::target_repo_output::GitHubRepository {
+            host: request
+                .get("repository_host")
+                .and_then(Value::as_str)
+                .unwrap_or("github.com")
+                .to_string(),
+            owner: owner.to_string(),
+            repository: repository.to_string(),
+        },
+        head_branch: request
+            .get("head_branch")
+            .and_then(Value::as_str)
+            .ok_or("delegated output head branch missing")?
+            .to_string(),
+        base_branch: request
+            .get("base_branch")
+            .and_then(Value::as_str)
+            .ok_or("delegated output base branch missing")?
+            .to_string(),
+        title: request
+            .get("pr_title")
+            .and_then(Value::as_str)
+            .ok_or("delegated output PR title missing")?
+            .to_string(),
+        body: request
+            .get("pr_body")
+            .and_then(Value::as_str)
+            .ok_or("delegated output PR body missing")?
+            .to_string(),
+        expected_base_sha: operation
+            .get("source_revision")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        expected_head_sha: operation
+            .pointer("/branch_push/commit_sha")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("delegated Draft PR runtime failed: {e}"))?;
+    let pull_request = runtime
+        .block_on(
+            crate::target_repo_output::create_or_reuse_github_pull_request(
+                &crate::target_repo_output::GitHubPullRequestConfig::from_env(),
+                &pull_request_request,
+            ),
+        )
+        .map_err(|e| format!("delegated Draft PR creation failed: {e}"))?;
+    let pull_request = serde_json::to_value(pull_request).map_err(|e| e.to_string())?;
+    let completed_output = store.complete_product_task_draft_pr_output(
+        product_task_id,
+        artifact_id,
+        operation_id,
+        operation_version,
+        completion_task_version,
+        &pull_request,
+        "executor",
+    )?;
+    if completed_output
+        .pointer("/task/status")
+        .and_then(Value::as_str)
+        != Some("completed")
+    {
+        return Err("delegated output completion did not complete the ProductTask".into());
+    }
+
+    // 9. Terminal closeout: store-owned receipt + cleanup + attempt terminal.
+    store.complete_delegated_product_task_terminal(
+        delegation_id,
+        attempt_id,
+        product_task_id,
+        "executor",
+    )
+}
+
 /// Recover or create the exact-revision Product Golden Path prerequisite used
 /// by live Codex RWE authorization.
 ///
@@ -6950,7 +6977,14 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
     let primary_task_index = prerequisite_task_indices[0];
     let mut prerequisite_candidate_position = 0usize;
     let mut recovery_generation = 0u8;
-    let (product_task_id, persisted_task, ids, selected_task, selected_schedule_cell) = loop {
+    let (
+        product_task_id,
+        mut persisted_task,
+        ids,
+        selected_task,
+        selected_schedule_cell,
+        execution_run_id,
+    ) = loop {
         let prerequisite_task_index = prerequisite_task_indices[prerequisite_candidate_position];
         let is_primary_prerequisite = prerequisite_task_index == primary_task_index;
         let frozen_task = frozen
@@ -7163,7 +7197,10 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
                 .ok_or("Codex prerequisite ProductTask disappeared after workspace recovery")?;
         }
         let status = persisted_task.get("status").and_then(Value::as_str);
-        if matches!(status, Some("completed" | "workspace_bound")) {
+        if matches!(
+            status,
+            Some("completed" | "workspace_bound" | "output_pending")
+        ) {
             if persisted_task.get("output_intent").and_then(Value::as_str) != Some("draft_pr")
                 || persisted_task
                     .get("source_revision")
@@ -7181,6 +7218,7 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
                 ids,
                 frozen_task,
                 schedule_cell,
+                execution_run_id,
             );
         }
 
@@ -7334,6 +7372,41 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
             status.unwrap_or("unknown")
         ));
     };
+
+    if persisted_task.get("status").and_then(Value::as_str) == Some("output_pending") {
+        let task_version = persisted_task
+            .get("version")
+            .and_then(Value::as_u64)
+            .ok_or("prerequisite task version missing")?;
+        let run_id = persisted_task
+            .get("run_id")
+            .and_then(Value::as_str)
+            .ok_or("prerequisite task run_id missing")?;
+        let approvals = store.workflow_run_approvals(run_id, 1000)?;
+        let approval = approvals
+            .into_iter()
+            .find(|candidate| candidate.get("decision").and_then(Value::as_str) == Some("approved"))
+            .ok_or("prerequisite task approval not found")?;
+        let approval_id = approval
+            .get("approval_id")
+            .and_then(Value::as_str)
+            .ok_or("prerequisite task approval_id missing")?;
+        let delegation_id = format!("rwe-del:{execution_run_id}:{}", ids.cell_id);
+        let attempt_id = &ids.delegated_attempt_id;
+
+        driver.ensure_effects_ready()?;
+        complete_delegated_draft_pr_output_and_terminal(
+            store,
+            &product_task_id,
+            task_version,
+            approval_id,
+            &delegation_id,
+            attempt_id,
+        )?;
+        persisted_task = store
+            .get_product_task(&product_task_id)?
+            .ok_or("prerequisite task missing after output completion")?;
+    }
 
     // Idempotent recovery: only a pre-existing Store-owned completed seal can
     // satisfy this branch; no synthetic terminal row is ever created.
