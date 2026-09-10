@@ -6759,7 +6759,10 @@ pub(crate) fn complete_delegated_draft_pr_output_and_terminal(
         )
         .map_err(|e| format!("delegated output failed (task {product_task_id}): {e}"))?;
     let output_status = output.pointer("/output/status").and_then(Value::as_str);
-    if output_status != Some("pr_create_pending") {
+    if !matches!(
+        output_status,
+        Some("pr_create_pending" | "operation_in_progress")
+    ) {
         let reason = output
             .pointer("/output/reason")
             .and_then(Value::as_str)
