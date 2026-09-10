@@ -11171,7 +11171,20 @@ fn validate_workspace_provider_journal(
     journal_json: &str,
     binding: &crate::provider::managed_deepseek::ManagedCallBinding,
     scheduler: &ManagedSchedulerLeaseAuthority,
+    manifest: &Value,
 ) -> Result<(), String> {
+    let expected_provider_identity = manifest
+        .pointer("/provider/provider_identity")
+        .and_then(Value::as_str)
+        .ok_or("managed workspace manifest provider identity is missing")?;
+    let expected_provider_kind = manifest
+        .pointer("/provider/provider_kind")
+        .and_then(Value::as_str)
+        .ok_or("managed workspace manifest provider kind is missing")?;
+    let expected_model = manifest
+        .pointer("/provider/admitted_model")
+        .and_then(Value::as_str)
+        .ok_or("managed workspace manifest admitted model is missing")?;
     let journal: Vec<Value> = serde_json::from_str(journal_json)
         .map_err(|_| "managed workspace provider journal is invalid")?;
     let matching = journal
@@ -11187,7 +11200,10 @@ fn validate_workspace_provider_journal(
     };
     if entry.get("status").and_then(Value::as_str) != Some("succeeded")
         || entry.get("role").and_then(Value::as_str) != Some("implementer")
-        || entry.get("requested_model").and_then(Value::as_str) != Some("deepseek-v4-flash")
+        || entry.get("provider_identity").and_then(Value::as_str)
+            != Some(expected_provider_identity)
+        || entry.get("provider_kind").and_then(Value::as_str) != Some(expected_provider_kind)
+        || entry.get("requested_model").and_then(Value::as_str) != Some(expected_model)
         || entry
             .pointer("/scheduler_lease/product_task_id")
             .and_then(Value::as_str)
@@ -11272,7 +11288,7 @@ fn validate_delegated_workspace_authority(
     {
         return Err("managed workspace final manifest binding is stale or mismatched".into());
     }
-    validate_workspace_provider_journal(journal_json, binding, scheduler)
+    validate_workspace_provider_journal(journal_json, binding, scheduler, &manifest)
 }
 
 /// Adapter from the existing store-owned managed-acceptance authority to the
@@ -16300,6 +16316,90 @@ mod tests {
         assert!(
             LocalProductStore::parse_managed_workspace_action("```json\n{}\n```\nafter").is_err()
         );
+    }
+
+    #[test]
+    fn workspace_provider_journal_uses_manifest_provider_identity() {
+        let binding = crate::provider::managed_deepseek::ManagedCallBinding {
+            product_task_id: "pt-codex-workspace".into(),
+            workflow_id: "wf-codex-workspace".into(),
+            node_id: "implementation".into(),
+            attempt_id: "attempt-codex-workspace".into(),
+            spend_authorization_id: "spend-codex-workspace".into(),
+            attempt_lease_id: "lease-codex-workspace".into(),
+        };
+        let scheduler = ManagedSchedulerLeaseAuthority {
+            run_id: "run-codex-workspace".into(),
+            attempt_count: 1,
+            lease_owner_token_sha256: "scheduler-lease-sha".into(),
+            allowed_paths: json!([]),
+            workspace_path: "/redacted/workspace".into(),
+        };
+        let manifest = json!({
+            "provider": {
+                "provider_identity": "chatgpt-codex-subscription",
+                "provider_kind": "chatgpt_subscription",
+                "admitted_model": "gpt-5.6-luna"
+            }
+        });
+        let journal = json!([{
+            "node_id": binding.node_id,
+            "status": "succeeded",
+            "role": "implementer",
+            "provider_identity": "chatgpt-codex-subscription",
+            "provider_kind": "chatgpt_subscription",
+            "requested_model": "gpt-5.6-luna",
+            "scheduler_lease": {
+                "product_task_id": binding.product_task_id,
+                "run_id": scheduler.run_id,
+                "workflow_id": binding.workflow_id,
+                "node_id": binding.node_id,
+                "attempt_count": scheduler.attempt_count,
+                "lease_owner_token_sha256": scheduler.lease_owner_token_sha256
+            }
+        }]);
+        assert!(validate_workspace_provider_journal(
+            &journal.to_string(),
+            &binding,
+            &scheduler,
+            &manifest,
+        )
+        .is_ok());
+
+        let mut wrong_model = manifest.clone();
+        wrong_model["provider"]["admitted_model"] = json!("gpt-5.6-terra");
+        assert!(validate_workspace_provider_journal(
+            &journal.to_string(),
+            &binding,
+            &scheduler,
+            &wrong_model,
+        )
+        .is_err());
+
+        let mut wrong_provider = manifest.clone();
+        wrong_provider["provider"]["provider_identity"] = json!("different-provider");
+        assert!(validate_workspace_provider_journal(
+            &journal.to_string(),
+            &binding,
+            &scheduler,
+            &wrong_provider,
+        )
+        .is_err());
+
+        let wrong_kind = json!({
+            "provider": {
+                "provider_identity": "chatgpt-codex-subscription",
+                "provider_kind": "different-kind",
+                "admitted_model": "gpt-5.6-luna"
+            }
+        });
+        assert!(validate_workspace_provider_journal(
+            &journal.to_string(),
+            &binding,
+            &scheduler,
+            &wrong_kind,
+        )
+        .is_err());
     }
 
     #[test]

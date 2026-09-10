@@ -83,7 +83,11 @@ const CODEX_PREREQUISITE_PRIMARY_TASK_ID: &str = "rwe-minimum-t1-fix_flow_linkag
 const CODEX_PREREQUISITE_FALLBACK_TASK_ID: &str = "rwe-minimum-t2-draft_contract_tests";
 // Finite operator recovery remains bounded even when prior immutable attempts
 // are preserved after an upstream outcome-unknown response.
-const CODEX_PREREQUISITE_MAX_RECOVERY_GENERATIONS: u8 = 4;
+const CODEX_PREREQUISITE_MAX_RECOVERY_GENERATIONS: u8 = 5;
+
+fn codex_prerequisite_recovery_available(recovery_generation: u8) -> bool {
+    recovery_generation < CODEX_PREREQUISITE_MAX_RECOVERY_GENERATIONS
+}
 
 fn sort_value(value: &Value) -> Value {
     match value {
@@ -7067,7 +7071,7 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
                 recovery_generation = 0;
                 continue;
             }
-            if recovery_generation >= CODEX_PREREQUISITE_MAX_RECOVERY_GENERATIONS {
+            if !codex_prerequisite_recovery_available(recovery_generation) {
                 return Err(format!(
                     "prerequisite attempt requires provider reconciliation; preserved task {product_task_id}"
                 ));
@@ -7246,13 +7250,13 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
                 if prerequisite_candidate_position + 1 >= prerequisite_task_indices.len() {
                     // Both explicit frozen candidates may themselves have
                     // terminal, known failures after a composition defect.
-                    // Permit exactly one additional fresh ProductTask for the
-                    // same frozen fallback definition. This is not a replay:
+                    // Permit the next bounded fresh ProductTask for the same
+                    // frozen fallback definition. This is not a replay:
                     // it gets new Store/delegation/lease identities, while
                     // every prior effect and terminal receipt remains closed
-                    // and immutable. Keep the retry bounded to one fresh
-                    // prerequisite admission.
-                    if recovery_generation >= 1 {
+                    // and immutable. Keep acquisition bounded by the shared
+                    // finite recovery-generation ceiling.
+                    if !codex_prerequisite_recovery_available(recovery_generation) {
                         return Err(
                             "known prerequisite provider effect has no remaining bounded recovery"
                                 .into(),
@@ -8990,6 +8994,12 @@ mod tests {
                 .iter()
                 .any(|cell| cell.get("task_id").and_then(Value::as_str) == Some(task_id)));
         }
+    }
+
+    #[test]
+    fn codex_prerequisite_recovery_stops_after_v6() {
+        assert!(codex_prerequisite_recovery_available(4));
+        assert!(!codex_prerequisite_recovery_available(5));
     }
 
     #[test]
