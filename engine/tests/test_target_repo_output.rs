@@ -444,6 +444,28 @@ fn target_output_rejects_workspace_symlinks() {
     assert!(error.contains("symlink"));
 }
 
+#[test]
+fn inspect_registered_git_worktree_accepts_published_branch_head() {
+    let (target, _, workspace_root) = fixture();
+    let workspace = workspace_root.path().join("workspace");
+    let source = git(target.path(), &["rev-parse", "main"]);
+    let config = TargetRepoOutputConfig::for_test(true, false);
+    prepare_git_worktree(&config, target.path(), &workspace, "main").unwrap();
+
+    let initial =
+        inspect_registered_git_worktree(&config, target.path(), &workspace, &source).unwrap();
+    assert_eq!(initial.source_revision, source);
+
+    git(&workspace, &["switch", "-c", "acp/test-branch"]);
+    std::fs::write(workspace.join("change.txt"), "hello\n").unwrap();
+    git(&workspace, &["add", "change.txt"]);
+    git(&workspace, &["commit", "-m", "test commit"]);
+
+    let after_publish =
+        inspect_registered_git_worktree(&config, target.path(), &workspace, &source).unwrap();
+    assert_eq!(after_publish.source_revision, source);
+}
+
 fn prepared_hash(patch: &str) -> String {
     use sha2::{Digest, Sha256};
     format!("sha256:{}", hex::encode(Sha256::digest(patch.as_bytes())))
