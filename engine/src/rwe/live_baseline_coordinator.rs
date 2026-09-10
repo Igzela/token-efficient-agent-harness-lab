@@ -1851,45 +1851,59 @@ fn codex_output_text(body: &[u8], events: &[Value], response: &Value) -> String 
     output
 }
 
-fn codex_tool_calls(response: &Value) -> Vec<ManagedToolCall> {
-    response
+fn parse_single_codex_tool_call(item: &Value) -> Option<ManagedToolCall> {
+    if !matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("function_call") | Some("function")
+    ) {
+        return None;
+    }
+    let id = item
+        .get("call_id")
+        .or_else(|| item.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("call_generated");
+    let name = item
+        .get("name")
+        .or_else(|| item.pointer("/function/name"))
+        .and_then(Value::as_str)?;
+    let arguments_val = item
+        .get("arguments")
+        .or_else(|| item.pointer("/function/arguments"))?;
+    let arguments = match arguments_val {
+        Value::String(s) => s.clone(),
+        other => serde_json::to_string(other).ok()?,
+    };
+    Some(ManagedToolCall {
+        id: id.to_string(),
+        call_type: "function".into(),
+        function: ManagedFunctionCall {
+            name: name.to_string(),
+            arguments,
+        },
+    })
+}
+
+fn codex_tool_calls(events: &[Value], response: &Value) -> Vec<ManagedToolCall> {
+    let mut calls = response
         .get("output")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|item| {
-            matches!(
-                item.get("type").and_then(Value::as_str),
-                Some("function_call") | Some("function")
-            )
-        })
-        .filter_map(|item| {
-            let id = item
-                .get("call_id")
-                .or_else(|| item.get("id"))
-                .and_then(Value::as_str)
-                .unwrap_or("call_generated");
-            let name = item
-                .get("name")
-                .or_else(|| item.pointer("/function/name"))
-                .and_then(Value::as_str)?;
-            let arguments_val = item
-                .get("arguments")
-                .or_else(|| item.pointer("/function/arguments"))?;
-            let arguments = match arguments_val {
-                Value::String(s) => s.clone(),
-                other => serde_json::to_string(other).ok()?,
-            };
-            Some(ManagedToolCall {
-                id: id.to_string(),
-                call_type: "function".into(),
-                function: ManagedFunctionCall {
-                    name: name.to_string(),
-                    arguments,
-                },
-            })
-        })
-        .collect()
+        .filter_map(parse_single_codex_tool_call)
+        .collect::<Vec<_>>();
+    if calls.is_empty() {
+        for event in events {
+            if event.get("type").and_then(Value::as_str) == Some("response.output_item.done") {
+                if let Some(item) = event.get("item") {
+                    if let Some(call) = parse_single_codex_tool_call(item) {
+                        calls.push(call);
+                    }
+                }
+            }
+        }
+    }
+    calls
 }
 
 fn codex_responses_body(request: &ManagedProviderCallRequest) -> Value {
@@ -2116,7 +2130,7 @@ async fn codex_responses_wire(
         resolved_model: model,
         request_id,
         output_text: codex_output_text(&response.body, &events, &response_value),
-        tool_calls: codex_tool_calls(&response_value),
+        tool_calls: codex_tool_calls(&events, &response_value),
         stop_reason,
         usage,
         estimated_cost_usd: None,
@@ -7710,7 +7724,7 @@ mod tests {
                 }
             ]
         });
-        let calls = codex_tool_calls(&response);
+        let calls = codex_tool_calls(&[], &response);
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[0].id, "call_1");
         assert_eq!(calls[0].function.name, "apply_workspace_action");
@@ -7720,6 +7734,26 @@ mod tests {
         assert!(calls[1].function.arguments.contains("\"src/lib.rs\""));
         assert_eq!(calls[2].id, "call_3");
         assert_eq!(calls[2].function.name, "apply_workspace_action");
+
+        // Test fallback to SSE events when response.output is empty
+        let events = vec![json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "call_id": "call_stream_1",
+                "name": "apply_workspace_action",
+                "arguments": "{\"action\":\"replace_text\",\"path\":\"src/main.rs\"}"
+            }
+        })];
+        let empty_response = json!({"output": []});
+        let stream_calls = codex_tool_calls(&events, &empty_response);
+        assert_eq!(stream_calls.len(), 1);
+        assert_eq!(stream_calls[0].id, "call_stream_1");
+        assert_eq!(stream_calls[0].function.name, "apply_workspace_action");
+        assert!(stream_calls[0]
+            .function
+            .arguments
+            .contains("\"src/main.rs\""));
     }
 
     #[test]
