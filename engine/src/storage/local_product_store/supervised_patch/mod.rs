@@ -2507,9 +2507,12 @@ impl LocalProductStore {
                                 .get("pr_create")
                                 .ok_or_else(|| "product output PR phase missing".to_string())?;
                             if pr_status == "in_progress"
-                                && product_output_phase_claim_is_current(pr, now)?
+                                && (product_output_phase_claim_is_current(pr, now)?
+                                    || operation.get("attempt").and_then(Value::as_u64) >= Some(4))
                             {
                                 "operation_in_progress"
+                            } else if operation.get("attempt").and_then(Value::as_u64) >= Some(4) {
+                                "reconciliation_required"
                             } else {
                                 claim_product_output_phase(
                                     &mut operation,
@@ -2532,9 +2535,12 @@ impl LocalProductStore {
                                 .get("branch_push")
                                 .ok_or_else(|| "product output branch phase missing".to_string())?;
                             if branch_status == "in_progress"
-                                && product_output_phase_claim_is_current(branch, now)?
+                                && (product_output_phase_claim_is_current(branch, now)?
+                                    || operation.get("attempt").and_then(Value::as_u64) >= Some(4))
                             {
                                 "operation_in_progress"
+                            } else if operation.get("attempt").and_then(Value::as_u64) >= Some(4) {
+                                "reconciliation_required"
                             } else {
                                 claim_product_output_phase(
                                     &mut operation,
@@ -6568,6 +6574,27 @@ mod managed_owner_tests {
         );
         let expired = json!({"claimed_at": "2026-07-22T00:00:00Z"});
         assert!(!product_output_phase_claim_is_current(&expired, "2026-07-22T00:15:00Z").unwrap());
+    }
+
+    #[test]
+    fn product_output_operation_at_ceiling_stops_new_claims() {
+        let mut operation = json!({
+            "attempt": 4,
+            "current_version": 8,
+            "state": "active",
+            "branch_push": {"status": "completed", "commit_sha": "0123456789abcdef0123456789abcdef01234567"},
+            "pr_create": {"status": "pending"},
+        });
+        let error = claim_product_output_phase(
+            &mut operation,
+            "pr_create",
+            "output-operator",
+            "2026-07-22T00:00:00Z",
+            1,
+        )
+        .unwrap_err();
+        assert!(error.contains("four bounded attempts"));
+        assert_eq!(operation["attempt"], 4);
     }
 
     impl crate::node_executor::NodeExecutor for HoldingExecutor {
