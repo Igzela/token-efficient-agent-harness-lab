@@ -1063,7 +1063,7 @@ fn require_matrix_token(value: &str, field: &str, max_bytes: usize) -> Result<St
     }
     if !trimmed
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '@'))
     {
         return Err(format!(
             "matrix_binding.{field} contains forbidden characters"
@@ -1114,7 +1114,7 @@ pub fn validate_matrix_binding(
         manifest_sha256: require_matrix_sha(&binding.manifest_sha256, "manifest_sha256")?,
         rung: rung.to_string(),
         repetition: binding.repetition,
-        cell_id: require_matrix_token(&binding.cell_id, "cell_id", 128)?,
+        cell_id: require_matrix_token(&binding.cell_id, "cell_id", 256)?,
         cell_descriptor_sha256: require_matrix_sha(
             &binding.cell_descriptor_sha256,
             "cell_descriptor_sha256",
@@ -3020,6 +3020,15 @@ mod tests {
         let mut wrong_cell = sample_matrix_binding();
         wrong_cell.cell_id = String::new();
         assert!(validate_matrix_binding(&wrong_cell).is_err());
+        let mut realistic_cell = sample_matrix_binding();
+        realistic_cell.cell_id = "engine-managed@075f995b574fb8a28f08986291751152bf158dd5:gpt-5.6-luna:single-model-three-role:v1:single-pass-plan-implement-review:no-projection:v1:rwe-minimum-t2-draft_contract_tests:r1".to_string();
+        assert!(validate_matrix_binding(&realistic_cell).is_ok());
+        let mut too_long_cell = sample_matrix_binding();
+        too_long_cell.cell_id = "a".repeat(257);
+        assert!(validate_matrix_binding(&too_long_cell).is_err());
+        let mut bad_char_cell = sample_matrix_binding();
+        bad_char_cell.cell_id = "cell-001 with spaces".to_string();
+        assert!(validate_matrix_binding(&bad_char_cell).is_err());
         let mut wrong_task = sample_matrix_binding();
         wrong_task.task_id = "other task with spaces!".to_string();
         assert!(validate_matrix_binding(&wrong_task).is_err());
