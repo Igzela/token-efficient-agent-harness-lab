@@ -3344,7 +3344,10 @@ impl LocalProductStore {
         // effect. Mixed or unknown modes fail closed.
         let (draft_pr, artifact_receipt) = match output_intent {
             "draft_pr" => {
-                if terminal_evidence.pointer("/output/receipt_id").is_some() {
+                if terminal_evidence
+                    .pointer("/output/receipt_id")
+                    .is_some_and(|value| !value.is_null())
+                {
                     return Err("delegated terminal output evidence mixes output modes".into());
                 }
                 let draft_pr = terminal_evidence
