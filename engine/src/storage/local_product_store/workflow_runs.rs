@@ -4911,7 +4911,7 @@ fn valid_scope_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 256
         && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/' | b'@')
         })
 }
 
@@ -9779,4 +9779,24 @@ fn postgres_nonrecursive_import_preserves_upsert_compatibility() {
             .expect("PostgreSQL store"),
         &uuid::Uuid::new_v4().to_string(),
     );
+}
+
+#[test]
+fn valid_scope_identifier_permits_composite_workspace_with_at() {
+    assert!(valid_scope_identifier("local"));
+    assert!(valid_scope_identifier("ws-standard"));
+    assert!(valid_scope_identifier("tenant-1"));
+    assert!(valid_scope_identifier("tenant/subscope"));
+    assert!(valid_scope_identifier("rwe-ws:rwe-run-codex-luna-1x1x1-0003:engine-managed@075f995b574fb8a28f08986291751152bf158dd5:gpt-5.6-luna:single-model-three-role:v1:single-pass-plan-implement-review:no-projection:v1:rwe-minimum-t2-draft_contract_tests:r2"));
+
+    // Boundary checks
+    assert!(!valid_scope_identifier(""));
+    assert!(!valid_scope_identifier(&"a".repeat(257)));
+    assert!(valid_scope_identifier(&"a".repeat(256)));
+
+    // Rejection of forbidden characters
+    assert!(!valid_scope_identifier("ws with spaces"));
+    assert!(!valid_scope_identifier("ws;injection"));
+    assert!(!valid_scope_identifier("ws$var"));
+    assert!(!valid_scope_identifier("ws`cmd`"));
 }
