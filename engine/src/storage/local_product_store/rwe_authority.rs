@@ -489,7 +489,8 @@ fn validate_golden_path_prerequisite_for_rwe_v2(
         .pointer("/output/draft_pr")
         .and_then(Value::as_object)
         .ok_or("golden_path_prerequisite draft_pr output target required")?;
-    if draft_pr.get("base_branch").and_then(Value::as_str) != Some("main")
+    let base_branch = draft_pr.get("base_branch").and_then(Value::as_str);
+    if !matches!(base_branch, Some("main" | "codex-rwe-frozen-target"))
         || draft_pr.get("draft").and_then(Value::as_bool) != Some(true)
         || draft_pr
             .get("head_sha")
@@ -631,8 +632,9 @@ fn validate_golden_path_terminal_evidence(
         .pointer("/output/draft_pr")
         .and_then(Value::as_object)
         .ok_or("golden_path_terminal_evidence draft_pr output target required")?;
+    let base_branch = draft_pr.get("base_branch").and_then(Value::as_str);
     if draft_pr.get("repository").and_then(Value::as_str) != Some(request.target_repo.as_str())
-        || draft_pr.get("base_branch").and_then(Value::as_str) != Some("main")
+        || !matches!(base_branch, Some("main" | "codex-rwe-frozen-target"))
         || draft_pr.get("draft").and_then(Value::as_bool) != Some(true)
         || draft_pr
             .get("head_sha")
@@ -4468,6 +4470,14 @@ mod operator_v2_authority_tests {
         ev["verification"]["status"] = json!("evidence_recorded");
         validate_golden_path_prerequisite_for_rwe_v2(&ev, "ptask-owner-status", "tenant-1")
             .unwrap();
+        let mut ev = gp_prerequisite_evidence("ptask-base-branch", "tenant-1");
+        ev["output"]["draft_pr"]["base_branch"] = json!("codex-rwe-frozen-target");
+        validate_golden_path_prerequisite_for_rwe_v2(&ev, "ptask-base-branch", "tenant-1").unwrap();
+        ev["output"]["draft_pr"]["base_branch"] = json!("invalid-branch");
+        assert!(
+            validate_golden_path_prerequisite_for_rwe_v2(&ev, "ptask-base-branch", "tenant-1")
+                .is_err()
+        );
     }
 
     #[test]

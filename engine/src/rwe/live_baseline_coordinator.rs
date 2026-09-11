@@ -4941,7 +4941,10 @@ fn validate_prerequisite_provider_identity(
     for request in requests {
         if request.get("provider_kind").and_then(Value::as_str)
             != Some(expected_binding.provider_kind.as_str())
-            || request.get("protocol").and_then(Value::as_str) != Some("open_ai_compatible")
+            || !matches!(
+                request.get("protocol").and_then(Value::as_str),
+                Some("openai_compatible" | "open_ai_compatible")
+            )
             || request.get("requested_model").and_then(Value::as_str)
                 != Some(expected_binding.admitted_model.as_str())
             || request.get("resolved_model").and_then(Value::as_str)
@@ -7414,6 +7417,22 @@ pub fn recover_or_create_codex_subscription_golden_path_prerequisite(
     // Idempotent recovery: only a pre-existing Store-owned completed seal can
     // satisfy this branch; no synthetic terminal row is ever created.
     if persisted_task.get("status").and_then(Value::as_str) == Some("completed") {
+        let delegation_id = format!("rwe-del:{execution_run_id}:{}", ids.cell_id);
+        let attempt_id = &ids.delegated_attempt_id;
+        if let Ok(authority_state) = store.delegated_authority_state(&delegation_id) {
+            if authority_state
+                .get("delegation_state")
+                .and_then(Value::as_str)
+                == Some("active")
+            {
+                store.complete_delegated_product_task_terminal(
+                    &delegation_id,
+                    attempt_id,
+                    &product_task_id,
+                    "executor",
+                )?;
+            }
+        }
         let evidence = store.validated_rwe_prerequisite_evidence(
             principal,
             &product_task_id,
@@ -9692,6 +9711,14 @@ mod tests {
             )
         };
         assert!(validate(&projection).is_ok());
+        let mut openai_compatible_projection = projection.clone();
+        for req in openai_compatible_projection["provider_execution"]["requests"]
+            .as_array_mut()
+            .unwrap()
+        {
+            req["protocol"] = json!("openai_compatible");
+        }
+        assert!(validate(&openai_compatible_projection).is_ok());
         let mut wrong_provider_identity = projection.clone();
         wrong_provider_identity["provider_execution"]["provider_identity"] =
             json!("different-identity");
