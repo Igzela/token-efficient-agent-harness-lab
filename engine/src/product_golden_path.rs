@@ -345,7 +345,8 @@ fn exact_managed_deepseek_verifier_command(
     )
 }
 
-pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
+pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 256;
+pub const MAX_WORKSPACE_ID_BYTES: usize = 256;
 pub const MAX_TARGET_ID_BYTES: usize = 128;
 pub const MAX_EXECUTOR_SET: usize = 16;
 pub const MAX_RISK_CLASS_BYTES: usize = 64;
@@ -1268,7 +1269,7 @@ pub fn validate_intake(
     }
     if !idempotency_key
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ':' || c == '.')
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '.' | '@'))
     {
         return Err("idempotency_key contains forbidden characters".to_string());
     }
@@ -1299,8 +1300,10 @@ pub fn validate_intake(
         .filter(|v| !v.is_empty())
         .unwrap_or(default_workspace_id)
         .to_string();
-    if workspace_id.is_empty() || workspace_id.len() > 128 {
-        return Err("workspace_id must be 1..128 bytes".to_string());
+    if workspace_id.is_empty() || workspace_id.len() > MAX_WORKSPACE_ID_BYTES {
+        return Err(format!(
+            "workspace_id must be 1..{MAX_WORKSPACE_ID_BYTES} bytes"
+        ));
     }
 
     let workspace_mode = request
@@ -3053,6 +3056,31 @@ mod tests {
         bad.plan_id = "forged-plan".to_string();
         request.matrix_binding = Some(bad);
         assert!(validate_intake(&request, "tenant-1", "workspace-1").is_err());
+        std::env::remove_var(PRODUCT_TASK_GATE);
+    }
+
+    #[test]
+    fn validate_intake_idempotency_key_and_workspace_bounds() {
+        let _env_lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(PRODUCT_TASK_GATE, "1");
+
+        let mut request = sample_request();
+        request.idempotency_key = "rwe-pt:rwe-run-codex-luna-1x1x1-0002:engine-managed@075f995b574fb8a28f08986291751152bf158dd5:gpt-5.6-luna:single-model-three-role:v1:single-pass-plan-implement-review:no-projection:v1:rwe-minimum-t2-draft_contract_tests:r1".to_string();
+        request.workspace_id = Some("rwe-ws:rwe-run-codex-luna-1x1x1-0002:engine-managed@075f995b574fb8a28f08986291751152bf158dd5:gpt-5.6-luna:single-model-three-role:v1:single-pass-plan-implement-review:no-projection:v1:rwe-minimum-t2-draft_contract_tests:r1".to_string());
+        assert!(validate_intake(&request, "tenant-1", "workspace-1").is_ok());
+
+        let mut too_long_idem = sample_request();
+        too_long_idem.idempotency_key = "a".repeat(257);
+        assert!(validate_intake(&too_long_idem, "tenant-1", "workspace-1").is_err());
+
+        let mut bad_idem = sample_request();
+        bad_idem.idempotency_key = "idem with spaces".to_string();
+        assert!(validate_intake(&bad_idem, "tenant-1", "workspace-1").is_err());
+
+        let mut too_long_ws = sample_request();
+        too_long_ws.workspace_id = Some("a".repeat(257));
+        assert!(validate_intake(&too_long_ws, "tenant-1", "workspace-1").is_err());
+
         std::env::remove_var(PRODUCT_TASK_GATE);
     }
 
