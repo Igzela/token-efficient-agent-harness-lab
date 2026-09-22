@@ -10,8 +10,11 @@ This is the durable architecture, module ownership, and trust boundary specifica
 The system is a local and deterministic agent harness and workflow control plane for auditable coding-agent workflows. It provides:
 - Rust `engine/` as the sole runtime, scheduler, policy, and application-owned storage authority.
 - `LocalProductStore` as the sole persistence and audit owner across SQLite and PostgreSQL backends.
-- Autonomous Steward as the repository-maintenance outer loop coordinating missions, stages, and workcards without creating parallel schedulers or state stores.
-- An explicit direct-maintenance entry for ordinary local coding when no WorkCard exists; it is a scoped transport lane, not a second lifecycle owner.
+- Ordinary repository maintenance starts at `START_HERE.md` and does not
+  require a lifecycle controller or generated task card.
+- Autonomous Steward remains an optional legacy automation surface for
+  historical/recovery workflows; it must never gate normal coding or become a
+  second product runtime, scheduler, or store.
 
 ### Core Objective
 
@@ -26,8 +29,8 @@ from research decisions. Each authority has one owner:
 
 | Layer | Canonical owner | Owns | Explicitly does not own |
 |---|---|---|---|
-| Repository-maintenance control plane | `scripts/agent-control/steward_service.py` | User-approved Missions, Steward Stages, bounded WorkCards, repository PR/review/CI/merge progression, and accepted-main readback | Product runtime, product scheduler, ProductStore, evaluator, research claims, Provider spend, or active-Harness replacement |
-| Direct maintenance entry | `scripts/session_context.py` | Accepted-main/document binding, non-main checkout binding, explicit path scope, and provider-free verification for one local coding session without lifecycle state | Mission/Stage/WorkCard scheduling, journal or checkpoint ownership, `main` writes, provider effects, deployment, release, review/CI bypass, merge, or any product/runtime authority |
+| Repository-maintenance control plane (legacy) | `scripts/agent-control/steward_service.py` | Historical Mission/Stage automation and guarded delivery when explicitly invoked | Normal coding entry, product runtime, product scheduler, ProductStore, evaluator, research claims, Provider spend, or active-Harness replacement |
+| Normal repository entry | `scripts/session_context.py` and `START_HERE.md` | Current checkout context and ordinary inspect/edit/verify flow; no generated task card or lifecycle state | Product/runtime authority, provider effects, deployment, release, protected `main` mutation, review/CI bypass, or merge |
 | Product and task runtime | Rust `engine/` | Execution, leases, scheduling, policy, task state, verification, output, effects, recovery, and rollback through its existing module owners | Repository-maintenance lifecycle, experimental adoption, or persistence outside the Store |
 | Persistence and audit | `engine/src/storage/local_product_store/` | SQLite/PostgreSQL persistence, audit, idempotency, evidence/artifacts, effect envelopes, and terminal settlement | Runtime scheduling, research evaluation, or a second truth store |
 | Common RWE measurement | `engine/src/rwe/` | Frozen task/corpus/protocol/schedule identity, comparable budgets, lifecycle evidence, missingness, and provider-free/live evidence seams | A shortcut around correctness, safety, comparability, Store persistence, or effect authority |
@@ -79,12 +82,17 @@ gateway timeout owners remain authoritative. Internal Codex retry identity is
 still a separate residual admission axis and is not inferred from this network
 confinement.
 
-### Codex Lifecycle Hooks Architecture & Trust Model (H0–H3)
+### Codex Lifecycle Hooks Architecture & Trust Model (legacy managed workers)
 
-Codex Lifecycle Hooks integrate the local Codex execution engine with Steward WorkCard constraints. Hooks are strictly worker-local event adapters; the Steward service remains the sole scheduler, reviewer, journal writer, and merge authority. Hooks never write to the durable journal or claim task completion.
+Codex Lifecycle Hooks are compatibility adapters for historical managed
+workers. They are not part of normal repository entry and must not require a
+WorkCard, card ID, generated scope, or lifecycle journal from an ordinary
+coding agent. Hooks never write to the durable journal or claim task
+completion.
 
 - **Authority and Lifecycle Separation**:
-  - The Steward owns WorkCard definition, path locks, git tree lifecycle, PR integration, and verification gates.
+  - Legacy Steward runs may provide an explicit scope; normal sessions default
+    to the current repository with `.git` and `.github` protected.
   - Hooks adapt events (`SessionStart`, `PreCompact`, `PostCompact`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`) inside the isolated child worker namespace during CLI execution.
   - No hook may write to `/var/lib/agent-steward/steward.sqlite3` or alter durable mission state.
 
@@ -94,18 +102,18 @@ Codex Lifecycle Hooks integrate the local Codex execution engine with Steward Wo
   - Serves as the pre-flight gate before dispatching hook-enabled worker sessions.
 
 - **H1: Context Bootstrap, Compaction Checkpoint & Ephemeral Receipts**:
-  - `SessionStart`: Injects bounded WorkCard objective, target paths, and execution invariants into the initial agent context, avoiding large whole-document ingestion. When the runtime reports `source == "compact"`, rehydrates constraints and progress from the PreCompact checkpoint instead of the startup bootstrap.
-  - `PreCompact`: Persists the active WorkCard checkpoint (WorkCard id, session, git status) to worker-local state and emits no hook body: the official pre-compact output schema forbids `hookSpecificOutput`.
+  - `SessionStart`: Injects the current repository workspace and optional target paths into the initial agent context. When the runtime reports `source == "compact"`, rehydrates only the local git summary instead of inventing task progress.
+  - `PreCompact`: Persists a small session/git-status summary to worker-local state and emits no hook body: the official pre-compact output schema forbids `hookSpecificOutput`.
   - `PostCompact`: Pass-through acknowledgement only; post-compaction re-injection is owned exclusively by `SessionStart(source="compact")`, never by a fabricated `PostCompact` context (also forbidden by the official schema).
-  - `PostToolUse`: Captures redacted tool output receipts in the worker's ephemeral state directory (`hooks_state/receipts/`), compressing oversized command outputs. Raw `tool_input` is never persisted: secrets are masked with the repository secret-scanner patterns before anything reaches disk. PASS evidence is recorded only on a real machine-readable success signal and is bound to WorkCard id, focused-test digest, command, result, and code/workspace state.
+  - `PostToolUse`: Captures redacted tool output receipts in the worker's ephemeral state directory (`hooks_state/receipts/`), compressing oversized command outputs. Raw `tool_input` is never persisted: secrets are masked with the repository secret-scanner patterns before anything reaches disk. PASS evidence is recorded only on a real machine-readable success signal and is bound to command, result, and code/workspace state.
   - Minimal ROI Telemetry: Measures bootstrap tokens saved, receipt bytes compressed, and compaction events.
 
 - **H2: Worktree Path Boundary Guard & Permission Evaluation**:
-  - `PreToolUse`: Intercepts file writes and shell execution. Enforces strict fail-closed validation on missing or malformed WorkCard context (`STEWARD_WORKCARD_ID`, `STEWARD_ALLOWED_PATHS`), verifies target files lie strictly within the active WorkCard's `allowed_paths`, prevents escaping the worktree root, and rejects strictly forbidden paths (e.g. `docs/ROADMAP.md`) or dangerous command patterns. Shell/exec commands are approved only when provably scoped and low-risk (read-only inspection, scoped/declared verification runners, in-scope scripts); `touch`/`cp`/`mv`/`tee`/`sed -i`/`python -c` and other unprovable operations are blocked, because the static analysis is explicitly not a complete shell parser. Emits official wire decisions (`decision: "approve"|"block"`, `permissionDecision: "allow"|"deny"|"ask"`) with exit 0: the runtime parses hook stdout only on exit 0 and ignores blocks signaled via nonzero exit.
+  - `PreToolUse`: Intercepts file writes and shell execution. It validates optional repository scope, prevents escaping the worktree root, protects `.git`/`.github`, and rejects dangerous or unprovable command patterns. Missing task-card metadata is not an error. Shell/exec commands are approved only when provably scoped and low-risk (read-only inspection, scoped/declared verification runners, in-scope scripts); `touch`/`cp`/`mv`/`tee`/`sed -i`/`python -c` and other unprovable operations are blocked, because the static analysis is explicitly not a complete shell parser. Emits official wire decisions (`decision: "approve"|"block"`, `permissionDecision: "allow"|"deny"|"ask"`) with exit 0.
   - `PermissionRequest`: Evaluates requested actions fail-closed, emitting official wire schema `hookSpecificOutput.decision.behavior: "allow" | "deny"`. Only permits provably scoped, low-risk operations (e.g. read-only inspections, declared in-scope test suites) and denies out-of-scope or ambiguous commands (no auto-allow on blacklist-miss).
 
-- **H3: WorkCard Acceptance Evidence Evaluation & Continuation Loop**:
-  - `Stop`: Intercepts premature termination by validating declared WorkCard acceptance and bound verification evidence (workspace edits confined to `allowed_paths`, passing `focused_tests` / bound `verification_evidence.json`), rather than unverified raw git status mutations. Stored PASS evidence is accepted only when bound to the current WorkCard id, complete acceptance contract digest (`focused_tests`, `negative_checks`, `expected_evidence` descriptors, `allowed_paths`), command, result, and code/workspace state; expected evidence items are WorkCard acceptance descriptors, not file paths, and are never probed via filesystem existence checks. Stale records are rejected and the focused tests re-executed. When incomplete and continuation budget remains, blocks termination with top-level `decision="block"` and a targeted continuation prompt (exit 0 with the decision document, which is the only channel the runtime parses). When the retry budget is exhausted or execution paused, writes `completion_status.json` with an explicit `incomplete` status and exits cleanly.
+- **H3: Legacy Managed Acceptance Evidence & Continuation Loop**:
+  - `Stop`: Never blocks an ordinary repository session for missing task metadata. Legacy managed workers may still validate their explicitly supplied acceptance evidence, but a normal session exits cleanly without card-bound continuation.
 
 - **Cryptographic Trust Bootstrap & Per-Handler Discovery**:
   - The production configuration strictly prohibits `--dangerously-bypass-hook-trust`.
@@ -271,23 +279,23 @@ only genuine emergency stop transitions halt recovery.
 
 ```mermaid
 flowchart TD
-    U["User Natural Language Goal"] --> S["Autonomous Steward Proposal & Grant"]
-    U --> L["Direct Maintenance Entry (explicit scope)"]
+    U["User Natural Language Goal"] --> N["START_HERE.md + ordinary repository flow"]
+    N --> V["Test · Independent Review · CI · Merge"]
+    U --> S["Optional legacy Steward flow"]
     S --> M["MaintenanceMission"]
     M --> G["Stage Integration Boundary"]
-    G --> C["WorkCard (Weak Agent Task)"]
+    G --> C["Legacy task packet"]
     C --> V["Test · Independent Review · CI · Merge"]
     V -->|Incomplete / Retry| G
     V -->|Stage Verified| M
     M -->|Stages Settled & Ledger Terminal| D["Mission Summary"]
-    L --> V
 ```
 
 | Layer | Responsibility | Authority / Decision Maker |
 |---|---|---|
 | **Mission** | High-level objective, boundary, budget, standing grants, and acceptance criteria | User approves once; Steward executes |
 | **Stage** | Discrete, verifiable integration milestone and PR boundary | Autonomous Steward |
-| **WorkCard** | Fine-grained, isolated task with exact paths, steps, tests, and evidence | Autonomous Steward schedules; Weak Agent executes |
+| **Legacy task packet** | Historical isolated task contract retained only for compatibility | Optional Steward adapter; never required by normal coding |
 
 ## Core Module Ownership
 

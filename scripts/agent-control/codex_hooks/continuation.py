@@ -1,7 +1,7 @@
-"""WorkCard completion evaluation and autonomous continuation loop (H3).
+"""Optional completion evidence and stop handling.
 
 Implements the Stop hook logic:
-- Verifies declared WorkCard acceptance and verification evidence rather than
+- Verifies declared legacy acceptance and verification evidence rather than
   raw git status mutations.
 - If incomplete and continuation budget remains, blocks stop (top-level decision="block"
   + reason) and prompts continuation.
@@ -44,7 +44,12 @@ class ContinuationDecision:
 
 
 class ContinuationHandler:
-    """Evaluates Stop hooks to verify WorkCard acceptance and prevent premature stopping."""
+    """Never make ordinary repository stopping depend on a task card.
+
+    The legacy evidence path is retained only when an older managed worker
+    explicitly supplies a card identity. A normal coding session has no such
+    identity and is allowed to stop immediately.
+    """
 
     def __init__(self, state_dir: Path | str | None = None, max_continuations: int | None = None):
         if state_dir is not None:
@@ -82,7 +87,7 @@ class ContinuationHandler:
             "status": status,
             "reason": reason,
             "attempts": attempts,
-            "card_id": os.environ.get("STEWARD_WORKCARD_ID", ""),
+            "lifecycle_id": os.environ.get("STEWARD_WORKCARD_ID", ""),
         }
         self.completion_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -223,18 +228,20 @@ class ContinuationHandler:
         card_id = os.environ.get("STEWARD_WORKCARD_ID", "").strip()
         worker_type = os.environ.get("STEWARD_WORKER_TYPE", "implement")
 
+        # Ordinary repository sessions have no lifecycle contract. Do not
+        # invent one and never intercept the user's stop signal for its
+        # absence. Managed workers opt in by supplying the legacy card ID.
+        if not card_id:
+            self._record_completion_status("completed", reason="ordinary_repository_session")
+            return ContinuationDecision(
+                allow_stop=True,
+                reason="ordinary_repository_session",
+            )
+
         # Review worker does not produce file changes; stopping is permitted
         if worker_type == "review":
             self._record_completion_status("completed", reason="review_worker_completion")
             return ContinuationDecision(allow_stop=True, reason="review_worker_completion")
-
-        # Missing WorkCard context -> fail closed
-        if not card_id:
-            return ContinuationDecision(
-                allow_stop=False,
-                continuation_prompt="WorkCard ID context is missing from environment.",
-                reason="missing_workcard_context",
-            )
 
         allowed_paths = read_allowed_paths()
         focused_tests = read_focused_tests()
@@ -257,7 +264,7 @@ class ContinuationHandler:
         if not ev_ok:
             return self._handle_incomplete(card_id, ev_err)
 
-        # WorkCard acceptance criteria verified!
+        # Legacy managed acceptance criteria verified.
         self._record_completion_status("completed", reason="acceptance_evidence_verified")
         return ContinuationDecision(allow_stop=True, reason="acceptance_evidence_verified")
 
@@ -269,7 +276,7 @@ class ContinuationHandler:
             self._record_attempt(new_attempts)
             reason = f"acceptance_unfulfilled_attempt_{new_attempts}_of_{self.max_continuations}"
             prompt = (
-                f"WorkCard {card_id} is incomplete ({unfulfilled_reason}). "
+                f"The managed task is incomplete ({unfulfilled_reason}). "
                 "Please implement the required changes within allowed paths, run and pass "
                 "the declared focused verification checks, and verify evidence before stopping."
             )
@@ -306,7 +313,7 @@ class ContinuationHandler:
             ), None
         else:
             # Stop is blocked: official schema top-level decision="block" + non-empty reason
-            prompt = decision.continuation_prompt or "Stop blocked: WorkCard acceptance unfulfilled"
+            prompt = decision.continuation_prompt or "Stop blocked: managed acceptance unfulfilled"
             output = HookOutput(
                 continue_=True,
                 decision="block",

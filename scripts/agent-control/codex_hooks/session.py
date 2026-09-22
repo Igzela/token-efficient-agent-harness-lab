@@ -1,12 +1,12 @@
-"""Session context bootstrap, compaction checkpointing, and receipts (H1).
+"""Ordinary repository session bootstrap, compaction, and receipts.
 
 Implements:
-- SessionStart: Injects bounded WorkCard context, allowed paths, and execution invariants
+- SessionStart: Injects the current repository workspace and optional path scope
   with strict official wire hookEventName. When the runtime reports
   ``source == "compact"``, rehydrates critical constraints and progress from the
   PreCompact checkpoint instead of the startup bootstrap.
-- PreCompact: Persists the active WorkCard checkpoint (WorkCard id, session,
-  git status) to local state. Emits no hook body beyond the official
+- PreCompact: Persists a small repository checkpoint (session and git status)
+  to local state. Emits no hook body beyond the official
   top-level fields: the official pre-compact schema forbids hookSpecificOutput.
 - PostCompact: Pass-through acknowledgement. Context re-injection after
   compaction is owned by SessionStart(source="compact"), never by a fabricated
@@ -54,7 +54,7 @@ class SessionHandler:
         if (hook_input.source or "") == "compact":
             return self._handle_compact_rehydration(hook_input)
 
-        card_id = os.environ.get("STEWARD_WORKCARD_ID", "")
+        card_id = os.environ.get("STEWARD_WORKCARD_ID", "").strip()
         worktree = os.environ.get("STEWARD_WORKTREE", "")
         allowed_raw = os.environ.get("STEWARD_ALLOWED_PATHS", "[]")
         forbidden_raw = os.environ.get("STEWARD_FORBIDDEN_PATHS", "[]")
@@ -74,25 +74,33 @@ class SessionHandler:
             steps = []
 
         context_lines = [
-            "### Autonomous WorkCard Execution Context",
-            f"- WorkCard ID: {card_id or 'unknown'}",
+            "### Autonomous WorkCard Execution Context"
+            if card_id
+            else "### Repository Coding Context",
             f"- Workspace Root: {worktree or os.getcwd()}",
             f"- Allowed Target Paths: {', '.join(allowed) if allowed else 'all repository files'}",
         ]
+        if card_id:
+            context_lines.insert(1, f"- Legacy task ID: {card_id}")
         if forbidden:
             context_lines.append(f"- Strictly Forbidden Paths: {', '.join(forbidden)}")
         if steps:
-            context_lines.append("- WorkCard Steps:")
+            context_lines.append("- Requested Steps:")
             for s in steps:
                 context_lines.append(f"  * {s}")
 
         context_lines.extend([
             "- Execution Rules:",
-            "  * Steward is the sole lifecycle and durable persistence authority.",
+            "  * Read START_HERE.md and the relevant owner docs before editing.",
             "  * Never modify files outside Allowed Target Paths.",
             "  * Verify all edits locally before finishing.",
-            "  * Stop only when implementation and verification are complete.",
+            "  * Stop when the bounded change and its verification are complete.",
         ])
+        if card_id:
+            context_lines.insert(
+                -1,
+                "  * This session was started by a legacy managed worker; its parent owns lifecycle and durable state.",
+            )
 
         injected_context = "\n".join(context_lines)
         self.telemetry.record_bootstrap(len(injected_context.encode("utf-8")))
@@ -113,7 +121,6 @@ class SessionHandler:
         persisted by handle_pre_compact; a missing checkpoint fails closed to
         a minimal constraint reminder rather than fabricated progress.
         """
-        card_id = os.environ.get("STEWARD_WORKCARD_ID", "")
         allowed_raw = os.environ.get("STEWARD_ALLOWED_PATHS", "[]")
         try:
             allowed = json.loads(allowed_raw) if allowed_raw else []
@@ -127,17 +134,21 @@ class SessionHandler:
             except Exception:
                 checkpoint = {}
 
+        card_id = os.environ.get("STEWARD_WORKCARD_ID", "").strip()
         rehydrate_lines = [
             "### Compaction Rehydration Notice",
-            f"- Continuing WorkCard: {card_id or 'unknown'}",
             f"- Allowed Scope: {', '.join(allowed) if allowed else 'workspace'}",
         ]
+        if card_id:
+            rehydrate_lines.insert(1, f"- Legacy task ID: {card_id}")
         diff_summary = checkpoint.get("modified_files", "") if isinstance(checkpoint, dict) else ""
         if diff_summary:
             rehydrate_lines.append(f"- Workspace changes already in progress:\n{diff_summary}")
         else:
             rehydrate_lines.append("- No checkpointed workspace changes; verify scope before editing.")
-        rehydrate_lines.append("- Steward remains the sole lifecycle and persistence authority.")
+        rehydrate_lines.append("- Re-read START_HERE.md and verify the current checkout before continuing.")
+        if card_id:
+            rehydrate_lines.append("- This is a legacy managed worker; its parent owns lifecycle and durable state.")
 
         rehydrate_text = "\n".join(rehydrate_lines)
         self.telemetry.record_compaction(len(rehydrate_text.encode("utf-8")))
@@ -156,7 +167,6 @@ class SessionHandler:
         Emits only the official top-level fields: the official pre-compact
         output schema forbids hookSpecificOutput.
         """
-        card_id = os.environ.get("STEWARD_WORKCARD_ID", "")
         worktree = os.environ.get("STEWARD_WORKTREE", os.getcwd())
 
         # Collect current git status
@@ -174,7 +184,6 @@ class SessionHandler:
             pass
 
         state = {
-            "workcard_id": card_id,
             "session_id": hook_input.session_id,
             "modified_files": git_summary,
             "turn_id": hook_input.turn_id,
@@ -231,18 +240,22 @@ class SessionHandler:
         if cmd_str and any(t in cmd_str for t in ("pytest", "cargo test", "unittest")):
             success = extract_tool_success(hook_input.tool_response)
             if success is True:
-                card_id = os.environ.get("STEWARD_WORKCARD_ID", "")
                 worktree = os.environ.get("STEWARD_WORKTREE", os.getcwd())
                 focused = self._focused_tests()
-                record = build_evidence_record(
-                    workcard_id=card_id,
-                    focused_tests=focused,
-                    command=redact_text(cmd_str),
-                    success=True,
-                    worktree=worktree,
-                    receipt_id=receipt_count,
-                )
-                self.evidence_file.write_text(json.dumps(record, indent=2), encoding="utf-8")
+                # Verification receipts are a legacy managed-worker artifact.
+                # Ordinary repository sessions do not manufacture a task-card
+                # identity merely because a test command was observed.
+                card_id = os.environ.get("STEWARD_WORKCARD_ID", "").strip()
+                if card_id:
+                    record = build_evidence_record(
+                        workcard_id=card_id,
+                        focused_tests=focused,
+                        command=redact_text(cmd_str),
+                        success=True,
+                        worktree=worktree,
+                        receipt_id=receipt_count,
+                    )
+                    self.evidence_file.write_text(json.dumps(record, indent=2), encoding="utf-8")
 
         additional = None
         if raw_len > 4096:

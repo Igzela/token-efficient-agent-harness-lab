@@ -2,6 +2,16 @@
 
 Operator procedures for the local Agent Control Plane.
 
+## Normal coding path
+
+This repository is operated like a normal repository by default. Read
+`START_HERE.md`, inspect the relevant code and tests, make a focused change,
+run the applicable checks, and leave a reviewable branch. No Mission, Stage,
+WorkCard, generated task card, Steward journal, or checkpoint is required to
+start or stop an ordinary coding session. The older Steward/Card procedures
+below are compatibility and recovery procedures only; they must never block
+the normal path.
+
 Last updated: 2026-09-06.
 
 ## Session Entry
@@ -676,25 +686,18 @@ Before commit, the finalizer performs bounded structural validation only: it val
 
 Review terminal states are explicit. The validator accepts only schema-valid exact-head artifacts. Exact `PASS` is the only merge-authorizing review verdict under the Review Convergence Protocol in `docs/AUTONOMY.md`: it requires the complete bounded diff, no open blockers, and affirmative security and rollback gates; exact-head CI is verified independently from trusted GitHub state. Deferred non-blocking notes on `PASS` are allowed residual risk and do not force another head. `PASS_WITH_NOTES`, `BLOCKED`, `FAIL`, and `DECISION_REQUIRED` remain non-authorizing outcomes. Malformed, unavailable, oversized, or head-mismatched output is never recorded as a verdict. Merge additionally requires current review decision, effective human review, complete review-thread evidence, and all required canonical checks for the same head; unavailable or contradictory evidence fails closed.
 
-### Direct maintenance without WorkCard state
+### Ordinary repository entry
 
-For ordinary local repository maintenance when no executable WorkCard exists,
-start from a non-main checkout with:
+For ordinary local repository maintenance, start from a non-main checkout with:
 
 ```bash
-uv run --no-project python scripts/session_context.py enter --role coding \
-  --direct-maintenance --scope . --verify "git diff --check"
+uv run --no-project python scripts/session_context.py enter --role coding
 ```
 
-Add narrower `--scope` prefixes and additional provider-free `--verify`
-commands when useful. The session entry binds accepted `main`, the exact
-checkout branch/head, scope, and checks; it does not read or create a Mission,
-Stage, WorkCard, checkpoint, journal, or Steward service state. `.git` and
-`.github` are rejected even under repository-root scope. This lane is local
-execution only: it cannot write `main`, invoke providers, spend, deploy,
-release, destroy data, bypass review/CI, or merge. Keep the branch Draft until
-the ordinary exact-head review, canonical CI, rollback, and guarded-merge gates
-pass.
+Use the optional `--scope` and `--verify` flags only when a narrower local
+contract is useful. The entry records the accepted document source and current
+checkout; it does not read or create a lifecycle task, checkpoint, journal, or
+Steward service state. `.git` and `.github` remain protected.
 
 ## Research Execution Continuation Procedure
 

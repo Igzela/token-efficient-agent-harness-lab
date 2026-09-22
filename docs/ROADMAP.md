@@ -3,8 +3,9 @@
 Last updated: 2026-09-04.
 
 This document owns the high-level milestones and research direction for the
-Token-Efficient Agent Harness Lab. Research programs are gated Missions, not a
-second execution or governance system.
+Token-Efficient Agent Harness Lab. The milestones below record historical
+Steward automation; they do not define the normal repository coding path.
+Research programs are optional experiments, not an entry gate for coding.
 
 ## Autonomous Steward Migration Milestones
 
@@ -20,11 +21,12 @@ second execution or governance system.
 | **M7: Final Non-Regression Acceptance** | End-to-end mission verification, comprehensive fault and rollback drills, final architecture mapping, and closeout | Complete |
 | **M8: Autonomous Steward Closure** | Autonomous control loop, GitHub-authenticated non-replayable approval, single merge owner workflow delegation, and fault matrix | Complete — production Mission `MISSION-9E042A35652D3D4A` completed two autonomously merged Stages (#667 and #674), followed by accepted-main documentation readback (#675) on 2026-08-31 |
 
-Steward is enabling repository-maintenance infrastructure: user-approved
-Mission → Steward Stage planning/replanning → bounded WorkCards →
-implementation → verification → independent review → exact-head CI → guarded
-merge → accepted-main readback. It is not the research objective, an evaluator,
-or an authority to replace the active Harness.
+The normal maintenance loop is simply `START_HERE.md → inspect → edit →
+verify → review → CI → guarded merge`. Historical Steward automation remains
+available only when explicitly invoked for a managed or recovery run; its
+Mission/Stage/task-packet decomposition is not required and must not intercept
+ordinary coding. It is not the research objective, an evaluator, or an
+authority to replace the active Harness.
 
 ## Durable Optimization Objective
 

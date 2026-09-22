@@ -425,13 +425,13 @@ Historical phase plans, closeouts, validation reports, and low-frequency referen
 
 ## Agent Maintenance
 
-Repository maintenance authority is governed by [`START_HERE.md`](START_HERE.md), [`AGENTS.md`](AGENTS.md), and [`docs/AUTONOMY.md`](docs/AUTONOMY.md). Autonomous Steward coordinates mission execution, stage verification, independent review, CI, and guarded merges. A missing or conflicting architecture, authority, schema, security, evaluator, release, or recovery decision pauses with `PAUSED_FOR_OWNER` or `DECISION_REQUIRED`.
+Repository maintenance authority is governed by [`START_HERE.md`](START_HERE.md), [`AGENTS.md`](AGENTS.md), and [`docs/AUTONOMY.md`](docs/AUTONOMY.md). A coding agent reads `START_HERE.md`, inspects the current checkout, makes a bounded change, and verifies it like a normal repository. The historical Autonomous Steward remains optional compatibility automation for explicitly managed runs; its task packets never gate ordinary coding. A missing or conflicting architecture, authority, schema, security, evaluator, release, or recovery decision pauses with `PAUSED_FOR_OWNER` or `DECISION_REQUIRED`.
 
 This maintenance authority does not grant Provider spend, target output, direct
-merge, release, deployment, or production-adoption authority. Within one
-GitHub-authenticated bounded Mission, Steward may only dispatch the canonical
-guarded merge workflow after exact-head CI/review gates; GitHub remains the
-merge and accepted-main authority. The durable architecture baseline is
+merge, release, deployment, or production-adoption authority. If a managed
+Steward run is explicitly used, it may only dispatch the canonical guarded
+merge workflow after exact-head CI/review gates; GitHub remains the merge and
+accepted-main authority. The durable architecture baseline is
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Contributing

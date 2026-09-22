@@ -4,6 +4,22 @@ Last updated: 2026-09-22.
 
 This document defines the autonomy governance, lifecycle state machine, review convergence protocol, exact-head CI, and guarded merge contracts for the Autonomous Steward system.
 
+## Normal repository path
+
+The default coding path is intentionally ordinary repository maintenance:
+
+```text
+START_HERE.md → inspect relevant code/tests → edit → verify
+→ review exact branch/head → CI → guarded merge
+```
+
+An agent enters through `scripts/session_context.py`, reads `START_HERE.md`,
+and decides the next bounded change from the current repository state. It does
+not need a Mission, Stage, WorkCard, generated task card, lifecycle journal,
+checkpoint, or Steward service. The Steward/Card lifecycle below is retained
+only as a legacy compatibility surface for historical automation and is never
+a prerequisite or blocker for the normal path.
+
 ## Scope of Steward Autonomy
 
 Autonomous Steward autonomy is planning, bounded execution, verification,
@@ -187,26 +203,23 @@ review, canonical CI matrix, and guarded merge workflow authorize progression.
 The owner-direct binding is not a review verdict, CI result, merge authority,
 or replacement lifecycle owner.
 
-### Direct maintenance lane (no WorkCard prerequisite)
+### Ordinary repository entry
 
-WorkCards remain an internal Steward decomposition for managed multi-step
-missions, but they are not a mandatory entry gate for ordinary repository
-maintenance. A coding agent may invoke:
+The coding entry is the ordinary repository path. A coding agent enters it
+directly on a non-main checkout:
 
 ```bash
 uv run --no-project python scripts/session_context.py enter --role coding \
-  --direct-maintenance --scope . --verify "git diff --check"
+  --scope . --verify "git diff --check"
 ```
 
-The direct lane is local and provider-free. It requires accepted-main
-document binding, a non-main non-detached checkout, an exact branch/head
-snapshot, explicit repository path scope, and a safe verification command
-contract. Repository-root scope is allowed for ordinary source maintenance but
-`.git` and `.github` are always rejected. The entry contains no Mission, Stage,
-WorkCard, checkpoint, journal, or Steward-service continuity and is not a
-second lifecycle owner.
+The entry is local and provider-free. It records the accepted document
+source, current checkout, and optional verification commands. It does not
+create or require Mission, Stage, WorkCard, checkpoint, journal, or
+Steward-service continuity. Repository-root scope is allowed for ordinary
+source maintenance, while `.git` and `.github` remain protected.
 
-The lane authorizes only in-scope local edits and declared checks. It never
+The entry authorizes only in-scope local edits and declared checks. It never
 authorizes writes to `main`, provider calls or spend, deployment, release,
 destructive effects, review/CI bypass, merge, or removal of rollback evidence.
 The resulting branch remains Draft until exact-head independent review,
@@ -269,9 +282,9 @@ Ordinary maintenance missions without an acceptance ledger retain their standard
   Marker and PR4B adapters are test-only compatibility surfaces.
 - **Codex Lifecycle Hooks Autonomous Operating Contract**:
   - **H0 Capability Gating**: Production workers gate hook invocation on `CodexHookProbe`. All 14 capabilities (`hooks.basic`, `session_start`, `pre_tool`, `post_tool`, `permission_request`, `compact`, `stop`, `interrupt`, `subagent`, `async`, `mcp_tool`, `isolated_codex_home`, `hook_trust_bootstrap`, `definition_hash_invalidation`) must be actively evaluated; native per-handler discovery trust readback (`trusted`) and definition hash invalidation (`modified`) are verified, and missing core capabilities fail closed with deterministic diagnostics. Trust provisioning failure refuses the run (`codex_hooks_provisioning_failed`); post-run execution attestation rejects unguarded outcomes (`codex_hooks_execution_unattested`), because the runtime silently skips untrusted hooks.
-  - **H1 Context & Compaction Invariants**: Bounded context injection at `SessionStart` isolates WorkCard requirements. The `PreCompact` checkpoint plus `SessionStart(source="compact")` rehydration contract guarantees that long-running context compactions cannot cause the agent to lose its assigned scope or produce goal drift. Receipts persist only redacted input; PASS evidence must be bound to WorkCard, scope, code state, command, and a real success signal.
-  - **H2 Worktree Boundary Enforcement**: `PreToolUse` strictly enforces `allowed_paths`, worktree isolation, and fail-closed validation on missing context, preventing edits to forbidden files or destructive operations. `PermissionRequest` enforces fail-closed evaluation, approving only provably scoped low-risk actions.
-  - **H3 Completion Continuation Loop**: The `Stop` hook evaluates declared WorkCard acceptance and verification evidence (`allowed_paths`, `focused_tests` / `verification_evidence.json`), rather than raw git status modifications. When incomplete, a bounded continuation retry budget (default: 2 attempts) intercepts the stop signal via top-level `decision="block"` and prompts continuation without operator intervention. Budget exhaustion records an explicit incomplete status.
+- **H1 Context & Compaction Invariants (legacy managed runs)**: Bounded context injection at `SessionStart` and the `PreCompact` checkpoint preserve an explicitly managed worker's scope. Ordinary sessions receive only repository context and do not create task-card evidence.
+- **H2 Worktree Boundary Enforcement**: `PreToolUse` protects the current repository and optional `allowed_paths`, preventing edits to forbidden files or destructive operations. Missing task-card metadata is valid for ordinary sessions; `PermissionRequest` still approves only provably scoped low-risk actions.
+- **H3 Completion Continuation Loop (legacy managed runs)**: The `Stop` hook may evaluate declared managed acceptance evidence. Ordinary sessions are never intercepted for missing task metadata and stop normally; managed continuation remains bounded and records incomplete status on exhaustion.
 
 ## Review Convergence Protocol
 

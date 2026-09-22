@@ -2,7 +2,7 @@
 
 Implements:
 - PreToolUse: Intercepts tool calls and rejects out-of-scope paths, forbidden
-  commands, or executions lacking valid WorkCard scope context.
+  commands, or executions lacking a valid repository scope.
 - PermissionRequest: Auto-approves only provably scoped, low-risk workspace actions;
   strictly fails closed on missing/malformed context or unknown/risky operations
   (no auto-allow on blacklist-miss).
@@ -103,7 +103,13 @@ TEST_RUNNER_PREFIXES = (
 
 
 class GuardHandler:
-    """Enforces worktree path boundaries and fail-closed permission decisions."""
+    """Enforces ordinary repository path boundaries and safe commands.
+
+    This guard is intentionally independent of Steward/WorkCard state.  A
+    normal repository session has the checkout root as its default scope;
+    callers may narrow it with ``STEWARD_ALLOWED_PATHS`` for an older managed
+    worker, but missing card metadata is never an execution blocker.
+    """
 
     def __init__(self, state_dir: Path | str | None = None):
         if state_dir is not None:
@@ -115,20 +121,16 @@ class GuardHandler:
         self.telemetry = HookTelemetry(self.state_dir)
 
     def _get_context(self) -> tuple[bool, str, Path, list[str], list[str]]:
-        """Extract and validate WorkCard and scope context from environment.
+        """Extract optional scope context from environment.
 
         Returns (is_valid, error_reason, worktree, allowed_paths, forbidden_paths).
         """
         worktree_raw = os.environ.get("STEWARD_WORKTREE", "")
         worktree = Path(worktree_raw).resolve() if worktree_raw else Path(os.getcwd()).resolve()
 
-        card_id = os.environ.get("STEWARD_WORKCARD_ID", "").strip()
-        if not card_id:
-            return False, "missing_or_empty_STEWARD_WORKCARD_ID", worktree, [], []
-
         allowed_raw = os.environ.get("STEWARD_ALLOWED_PATHS", "")
         if not allowed_raw:
-            return False, "missing_STEWARD_ALLOWED_PATHS", worktree, [], []
+            return True, "", worktree, ["."], [".git/", ".github/"]
 
         try:
             allowed = json.loads(allowed_raw)
@@ -139,7 +141,7 @@ class GuardHandler:
         except Exception as exc:
             return False, f"malformed_json_STEWARD_ALLOWED_PATHS: {exc}", worktree, [], []
 
-        forbidden_raw = os.environ.get("STEWARD_FORBIDDEN_PATHS", "[]")
+        forbidden_raw = os.environ.get("STEWARD_FORBIDDEN_PATHS", "[\".git/\", \".github/\"]")
         try:
             forbidden = json.loads(forbidden_raw) if forbidden_raw else []
             if not isinstance(forbidden, list):
@@ -150,7 +152,7 @@ class GuardHandler:
         return True, "", worktree, allowed, forbidden
 
     def _get_focused_tests(self) -> list[str]:
-        """Return the WorkCard-declared focused verification checks (may be empty)."""
+        """Return optional focused verification checks (may be empty)."""
         return read_focused_tests()
 
     def _extract_paths(self, tool_input: dict[str, Any] | None) -> list[str]:
@@ -180,7 +182,7 @@ class GuardHandler:
         allowed_paths: list[str],
         forbidden_paths: list[str],
     ) -> tuple[bool, str]:
-        """Check if candidate path is allowed under current WorkCard constraints."""
+        """Check if candidate path is allowed under the current repository scope."""
         cand = Path(candidate_path)
         if not cand.is_absolute():
             cand = (worktree_root / cand).resolve()
@@ -208,6 +210,9 @@ class GuardHandler:
             allow_clean = allow.strip().rstrip("/")
             if not allow_clean:
                 continue
+            if allow_clean == ".":
+                allowed_match = True
+                break
             if rel_str == allow_clean or rel_str.startswith(f"{allow_clean}/"):
                 allowed_match = True
                 break
@@ -217,7 +222,7 @@ class GuardHandler:
                 break
 
         if not allowed_match:
-            return False, f"Path outside allowed WorkCard paths: {rel_str} (allowed: {allowed_paths})"
+            return False, f"Path outside allowed repository paths: {rel_str} (allowed: {allowed_paths})"
 
         return True, ""
 
@@ -396,7 +401,7 @@ class GuardHandler:
         return True, ""
 
     def _is_focused_test_target(self, arg: str, focused_tests: list[str]) -> bool:
-        """Check whether a path-like arg is a WorkCard-declared focused test."""
+        """Check whether a path-like arg is an explicitly focused test."""
         candidate = arg.strip()
         for entry in focused_tests:
             if not entry:
@@ -431,7 +436,7 @@ class GuardHandler:
             if seg == prefix or seg.startswith(f"{prefix} ") or seg.startswith(f"{prefix}\t"):
                 return True, ""
 
-        # 2. Verification runners: scoped or WorkCard-declared targets only.
+        # 2. Verification runners: scoped or explicitly declared targets only.
         for prefix in TEST_RUNNER_PREFIXES:
             if seg == prefix or seg.startswith(f"{prefix} ") or seg.startswith(f"{prefix}\t"):
                 return self._is_test_runner_segment_allowed(
@@ -452,7 +457,7 @@ class GuardHandler:
         return False, f"command_not_provably_scoped_or_low_risk: {seg[:80]}"
 
     def handle_pre_tool_use(self, hook_input: HookInput) -> HookOutput:
-        """Evaluate PreToolUse against WorkCard context, path constraints, and command safety.
+        """Evaluate PreToolUse against repository scope and command safety.
 
         Shell/exec commands are approved only when provably scoped and
         low-risk; anything else (touch/cp/mv/tee/sed/python -c and friends)

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This wrapper is the only provider-backed transport for production WorkCards.
+# This wrapper is the provider-backed transport for optional managed workers.
+# Ordinary coding does not invoke it and does not require task-card metadata.
 # It never commits, pushes, merges, or creates PRs; the parent Steward owns all
 # repository and GitHub effects. Provider output is transient and is never
 # copied into journal evidence.

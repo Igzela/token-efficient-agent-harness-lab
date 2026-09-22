@@ -8,9 +8,9 @@ Verifies:
   * Stop uses top-level decision="block" + non-empty reason
 - H0 Probe: Real binary capability detection (14 capabilities verified) and mock matrix.
 - H1 Session: Context bootstrap, compaction rehydration, ephemeral receipts, and ROI telemetry.
-- H2 Guard: Fail-closed on missing context/scope, allowed_paths enforcement, forbidden path rejection,
+- H2 Guard: Ordinary repository scope by default, optional allowed_paths enforcement, forbidden path rejection,
   and provably scoped low-risk permission approval (no auto-allow on blacklist-miss).
-- H3 Continuation: Stop hook checks declared WorkCard acceptance/verification evidence,
+- H3 Continuation: Ordinary stops are not intercepted; legacy managed runs may check acceptance evidence,
   blocks premature stops with decision="block" + prompt when budget remains, records incomplete status on exhaustion.
 - Dispatcher: End-to-end event routing and official wire protocol compliance.
 - Trust & Config: Native discovery, per-handler hook keys (<config_path>:<event>:<m_idx>:<h_idx>),
@@ -213,6 +213,25 @@ class TestCodexHooksH1Session(unittest.TestCase):
             for k in ("STEWARD_WORKCARD_ID", "STEWARD_WORKTREE", "STEWARD_ALLOWED_PATHS",
                       "STEWARD_FORBIDDEN_PATHS", "STEWARD_CARD_OBJECTIVE"):
                 os.environ.pop(k, None)
+
+    def test_session_start_without_task_card_is_plain_repository_context(self):
+        for key in (
+            "STEWARD_WORKCARD_ID",
+            "STEWARD_WORKTREE",
+            "STEWARD_ALLOWED_PATHS",
+            "STEWARD_FORBIDDEN_PATHS",
+            "STEWARD_CARD_OBJECTIVE",
+        ):
+            os.environ.pop(key, None)
+        handler = SessionHandler(self.state_dir)
+        output = handler.handle_session_start(
+            HookInput(hook_event_name="SessionStart", session_id="ordinary-1")
+        )
+        context = output.hookSpecificOutput.additionalContext
+        self.assertIn("### Repository Coding Context", context)
+        self.assertIn("Read START_HERE.md", context)
+        self.assertNotIn("WorkCard", context)
+        self.assertNotIn("task ID", context)
 
     def test_compaction_rehydration_loop(self):
         os.environ["STEWARD_WORKCARD_ID"] = "card-test-compact"
@@ -549,18 +568,21 @@ class TestCodexHooksH2Guard(unittest.TestCase):
         (self.worktree / "docs").mkdir(parents=True)
         self.handler = GuardHandler(self.worktree / "hooks_state")
 
-    def test_fail_closed_missing_context(self):
+    def test_missing_workcard_context_uses_ordinary_repository_scope(self):
         os.environ.pop("STEWARD_WORKCARD_ID", None)
         os.environ.pop("STEWARD_ALLOWED_PATHS", None)
+        os.environ["STEWARD_WORKTREE"] = str(self.worktree)
         hook_input = HookInput(
             hook_event_name="PreToolUse",
             tool_name="write_to_file",
             tool_input={"target_file": str(self.worktree / "src" / "app.py")},
         )
-        out = self.handler.handle_pre_tool_use(hook_input)
-        self.assertEqual(out.decision, "block")
-        self.assertEqual(out.hookSpecificOutput.permissionDecision, PermissionDecision.DENY.value)
-        self.assertIn("missing_or_malformed_scope_context", out.hookSpecificOutput.permissionDecisionReason)
+        try:
+            out = self.handler.handle_pre_tool_use(hook_input)
+            self.assertEqual(out.decision, "approve")
+            self.assertEqual(out.hookSpecificOutput.permissionDecision, PermissionDecision.ALLOW.value)
+        finally:
+            os.environ.pop("STEWARD_WORKTREE", None)
 
     def _pre_tool_decision(self, command, allowed=("src/",), focused=None):
         os.environ["STEWARD_WORKCARD_ID"] = "card-01"
@@ -787,6 +809,25 @@ class TestCodexHooksH3Continuation(unittest.TestCase):
         subprocess.run(["git", "init", str(self.worktree)], check=True, capture_output=True)
         self.state_dir = self.worktree / "hooks_state"
         self.handler = ContinuationHandler(self.state_dir, max_continuations=2)
+
+    def test_stop_is_not_intercepted_without_task_card(self):
+        for key in (
+            "STEWARD_WORKCARD_ID",
+            "STEWARD_WORKTREE",
+            "STEWARD_WORKER_TYPE",
+            "STEWARD_ALLOWED_PATHS",
+            "STEWARD_FOCUSED_TESTS",
+        ):
+            os.environ.pop(key, None)
+        exit_code, output, stderr = self.handler.handle_stop(
+            HookInput(hook_event_name="Stop")
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(output.continue_)
+        self.assertIsNone(stderr)
+        self.assertEqual(output.stopReason, "ordinary_repository_session")
+        status = json.loads((self.state_dir / "completion_status.json").read_text())
+        self.assertEqual(status["reason"], "ordinary_repository_session")
 
     def test_stop_prevented_when_no_declared_evidence(self):
         os.environ["STEWARD_WORKTREE"] = str(self.worktree)

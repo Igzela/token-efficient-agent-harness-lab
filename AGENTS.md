@@ -8,7 +8,11 @@ This repository is a local, deterministic, auditable Agent harness and workflow 
 
 Use this order: correctness, safety, evidence, recovery, and rollback → architecture and authority integrity → maintainability and one canonical owner → low duplication and low context cost. Conciseness must preserve quality.
 
-Before acting, establish the **leading valid frontier** from accepted remote `main`, the active Mission or Stage, its owned exact PR head when one exists, and blocked downstream work. Enter through the command returned by `START_HERE.md`; treat `scripts/project_context.py` and generated capsules as verified transport views, never authority. Do not continue from a stale branch, review, CI run, checkpoint, or downstream PR.
+Before acting, establish the **leading valid frontier** from accepted remote
+`main`, the current checkout branch/HEAD, and the task stated by
+`START_HERE.md`. Enter through the command returned by `START_HERE.md`; read
+the relevant owner docs, code, and tests directly. Generated capsules and
+local checkpoints are optional transport views, never authority.
 
 ## Autonomous Operating Model
 
@@ -26,30 +30,23 @@ Normal reversible repository work and already-configured local/GitHub services a
 
 If work needs to cross any boundary above, stop with `DECISION_REQUIRED` or `PAUSED_FOR_OWNER`: report evidence, options, consequences, and the smallest proposed owner update. A proposal is not accepted authority.
 
-## Managed WorkCards and Direct Maintenance
+## Ordinary Repository Maintenance
 
-Steward-managed tasks remain governed by `docs/AUTONOMY.md`: ordinary states are
-`READY_FOR_EXECUTION`, `IN_PROGRESS`, and `COMPLETE`; execute only the active
-task's exact owners, allowed changes, ordered steps, verification, rollback,
-budgets, pause gates, and forbidden next actions. A WorkCard is not a
-repository-maintenance entry prerequisite. When no executable WorkCard exists,
-use `session_context.py enter --role coding --direct-maintenance` from a
-non-main checkout with an explicit `--scope` and provider-free `--verify`
-contract. That lane has no Mission/Stage/WorkCard/Steward continuity, rejects
-`.git` and `.github`, and remains subject to exact-head review, canonical CI,
-rollback, and guarded merge. Review `PASS` satisfies one exact-head review
-gate; it is never task `COMPLETE`.
+Read `START_HERE.md`, inspect the relevant source and tests, choose one
+coherent bounded change, and verify it locally. No Mission, Stage, WorkCard,
+generated task card, journal, or checkpoint is required to start coding. Keep
+the change on a non-main branch, protect `.git` and `.github`, preserve
+rollback, and follow the repository's ordinary review, CI, and merge gates.
+Review `PASS` is evidence for one exact head; it is not a substitute for
+testing or delivery acceptance.
 
 ## Research execution continuation
 
-For a finite owner-authorized experiment, use the
-[Research Execution Continuation Rule](docs/AUTONOMY.md#research-execution-continuation-rule)
-and [operator procedure](docs/RUNBOOK.md#research-execution-continuation-procedure).
-This path does not create a new maintenance Mission, Stage, or WorkCard, nor
-require an active maintenance Stage as a live-execution precondition;
-`NO_ACTIVE_STAGE` is normal. A smoke-exposed glue gap between existing owners
-is a bounded execution repair, not `PAUSED_FOR_OWNER`; pause only at the
-boundary conditions owned by `AUTONOMY.md`.
+For a finite owner-authorized experiment, follow the experiment-specific
+procedure in `docs/AUTONOMY.md` and `docs/RUNBOOK.md`. Research execution is
+separate from ordinary coding and must not turn the repository entrypoint into
+a task-card workflow; pause only at the documented provider, credential,
+effect, budget, or recovery boundaries.
 
 ## Investigation Escalation (`ask_sol`)
 
@@ -98,7 +95,7 @@ After `START_HERE.md`, follow only the returned role route and targeted reads. `
 One fact has one full owner:
 - `START_HERE.md` owns navigation/context routing;
 - `docs/ARCHITECTURE.md` owns durable architecture, authority, security, recovery, and module ownership;
-- `docs/AUTONOMY.md` owns mission/stage contracts, autonomy, testing, review, and merge rules;
+- `docs/AUTONOMY.md` owns autonomy, testing, review, and merge rules; its historical managed-run lifecycle is compatibility-only;
 - `docs/ROADMAP.md` owns closed-loop milestones and research programs;
 - `docs/RUNBOOK.md` owns proven operator runbooks.
 

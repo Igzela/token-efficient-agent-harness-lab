@@ -1118,15 +1118,15 @@ class CheckpointTests(unittest.TestCase):
             710, expected_head_sha=HEAD, offline=False
         )
 
-    def test_direct_maintenance_entry_authorizes_non_main_checkout_without_workcard(self):
+    def test_repository_entry_authorizes_non_main_checkout_without_task_card(self):
         snapshot = checkout_snapshot(
             head_sha=HEAD,
-            branch="codex/direct-maintenance",
+            branch="feature/ordinary-repo",
             dirty_paths=[],
             path_digests={},
             worktree_sha256="0" * 64,
         )
-        entry = session_context.build_direct_maintenance_entry(
+        entry = session_context.build_repository_entry(
             contract=session_context.parse_route_contract(route_document()),
             role="coding",
             accepted_main_sha=MAIN,
@@ -1137,23 +1137,17 @@ class CheckpointTests(unittest.TestCase):
             snapshot=snapshot,
         )
 
-        self.assertEqual(entry["schema_version"], "agent_direct_maintenance_entry.v1")
+        self.assertEqual(entry["schema_version"], "agent_repository_entry.v1")
         self.assertTrue(entry["execution_authorized"])
-        self.assertFalse(entry["checkpoint_allowed"])
-        self.assertEqual(entry["context_mode"], "DIRECT_MAINTENANCE")
-        self.assertEqual(entry["resume_disposition"], "AUTHORIZED")
-        self.assertIsNone(entry["mission_id"])
-        self.assertIsNone(entry["stage_id"])
-        self.assertIsNone(entry["card_id"])
+        self.assertEqual(entry["context_mode"], "REPOSITORY")
+        self.assertNotIn("mission_id", entry)
+        self.assertNotIn("stage_id", entry)
+        self.assertNotIn("card_id", entry)
+        self.assertNotIn("direct_maintenance_binding", entry)
         self.assertEqual(entry["allowed_paths"], ["."])
-        self.assertTrue(
-            any(
-                item.startswith("Do not create or require a Mission, Stage, WorkCard")
-                for item in entry["forbidden_next_actions"]
-            )
-        )
+        self.assertIn("Do not write directly to main", entry["forbidden_next_actions"][0])
 
-    def test_direct_maintenance_entry_rejects_main_and_protected_dirty_paths(self):
+    def test_repository_entry_rejects_main_and_protected_dirty_paths(self):
         arguments = {
             "contract": session_context.parse_route_contract(route_document()),
             "role": "coding",
@@ -1164,9 +1158,9 @@ class CheckpointTests(unittest.TestCase):
             "verification": ["git diff --check"],
         }
         with self.assertRaisesRegex(
-            session_context.SessionContextError, "direct_maintenance_branch_mismatch"
+            session_context.SessionContextError, "repository_entry_branch_invalid"
         ):
-            session_context.build_direct_maintenance_entry(
+            session_context.build_repository_entry(
                 **arguments,
                 snapshot=checkout_snapshot(
                     head_sha=HEAD,
@@ -1177,23 +1171,23 @@ class CheckpointTests(unittest.TestCase):
                 ),
             )
         with self.assertRaisesRegex(
-            session_context.SessionContextError, "direct_maintenance_dirty_path_invalid"
+            session_context.SessionContextError, "repository_entry_dirty_path_invalid"
         ):
-            session_context.build_direct_maintenance_entry(
+            session_context.build_repository_entry(
                 **arguments,
                 snapshot=checkout_snapshot(
                     head_sha=HEAD,
-                    branch="codex/direct-maintenance",
+                    branch="feature/ordinary-repo",
                     dirty_paths=[".github/workflows/ci.yml"],
                     path_digests={".github/workflows/ci.yml": "1" * 64},
                     worktree_sha256="0" * 64,
                 ),
             )
 
-    def test_direct_maintenance_cli_skips_lifecycle_and_checkpoint(self):
+    def test_repository_entry_cli_skips_lifecycle_and_checkpoint(self):
         snapshot = checkout_snapshot(
             head_sha=HEAD,
-            branch="codex/direct-maintenance",
+            branch="feature/ordinary-repo",
             dirty_paths=[],
             path_digests={},
             worktree_sha256="0" * 64,
@@ -1229,15 +1223,59 @@ class CheckpointTests(unittest.TestCase):
             mock.patch.object(session_context, "_print") as printer,
         ):
             result = session_context.main(
-                ["enter", "--role", "coding", "--direct-maintenance"]
+                ["enter", "--role", "coding"]
             )
         self.assertEqual(result, 0)
         self.assertTrue(printer.call_args.args[0]["execution_authorized"])
-        self.assertEqual(printer.call_args.args[0]["context_mode"], "DIRECT_MAINTENANCE")
+        self.assertEqual(printer.call_args.args[0]["context_mode"], "REPOSITORY")
+        self.assertNotIn("card_id", printer.call_args.args[0])
+
+    def test_coding_entry_on_non_main_defaults_to_plain_repository_mode(self):
+        snapshot = checkout_snapshot(
+            head_sha=HEAD,
+            branch="feature/ordinary-repo",
+            dirty_paths=[],
+            path_digests={},
+            worktree_sha256="0" * 64,
+        )
+        loaded = {
+            "accepted_main_sha": MAIN,
+            "accepted_main_source": "test",
+            "document_source": "accepted",
+            "document_source_binding": MAIN,
+            "documents": {
+                "START_HERE.md": route_document(),
+                "AGENTS.md": "# Agent Instructions\n",
+                "docs/ARCHITECTURE.md": "# Architecture\n",
+                "docs/AUTONOMY.md": "# Autonomy\n",
+                "README.md": "# README\n",
+                "docs/ROADMAP.md": "# Roadmap\n",
+                "docs/RUNBOOK.md": "# Runbook\n",
+            },
+        }
+        with (
+            mock.patch.object(session_context, "_load_documents", return_value=loaded),
+            mock.patch.object(session_context, "capture_checkout", return_value=snapshot),
+            mock.patch.object(session_context, "_canonical_session_mission", side_effect=AssertionError("plain coding mode must not build lifecycle state")),
+            mock.patch.object(session_context, "read_checkpoint", side_effect=AssertionError("plain coding mode must not read a checkpoint")),
+            mock.patch.object(session_context, "_print") as printer,
+        ):
+            result = session_context.main(["enter", "--role", "coding"])
+        self.assertEqual(result, 0)
+        entry = printer.call_args.args[0]
+        self.assertEqual(entry["context_mode"], "REPOSITORY")
+        self.assertTrue(entry["execution_authorized"])
+        self.assertEqual(entry["schema_version"], "agent_repository_entry.v1")
+        self.assertNotIn("mission_id", entry)
+        self.assertNotIn("stage_id", entry)
+        self.assertNotIn("card_id", entry)
+        self.assertNotIn("direct_maintenance_binding", entry)
 
     def test_manual_checkpoint_cli_is_not_exposed(self):
         with self.assertRaises(SystemExit):
             session_context.parse_args(["checkpoint"])
+        with self.assertRaises(SystemExit):
+            session_context.parse_args(["enter", "--role", "coding", "--direct-maintenance"])
 
     def test_current_repository_steward_mission_routing(self):
         root = Path(__file__).resolve().parents[1]
