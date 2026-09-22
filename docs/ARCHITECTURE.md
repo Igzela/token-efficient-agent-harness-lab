@@ -1,7 +1,7 @@
 # Architecture
 
 Current version: v38
-Last updated: 2026-09-03.
+Last updated: 2026-09-22.
 
 This is the durable architecture, module ownership, and trust boundary specification for the Token-Efficient Agent Harness Lab. It consolidates system design, module ownership, single persistence authority, and trust boundaries into one authoritative document.
 
@@ -11,6 +11,7 @@ The system is a local and deterministic agent harness and workflow control plane
 - Rust `engine/` as the sole runtime, scheduler, policy, and application-owned storage authority.
 - `LocalProductStore` as the sole persistence and audit owner across SQLite and PostgreSQL backends.
 - Autonomous Steward as the repository-maintenance outer loop coordinating missions, stages, and workcards without creating parallel schedulers or state stores.
+- An explicit direct-maintenance entry for ordinary local coding when no WorkCard exists; it is a scoped transport lane, not a second lifecycle owner.
 
 ### Core Objective
 
@@ -26,6 +27,7 @@ from research decisions. Each authority has one owner:
 | Layer | Canonical owner | Owns | Explicitly does not own |
 |---|---|---|---|
 | Repository-maintenance control plane | `scripts/agent-control/steward_service.py` | User-approved Missions, Steward Stages, bounded WorkCards, repository PR/review/CI/merge progression, and accepted-main readback | Product runtime, product scheduler, ProductStore, evaluator, research claims, Provider spend, or active-Harness replacement |
+| Direct maintenance entry | `scripts/session_context.py` | Accepted-main/document binding, non-main checkout binding, explicit path scope, and provider-free verification for one local coding session without lifecycle state | Mission/Stage/WorkCard scheduling, journal or checkpoint ownership, `main` writes, provider effects, deployment, release, review/CI bypass, merge, or any product/runtime authority |
 | Product and task runtime | Rust `engine/` | Execution, leases, scheduling, policy, task state, verification, output, effects, recovery, and rollback through its existing module owners | Repository-maintenance lifecycle, experimental adoption, or persistence outside the Store |
 | Persistence and audit | `engine/src/storage/local_product_store/` | SQLite/PostgreSQL persistence, audit, idempotency, evidence/artifacts, effect envelopes, and terminal settlement | Runtime scheduling, research evaluation, or a second truth store |
 | Common RWE measurement | `engine/src/rwe/` | Frozen task/corpus/protocol/schedule identity, comparable budgets, lifecycle evidence, missingness, and provider-free/live evidence seams | A shortcut around correctness, safety, comparability, Store persistence, or effect authority |
@@ -270,6 +272,7 @@ only genuine emergency stop transitions halt recovery.
 ```mermaid
 flowchart TD
     U["User Natural Language Goal"] --> S["Autonomous Steward Proposal & Grant"]
+    U --> L["Direct Maintenance Entry (explicit scope)"]
     S --> M["MaintenanceMission"]
     M --> G["Stage Integration Boundary"]
     G --> C["WorkCard (Weak Agent Task)"]
@@ -277,6 +280,7 @@ flowchart TD
     V -->|Incomplete / Retry| G
     V -->|Stage Verified| M
     M -->|Stages Settled & Ledger Terminal| D["Mission Summary"]
+    L --> V
 ```
 
 | Layer | Responsibility | Authority / Decision Maker |

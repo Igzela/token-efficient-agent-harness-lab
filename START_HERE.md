@@ -42,7 +42,7 @@ Review has no `COMPLETE` verdict. Exact `PASS` satisfies only the independent-re
 Never interpret “latest” as “the newest branch wins.” Establish these three layers first:
 
 1. **Accepted baseline** — the latest remote `main` commit that defines repository authority.
-2. **Active implementation frontier** — the latest exact head of the active Stage or WorkCard owned PR.
+2. **Active implementation frontier** — the latest exact head of the active Stage/WorkCard PR, or the current non-main direct-maintenance checkout.
 3. **Blocked future frontier** — stacked, deferred, or unaccepted work that may be inspected but cannot define accepted truth or authorize later work.
 
 Before editing:
@@ -51,8 +51,8 @@ Before editing:
 refresh remote main
 → refresh open PR heads, dependencies, CI, and reviews
 → read ARCHITECTURE and AUTONOMY from the accepted baseline
-→ resolve the active Stage or WorkCard
-→ confirm its exact owned PR head
+→ resolve the active Stage or WorkCard when one exists; otherwise select the direct-maintenance lane
+→ confirm the exact branch/head and explicit path scope
 → confirm the local checkout/worktree matches the intended frontier
 → read only the relevant owner, architecture, playbook, code, and tests
 → state scope, non-goals, authority, acceptance, rollback, and hard stops
@@ -69,7 +69,13 @@ Every repository-maintenance session starts here, but no agent should load every
 uv run --no-project python scripts/session_context.py enter --role coding
 ```
 
-The digest-bound JSON composes the accepted current Mission/Stage/WorkCard contract, its complete bounded autonomous worker dispatch capsule, current checkout, and any Git-private checkpoint. Treat `deferred_documents` as already projected startup context: do not reread them unless the entry reports a conflict, a missing fact, or a stop condition.
+The default command composes the accepted current Mission/Stage/WorkCard contract, its complete bounded autonomous worker dispatch capsule, current checkout, and any Git-private checkpoint. When no executable WorkCard exists, a coding agent may instead use the explicit local lane:
+
+```bash
+uv run --no-project python scripts/session_context.py enter --role coding --direct-maintenance --scope . --verify "git diff --check"
+```
+
+That lane requires a non-main checkout, binds the accepted-main SHA, exact branch/head, explicit scope, and provider-free checks, and does not create or require Mission/Stage/WorkCard or Steward state. It rejects `.git` and `.github` edits and still requires exact-head review, canonical CI, rollback evidence, and guarded merge before delivery. Treat `deferred_documents` as already projected startup context: do not reread them unless the entry reports a conflict, a missing fact, or a stop condition.
 
 Planning, review, CI-repair, operator, and contributor sessions request their bounded accepted document route:
 
@@ -162,7 +168,7 @@ Use targeted reads. Do not load every document when the role and task narrow the
 
 ## Planning and Execution Separation
 
-The user owns the high-level Mission objective and approval. Autonomous Steward owns Stage breakdown and WorkCard generation. An implementation agent owns only bounded task execution: inspect code, implement minimal surgical edits, run tests, and return structured evidence.
+The user owns the high-level objective and approval. Autonomous Steward may own Stage breakdown and WorkCard generation for managed multi-step runs, but WorkCards are no longer a mandatory coding-agent entry gate. A direct-maintenance agent owns one explicit non-main checkout scope: inspect code, implement minimal surgical edits, run declared checks, and return structured evidence. It cannot write `main`, invoke providers, deploy, release, bypass review/CI, or replace the Steward/runtime owners.
 
 ## Generate a Fresh Handoff Capsule
 

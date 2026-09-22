@@ -26,9 +26,19 @@ Normal reversible repository work and already-configured local/GitHub services a
 
 If work needs to cross any boundary above, stop with `DECISION_REQUIRED` or `PAUSED_FOR_OWNER`: report evidence, options, consequences, and the smallest proposed owner update. A proposal is not accepted authority.
 
-## Execution-Ready Tasks and WorkCards
+## Managed WorkCards and Direct Maintenance
 
-Task execution is governed by `docs/AUTONOMY.md`: ordinary states are `READY_FOR_EXECUTION`, `IN_PROGRESS`, and `COMPLETE`. External-effect boundaries may use `T3_REQUIRED` as a non-executable authority gate. Execute only the active task and only its exact owners, allowed changes, ordered steps, verification, rollback, budgets, pause gates, and forbidden next actions. Review `PASS` satisfies one exact-head review gate; it is never task `COMPLETE`.
+Steward-managed tasks remain governed by `docs/AUTONOMY.md`: ordinary states are
+`READY_FOR_EXECUTION`, `IN_PROGRESS`, and `COMPLETE`; execute only the active
+task's exact owners, allowed changes, ordered steps, verification, rollback,
+budgets, pause gates, and forbidden next actions. A WorkCard is not a
+repository-maintenance entry prerequisite. When no executable WorkCard exists,
+use `session_context.py enter --role coding --direct-maintenance` from a
+non-main checkout with an explicit `--scope` and provider-free `--verify`
+contract. That lane has no Mission/Stage/WorkCard/Steward continuity, rejects
+`.git` and `.github`, and remains subject to exact-head review, canonical CI,
+rollback, and guarded merge. Review `PASS` satisfies one exact-head review
+gate; it is never task `COMPLETE`.
 
 ## Research execution continuation
 

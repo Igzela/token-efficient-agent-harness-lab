@@ -676,6 +676,26 @@ Before commit, the finalizer performs bounded structural validation only: it val
 
 Review terminal states are explicit. The validator accepts only schema-valid exact-head artifacts. Exact `PASS` is the only merge-authorizing review verdict under the Review Convergence Protocol in `docs/AUTONOMY.md`: it requires the complete bounded diff, no open blockers, and affirmative security and rollback gates; exact-head CI is verified independently from trusted GitHub state. Deferred non-blocking notes on `PASS` are allowed residual risk and do not force another head. `PASS_WITH_NOTES`, `BLOCKED`, `FAIL`, and `DECISION_REQUIRED` remain non-authorizing outcomes. Malformed, unavailable, oversized, or head-mismatched output is never recorded as a verdict. Merge additionally requires current review decision, effective human review, complete review-thread evidence, and all required canonical checks for the same head; unavailable or contradictory evidence fails closed.
 
+### Direct maintenance without WorkCard state
+
+For ordinary local repository maintenance when no executable WorkCard exists,
+start from a non-main checkout with:
+
+```bash
+uv run --no-project python scripts/session_context.py enter --role coding \
+  --direct-maintenance --scope . --verify "git diff --check"
+```
+
+Add narrower `--scope` prefixes and additional provider-free `--verify`
+commands when useful. The session entry binds accepted `main`, the exact
+checkout branch/head, scope, and checks; it does not read or create a Mission,
+Stage, WorkCard, checkpoint, journal, or Steward service state. `.git` and
+`.github` are rejected even under repository-root scope. This lane is local
+execution only: it cannot write `main`, invoke providers, spend, deploy,
+release, destroy data, bypass review/CI, or merge. Keep the branch Draft until
+the ordinary exact-head review, canonical CI, rollback, and guarded-merge gates
+pass.
+
 ## Research Execution Continuation Procedure
 
 This procedure is for a finite, frozen, owner-authorized research execution.

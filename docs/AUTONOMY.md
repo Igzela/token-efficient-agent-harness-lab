@@ -1,6 +1,6 @@
 # Autonomy and Testing Contract
 
-Last updated: 2026-09-08.
+Last updated: 2026-09-22.
 
 This document defines the autonomy governance, lifecycle state machine, review convergence protocol, exact-head CI, and guarded merge contracts for the Autonomous Steward system.
 
@@ -186,6 +186,33 @@ After a repair, the PR remains Draft until the normal exact-head independent
 review, canonical CI matrix, and guarded merge workflow authorize progression.
 The owner-direct binding is not a review verdict, CI result, merge authority,
 or replacement lifecycle owner.
+
+### Direct maintenance lane (no WorkCard prerequisite)
+
+WorkCards remain an internal Steward decomposition for managed multi-step
+missions, but they are not a mandatory entry gate for ordinary repository
+maintenance. A coding agent may invoke:
+
+```bash
+uv run --no-project python scripts/session_context.py enter --role coding \
+  --direct-maintenance --scope . --verify "git diff --check"
+```
+
+The direct lane is local and provider-free. It requires accepted-main
+document binding, a non-main non-detached checkout, an exact branch/head
+snapshot, explicit repository path scope, and a safe verification command
+contract. Repository-root scope is allowed for ordinary source maintenance but
+`.git` and `.github` are always rejected. The entry contains no Mission, Stage,
+WorkCard, checkpoint, journal, or Steward-service continuity and is not a
+second lifecycle owner.
+
+The lane authorizes only in-scope local edits and declared checks. It never
+authorizes writes to `main`, provider calls or spend, deployment, release,
+destructive effects, review/CI bypass, merge, or removal of rollback evidence.
+The resulting branch remains Draft until exact-head independent review,
+canonical CI, and the guarded merge contract pass. This is an execution-entry
+change, not permission to weaken any existing product, security, recovery, or
+external-effect boundary.
 
 A Mission reaches `COMPLETE` only when both conditions are satisfied:
 1. its repository-maintenance Stage lifecycle is settled; and

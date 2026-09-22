@@ -70,6 +70,63 @@ OWNER_DIRECT_REPAIR_BINDING_SCHEMA = "owner_direct_repair_binding.v1"
 OWNER_DIRECT_REPAIR_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 OWNER_DIRECT_REPAIR_BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 OWNER_DIRECT_REPAIR_LOGIN = re.compile(r"^github:[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+# Direct repository maintenance is an explicit local execution lane.  It is
+# deliberately separate from the Steward/WorkCard lifecycle: a coding agent
+# can work on a non-main checkout with an explicit scope and provider-free
+# verification contract, without manufacturing lifecycle state just to pass
+# the session gate.
+DIRECT_MAINTENANCE_ENTRY_SCHEMA = "agent_direct_maintenance_entry.v1"
+DIRECT_MAINTENANCE_BINDING_SCHEMA = "direct_maintenance_binding.v1"
+DIRECT_MAINTENANCE_LANE = "direct_maintenance"
+DIRECT_MAINTENANCE_ACTION = "DIRECT_MAINTENANCE"
+DIRECT_MAINTENANCE_BRANCH = OWNER_DIRECT_REPAIR_BRANCH
+DIRECT_MAINTENANCE_BINDING_FIELDS = frozenset(
+    {
+        "schema_version",
+        "source",
+        "dispatch_lane",
+        "action",
+        "accepted_main_sha",
+        "head_sha",
+        "head_branch",
+        "allowed_paths",
+        "verification",
+        "binding_sha256",
+    }
+)
+DIRECT_MAINTENANCE_ENTRY_FIELDS = frozenset(
+    {
+        "schema_version",
+        "authority",
+        "accepted_main_sha",
+        "document_source",
+        "document_source_binding",
+        "checkout_snapshot",
+        "role",
+        "mission_id",
+        "stage_id",
+        "card_id",
+        "context_mode",
+        "resume_disposition",
+        "resume_reason",
+        "checkpoint",
+        "checkpoint_id",
+        "next_permitted_action",
+        "allowed_paths",
+        "targeted_reads",
+        "verification_commands",
+        "verification_contract_sha256",
+        "deferred_documents",
+        "forbidden_next_actions",
+        "steward_continuity",
+        "execution_authority",
+        "direct_maintenance_binding",
+        "execution_authorized",
+        "checkpoint_allowed",
+        "entry_sha256",
+    }
+)
 OWNER_DIRECT_REPAIR_BINDING_FIELDS = frozenset(
     {
         "schema_version",
@@ -492,6 +549,270 @@ def build_owner_direct_repair_entry(
     }
     entry["entry_sha256"] = _json_sha256(entry)
     return _validate_owner_direct_repair_entry(entry)
+
+
+def _direct_maintenance_binding(value: object) -> dict[str, object]:
+    wire = _wire_mapping(value, "direct_maintenance_binding_invalid")
+    if set(wire) != DIRECT_MAINTENANCE_BINDING_FIELDS:
+        raise SessionContextError("direct_maintenance_binding_fields_invalid")
+    if wire.get("schema_version") != DIRECT_MAINTENANCE_BINDING_SCHEMA:
+        raise SessionContextError("direct_maintenance_binding_version_invalid")
+    if wire.get("source") != "local_command":
+        raise SessionContextError("direct_maintenance_binding_source_invalid")
+    if wire.get("dispatch_lane") != DIRECT_MAINTENANCE_LANE:
+        raise SessionContextError("direct_maintenance_binding_lane_invalid")
+    if wire.get("action") != DIRECT_MAINTENANCE_ACTION:
+        raise SessionContextError("direct_maintenance_binding_action_invalid")
+    accepted_main_sha = _validate_sha(
+        wire.get("accepted_main_sha"), "direct_maintenance_accepted_main_sha", SHA40
+    )
+    head_sha = _validate_sha(wire.get("head_sha"), "direct_maintenance_head_sha", SHA40)
+    head_branch = wire.get("head_branch")
+    if (
+        not isinstance(head_branch, str)
+        or DIRECT_MAINTENANCE_BRANCH.fullmatch(head_branch) is None
+        or head_branch == "main"
+        or ".." in head_branch
+        or "//" in head_branch
+    ):
+        raise SessionContextError("direct_maintenance_branch_invalid")
+    allowed_paths = _direct_scope_list(wire.get("allowed_paths"))
+    verification = _bounded_string_list(
+        wire.get("verification"), "direct_maintenance_verification", max_items=50
+    )
+    if any(_safe_verification_argv(command) is None for command in verification):
+        raise SessionContextError("direct_maintenance_verification_forbidden")
+    binding_sha256 = _validate_sha(
+        wire.get("binding_sha256"), "direct_maintenance_binding_sha256", SHA256
+    )
+    unsigned = {key: item for key, item in wire.items() if key != "binding_sha256"}
+    if binding_sha256 != _json_sha256(unsigned):
+        raise SessionContextError("direct_maintenance_binding_digest_invalid")
+    return {
+        **dict(wire),
+        "accepted_main_sha": accepted_main_sha,
+        "head_sha": head_sha,
+        "allowed_paths": allowed_paths,
+        "verification": verification,
+    }
+
+
+def _direct_maintenance_verification_contract_sha256(
+    binding: Mapping[str, object], verification: list[str]
+) -> str:
+    return _json_sha256(
+        {
+            "schema_version": DIRECT_MAINTENANCE_ENTRY_SCHEMA,
+            "accepted_main_sha": binding["accepted_main_sha"],
+            "head_sha": binding["head_sha"],
+            "allowed_paths": list(binding["allowed_paths"]),
+            "verification": verification,
+        }
+    )
+
+
+def _direct_maintenance_forbidden_actions() -> list[str]:
+    return [
+        "Do not create or require a Mission, Stage, WorkCard, Steward journal, or Steward service.",
+        "Do not write directly to main or change the checkout's base branch.",
+        "Do not invoke a real provider, spend budget, deploy, release, or perform a destructive effect.",
+        "Do not bypass exact-head review, canonical CI, guarded merge, or rollback evidence.",
+        "Do not edit .git or .github through this lane.",
+    ]
+
+
+def _direct_maintenance_next_action(
+    binding: Mapping[str, object],
+) -> str:
+    scope = ", ".join(str(item) for item in binding["allowed_paths"])
+    return (
+        f"Work only on non-main branch {binding['head_branch']} at exact head "
+        f"{binding['head_sha']} within scope [{scope}]; run the declared provider-free "
+        "checks, preserve the branch for exact-head review, CI, and guarded merge."
+    )
+
+
+def _validate_direct_maintenance_entry(value: object) -> dict[str, object]:
+    wire = _wire_mapping(value, "direct_maintenance_entry_invalid")
+    if set(wire) != DIRECT_MAINTENANCE_ENTRY_FIELDS:
+        raise SessionContextError("direct_maintenance_entry_fields_invalid")
+    if wire.get("schema_version") != DIRECT_MAINTENANCE_ENTRY_SCHEMA:
+        raise SessionContextError("direct_maintenance_entry_version_invalid")
+    if wire.get("authority") != "local_direct_maintenance; no_steward_continuity":
+        raise SessionContextError("direct_maintenance_entry_authority_invalid")
+    accepted_main_sha = _validate_sha(
+        wire.get("accepted_main_sha"), "direct_maintenance_entry_accepted_main_sha", SHA40
+    )
+    if wire.get("document_source") != "accepted" or wire.get("document_source_binding") != accepted_main_sha:
+        raise SessionContextError("direct_maintenance_entry_source_invalid")
+    snapshot = CheckoutSnapshot.from_wire(wire.get("checkout_snapshot"))
+    if snapshot.accepted_main_sha != accepted_main_sha:
+        raise SessionContextError("direct_maintenance_checkout_binding_invalid")
+    if wire.get("role") != "coding":
+        raise SessionContextError("direct_maintenance_role_invalid")
+    if any(wire.get(field) is not None for field in ("mission_id", "stage_id", "card_id")):
+        raise SessionContextError("direct_maintenance_lifecycle_identity_invalid")
+    if wire.get("context_mode") != "DIRECT_MAINTENANCE":
+        raise SessionContextError("direct_maintenance_mode_invalid")
+    if wire.get("resume_disposition") != "AUTHORIZED":
+        raise SessionContextError("direct_maintenance_disposition_invalid")
+    if wire.get("resume_reason") != "local_direct_maintenance":
+        raise SessionContextError("direct_maintenance_reason_invalid")
+    if wire.get("checkpoint") is not None or wire.get("checkpoint_id") is not None:
+        raise SessionContextError("direct_maintenance_checkpoint_invalid")
+    binding = _direct_maintenance_binding(wire.get("direct_maintenance_binding"))
+    if binding["accepted_main_sha"] != accepted_main_sha:
+        raise SessionContextError("direct_maintenance_accepted_main_mismatch")
+    if snapshot.head_sha != binding["head_sha"]:
+        raise SessionContextError("direct_maintenance_head_mismatch")
+    if snapshot.branch != binding["head_branch"] or snapshot.detached or snapshot.branch == "main":
+        raise SessionContextError("direct_maintenance_branch_mismatch")
+    allowed_paths = _direct_scope_list(wire.get("allowed_paths"), "direct_maintenance_entry_allowed_paths")
+    if allowed_paths != binding["allowed_paths"]:
+        raise SessionContextError("direct_maintenance_scope_binding_invalid")
+    if any(not _direct_path_is_allowed(path, allowed_paths) for path in snapshot.dirty_paths):
+        raise SessionContextError("direct_maintenance_dirty_path_invalid")
+    targeted_reads = _bounded_string_list(
+        wire.get("targeted_reads"), "direct_maintenance_targeted_reads", max_items=MAX_ROUTE_DOCUMENTS
+    )
+    if not targeted_reads or targeted_reads[0] != "START_HERE.md" or any(
+        path not in CANONICAL_DOCUMENTS for path in targeted_reads
+    ):
+        raise SessionContextError("direct_maintenance_targeted_reads_invalid")
+    verification = _bounded_string_list(
+        wire.get("verification_commands"), "direct_maintenance_entry_verification", max_items=50
+    )
+    if verification != binding["verification"] or any(
+        _safe_verification_argv(command) is None for command in verification
+    ):
+        raise SessionContextError("direct_maintenance_verification_invalid")
+    verification_contract = _validate_sha(
+        wire.get("verification_contract_sha256"),
+        "direct_maintenance_verification_contract_sha256",
+        SHA256,
+    )
+    if verification_contract != _direct_maintenance_verification_contract_sha256(binding, verification):
+        raise SessionContextError("direct_maintenance_verification_contract_invalid")
+    deferred = _bounded_string_list(
+        wire.get("deferred_documents"), "direct_maintenance_deferred_documents", max_items=MAX_ROUTE_DOCUMENTS
+    )
+    if deferred != targeted_reads:
+        raise SessionContextError("direct_maintenance_deferred_documents_invalid")
+    if wire.get("forbidden_next_actions") != _direct_maintenance_forbidden_actions():
+        raise SessionContextError("direct_maintenance_forbidden_actions_invalid")
+    if wire.get("next_permitted_action") != _direct_maintenance_next_action(binding):
+        raise SessionContextError("direct_maintenance_next_action_invalid")
+    if wire.get("steward_continuity") != {
+        "availability": "unavailable",
+        "reason": "steward_continuity_unavailable",
+        "source": "no_journal_or_service_required_for_direct_maintenance",
+    }:
+        raise SessionContextError("direct_maintenance_continuity_invalid")
+    if wire.get("execution_authority") != {
+        "availability": "confirmed",
+        "lane": DIRECT_MAINTENANCE_LANE,
+        "source": "local_accepted_main_and_checkout_binding",
+        "accepted_main_sha": accepted_main_sha,
+        "head_sha": binding["head_sha"],
+    }:
+        raise SessionContextError("direct_maintenance_authority_binding_invalid")
+    if wire.get("execution_authorized") is not True or wire.get("checkpoint_allowed") is not False:
+        raise SessionContextError("direct_maintenance_authority_flags_invalid")
+    entry_sha256 = _validate_sha(
+        wire.get("entry_sha256"), "direct_maintenance_entry_sha256", SHA256
+    )
+    unsigned = {key: item for key, item in wire.items() if key != "entry_sha256"}
+    if entry_sha256 != _json_sha256(unsigned):
+        raise SessionContextError("direct_maintenance_entry_digest_invalid")
+    return dict(wire)
+
+
+def build_direct_maintenance_entry(
+    *,
+    contract: RouteContract,
+    role: str,
+    accepted_main_sha: str,
+    document_source: str,
+    document_source_binding: str,
+    allowed_paths: object,
+    verification: object,
+    snapshot: object,
+) -> dict[str, object]:
+    """Compose a local direct-maintenance context without lifecycle state."""
+    if not isinstance(contract, RouteContract) or role != "coding":
+        raise SessionContextError("direct_maintenance_role_invalid")
+    _validate_sha(accepted_main_sha, "direct_maintenance_accepted_main_sha", SHA40)
+    if document_source != "accepted" or document_source_binding != accepted_main_sha:
+        raise SessionContextError("direct_maintenance_entry_source_invalid")
+    snapshot_model = CheckoutSnapshot.from_wire(snapshot)
+    if snapshot_model.accepted_main_sha != accepted_main_sha:
+        raise SessionContextError("direct_maintenance_checkout_binding_invalid")
+    if snapshot_model.detached or snapshot_model.branch == "main":
+        raise SessionContextError("direct_maintenance_branch_mismatch")
+    binding_unsigned = {
+        "schema_version": DIRECT_MAINTENANCE_BINDING_SCHEMA,
+        "source": "local_command",
+        "dispatch_lane": DIRECT_MAINTENANCE_LANE,
+        "action": DIRECT_MAINTENANCE_ACTION,
+        "accepted_main_sha": accepted_main_sha,
+        "head_sha": snapshot_model.head_sha,
+        "head_branch": snapshot_model.branch,
+        "allowed_paths": _direct_scope_list(allowed_paths),
+        "verification": _bounded_string_list(verification, "direct_maintenance_verification", max_items=50),
+    }
+    if any(_safe_verification_argv(command) is None for command in binding_unsigned["verification"]):
+        raise SessionContextError("direct_maintenance_verification_forbidden")
+    binding = {
+        **binding_unsigned,
+        "binding_sha256": _json_sha256(binding_unsigned),
+    }
+    binding_model = _direct_maintenance_binding(binding)
+    if any(not _direct_path_is_allowed(path, binding_model["allowed_paths"]) for path in snapshot_model.dirty_paths):
+        raise SessionContextError("direct_maintenance_dirty_path_invalid")
+    targeted_reads = list(contract.role_for(role).required)
+    entry: dict[str, object] = {
+        "schema_version": DIRECT_MAINTENANCE_ENTRY_SCHEMA,
+        "authority": "local_direct_maintenance; no_steward_continuity",
+        "accepted_main_sha": accepted_main_sha,
+        "document_source": document_source,
+        "document_source_binding": document_source_binding,
+        "checkout_snapshot": snapshot_model.to_wire(),
+        "role": role,
+        "mission_id": None,
+        "stage_id": None,
+        "card_id": None,
+        "context_mode": "DIRECT_MAINTENANCE",
+        "resume_disposition": "AUTHORIZED",
+        "resume_reason": "local_direct_maintenance",
+        "checkpoint": None,
+        "checkpoint_id": None,
+        "next_permitted_action": _direct_maintenance_next_action(binding_model),
+        "allowed_paths": list(binding_model["allowed_paths"]),
+        "targeted_reads": targeted_reads,
+        "verification_commands": list(binding_model["verification"]),
+        "verification_contract_sha256": _direct_maintenance_verification_contract_sha256(
+            binding_model, list(binding_model["verification"])
+        ),
+        "deferred_documents": targeted_reads,
+        "forbidden_next_actions": _direct_maintenance_forbidden_actions(),
+        "steward_continuity": {
+            "availability": "unavailable",
+            "reason": "steward_continuity_unavailable",
+            "source": "no_journal_or_service_required_for_direct_maintenance",
+        },
+        "execution_authority": {
+            "availability": "confirmed",
+            "lane": DIRECT_MAINTENANCE_LANE,
+            "source": "local_accepted_main_and_checkout_binding",
+            "accepted_main_sha": accepted_main_sha,
+            "head_sha": binding_model["head_sha"],
+        },
+        "direct_maintenance_binding": binding_model,
+        "execution_authorized": True,
+        "checkpoint_allowed": False,
+    }
+    entry["entry_sha256"] = _json_sha256(entry)
+    return _validate_direct_maintenance_entry(entry)
 DISPATCH_CAPSULE_FIELDS = frozenset(
     {
         "accepted_binding_source",
@@ -636,6 +957,30 @@ def _dispatch_path_list(value: object, field: str) -> list[str]:
     return result
 
 
+def _direct_scope_list(value: object, field: str = "direct_maintenance_allowed_paths") -> list[str]:
+    """Validate explicit direct-maintenance scope, including repository root ``.``."""
+
+    if not isinstance(value, list) or not value or len(value) > 50:
+        raise SessionContextError(f"{field}_invalid")
+    if "." in value:
+        if len(value) != 1:
+            raise SessionContextError(f"{field}_invalid")
+        return ["."]
+    try:
+        result = sorted({_repo_path(item, field) for item in value})
+    except SessionContextError as exc:
+        raise SessionContextError(f"{field}_invalid") from exc
+    if len(result) != len(value):
+        raise SessionContextError(f"{field}_invalid")
+    if any(
+        path in {".git", ".git/", ".github", ".github/"}
+        or path.startswith((".git/", ".github/"))
+        for path in result
+    ):
+        raise SessionContextError(f"{field}_forbidden")
+    return result
+
+
 def _path_is_allowed(path: str, allowed_paths: list[str]) -> bool:
     for allowed in allowed_paths:
         if allowed.endswith("/") and path.startswith(allowed):
@@ -643,6 +988,12 @@ def _path_is_allowed(path: str, allowed_paths: list[str]) -> bool:
         if path == allowed:
             return True
     return False
+
+
+def _direct_path_is_allowed(path: str, allowed_paths: list[str]) -> bool:
+    if path.startswith((".git/", ".github/")) or path in {".git", ".github"}:
+        return False
+    return "." in allowed_paths or _path_is_allowed(path, allowed_paths)
 
 
 def _wire_mapping(value: object, reason: str) -> Mapping[str, object]:
@@ -2769,7 +3120,7 @@ def _canonical_session_mission(documents: Mapping[str, str]) -> dict[str, object
         allowed_paths=CANONICAL_DOCUMENT_PATHS,
         forbidden_next_actions=(
             "Do not infer execution authority from canonical context.",
-            "Do not continue without an accepted executable WorkCard.",
+            "For local coding without lifecycle state, use the explicit direct-maintenance lane on a non-main checkout.",
         ),
         execution_authorized=False,
         checkpoint_allowed=False,
@@ -2826,6 +3177,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         help="Enter a live OWNER-authorized repair lane for one existing Draft PR.",
     )
+    enter.add_argument(
+        "--direct-maintenance",
+        action="store_true",
+        help="Enter local maintenance without Mission/Stage/WorkCard state (non-main checkout only).",
+    )
+    enter.add_argument(
+        "--scope",
+        action="append",
+        default=None,
+        help="Repository path or directory prefix for direct maintenance; repeat for multiple scopes (default: repository, excluding .git/.github).",
+    )
+    enter.add_argument(
+        "--verify",
+        action="append",
+        default=None,
+        help="Provider-free verification command for direct maintenance; repeat to add checks.",
+    )
     enter.add_argument("--format", choices=("json",), default="json")
 
     checkpoint_auto = subparsers.add_parser(
@@ -2872,6 +3240,21 @@ def main(argv: list[str] | None = None) -> int:
 
         snapshot = capture_checkout(accepted_main_sha)
         owner_direct_pr = getattr(args, "owner_direct_repair_pr", None)
+        if args.command == "enter" and getattr(args, "direct_maintenance", False):
+            if owner_direct_pr is not None:
+                raise SessionContextError("direct_maintenance_lane_conflict")
+            value = build_direct_maintenance_entry(
+                contract=parse_route_contract(documents["START_HERE.md"]),
+                role=args.role,
+                accepted_main_sha=accepted_main_sha,
+                document_source=loaded["document_source"],
+                document_source_binding=loaded["document_source_binding"],
+                allowed_paths=args.scope or ["."],
+                verification=args.verify or ["git diff --check"],
+                snapshot=snapshot,
+            )
+            _print(value, args.format)
+            return 0
         if args.command == "enter" and owner_direct_pr is not None:
             binding = _load_owner_direct_repair_binding(
                 owner_direct_pr,
