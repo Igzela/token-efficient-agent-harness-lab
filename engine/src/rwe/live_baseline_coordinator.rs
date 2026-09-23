@@ -4258,15 +4258,18 @@ fn operator_preflight_with_credential_readiness(
         match store.get_product_task_for_tenant(prereq_id, principal.tenant_id()) {
             Ok(Some(_)) => match store.get_product_task_terminal_evidence(prereq_id) {
                 Ok(ev) if !ev.is_null() => {
-                    if ev.get("tenant_id").and_then(Value::as_str) == Some(principal.tenant_id())
-                        && ev.get("task_status").and_then(Value::as_str) == Some("completed")
-                    {
-                        gp_ready = true;
-                    } else {
-                        blockers.push(json!({
+                    // Readiness uses the same evidence owner as prerequisite recovery;
+                    // a completed same-tenant task alone is not a live, accepted seal.
+                    match store.validated_rwe_prerequisite_evidence(
+                        principal,
+                        prereq_id,
+                        FROZEN_RWE_TARGET_MAIN_SHA,
+                    ) {
+                        Ok(_) => gp_ready = true,
+                        Err(error) => blockers.push(json!({
                             "code": "golden_path_prerequisite_not_ready",
-                            "detail": "terminal evidence missing completed same-tenant seal"
-                        }));
+                            "detail": error
+                        })),
                     }
                 }
                 _ => {
@@ -8258,6 +8261,88 @@ mod tests {
                     .iter()
                     .any(|c| c.contains("golden_path") || c.contains("composition"))
         );
+    }
+
+    #[test]
+    fn preflight_prerequisite_matches_store_validation_without_effects() {
+        let dir = tempdir().unwrap();
+        let template = LocalProductStore::new(dir.path().join("template.db")).unwrap();
+        seed_gp(&template, "gp-preflight", "preflight-tenant");
+        let mut evidence = template
+            .get_product_task_terminal_evidence("gp-preflight")
+            .unwrap();
+        evidence["source_revision"] = json!(FROZEN_RWE_TARGET_MAIN_SHA);
+
+        for (name, pointer, value, expected_ready) in [
+            (
+                "wrong-revision",
+                "/source_revision",
+                json!("c".repeat(40)),
+                false,
+            ),
+            (
+                "fixture",
+                "/node/executor_class",
+                json!("fixture_deterministic"),
+                false,
+            ),
+            (
+                "untrusted",
+                "/verification/trustworthy",
+                json!(false),
+                false,
+            ),
+            ("no-approval", "/approval/approval_id", json!(""), false),
+            (
+                "wrong-output",
+                "/output/intent",
+                json!("artifact_only"),
+                false,
+            ),
+            ("foreign-tenant", "/tenant_id", json!("other-tenant"), false),
+            ("failed", "/task_status", json!("failed"), false),
+            ("not-draft", "/output/draft_pr/draft", json!(false), false),
+            ("passed", "/verification/status", json!("passed"), true),
+            ("accepted", "/verification/status", json!("accepted"), true),
+            (
+                "recorded",
+                "/verification/status",
+                json!("evidence_recorded"),
+                true,
+            ),
+        ] {
+            let store = LocalProductStore::new(dir.path().join(format!("{name}.db"))).unwrap();
+            let principal = operator(&store, "preflight-tenant", "preflight-operator");
+            let mut candidate = evidence.clone();
+            *candidate.pointer_mut(pointer).unwrap() = value;
+            candidate["content_sha256"] = Value::Null;
+            candidate["content_sha256"] =
+                json!(sha256_hex(&serde_json::to_vec(&candidate).unwrap()));
+            store
+                .insert_product_task_terminal_evidence_for_tests(&candidate)
+                .unwrap();
+            let validated = store.validated_rwe_prerequisite_evidence(
+                &principal,
+                "gp-preflight",
+                FROZEN_RWE_TARGET_MAIN_SHA,
+            );
+            assert_eq!(validated.is_ok(), expected_ready, "{name}: {validated:?}");
+            let pre = operator_preflight_read_only(&store, &principal, None, Some("gp-preflight"))
+                .unwrap();
+            assert_eq!(
+                pre["golden_path_prerequisite_ready"], expected_ready,
+                "{name}"
+            );
+            assert_eq!(pre["authority_consumed"], false, "{name}");
+            assert_eq!(pre["provider_call_performed"], false, "{name}");
+            assert_eq!(pre["target_write_performed"], false, "{name}");
+            assert_eq!(
+                store
+                    .get_product_task_terminal_evidence("gp-preflight")
+                    .unwrap(),
+                candidate
+            );
+        }
     }
 
     #[test]
