@@ -584,6 +584,58 @@ class TestCodexHooksH2Guard(unittest.TestCase):
         finally:
             os.environ.pop("STEWARD_WORKTREE", None)
 
+    def test_missing_worktree_fails_closed_outside_git_checkout(self):
+        outside_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(outside_temp.cleanup)
+        outside = Path(outside_temp.name)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("STEWARD_WORKTREE", None)
+            with mock.patch("os.getcwd", return_value=str(outside)):
+                valid, reason, *_context = self.handler._get_context()
+
+        self.assertFalse(valid)
+        self.assertIn("repository", reason)
+
+    def test_missing_worktree_uses_verified_git_root_from_nested_directory(self):
+        subprocess.run(["git", "init", str(self.worktree)], check=True, capture_output=True)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("STEWARD_WORKTREE", None)
+            with mock.patch("os.getcwd", return_value=str(self.worktree / "src")):
+                valid, reason, worktree, *_context = self.handler._get_context()
+
+        self.assertTrue(valid, reason)
+        self.assertEqual(worktree, self.worktree)
+
+    def test_mandatory_repository_paths_cannot_be_unforbidden_by_environment(self):
+        with mock.patch.dict(os.environ, {
+            "STEWARD_WORKTREE": str(self.worktree),
+            "STEWARD_ALLOWED_PATHS": json.dumps(["."]),
+            "STEWARD_FORBIDDEN_PATHS": json.dumps([]),
+        }):
+            for relative_path in (".git/config", ".github/workflows/unsafe.yml"):
+                out = self.handler.handle_pre_tool_use(HookInput(
+                    hook_event_name="PreToolUse",
+                    tool_name="write_to_file",
+                    tool_input={"target_file": str(self.worktree / relative_path)},
+                ))
+                self.assertEqual(out.decision, "block", relative_path)
+                self.assertIn(
+                    "forbidden scope",
+                    out.hookSpecificOutput.permissionDecisionReason,
+                    relative_path,
+                )
+
+    def test_malformed_forbidden_paths_fail_closed(self):
+        with mock.patch.dict(os.environ, {
+            "STEWARD_WORKTREE": str(self.worktree),
+            "STEWARD_ALLOWED_PATHS": json.dumps(["src/"]),
+            "STEWARD_FORBIDDEN_PATHS": "not-json",
+        }):
+            valid, reason, *_context = self.handler._get_context()
+
+        self.assertFalse(valid)
+        self.assertEqual(reason, "malformed_json_STEWARD_FORBIDDEN_PATHS")
+
     def _pre_tool_decision(self, command, allowed=("src/",), focused=None):
         os.environ["STEWARD_WORKCARD_ID"] = "card-01"
         os.environ["STEWARD_WORKTREE"] = str(self.worktree)

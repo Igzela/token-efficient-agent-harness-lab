@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import subprocess
 from typing import Any
 
 from .evidence import read_focused_tests
@@ -126,7 +127,25 @@ class GuardHandler:
         Returns (is_valid, error_reason, worktree, allowed_paths, forbidden_paths).
         """
         worktree_raw = os.environ.get("STEWARD_WORKTREE", "")
-        worktree = Path(worktree_raw).resolve() if worktree_raw else Path(os.getcwd()).resolve()
+        try:
+            if worktree_raw:
+                worktree = Path(worktree_raw).resolve()
+            else:
+                current_dir = Path(os.getcwd()).resolve()
+                repository_result = subprocess.run(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    cwd=current_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                if repository_result.returncode != 0 or not repository_result.stdout.strip():
+                    return False, "repository_root_unavailable", current_dir, [], []
+                worktree = Path(repository_result.stdout.strip()).resolve()
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
+            fallback = Path(worktree_raw) if worktree_raw else Path(".")
+            return False, "repository_root_unavailable", fallback, [], []
 
         allowed_raw = os.environ.get("STEWARD_ALLOWED_PATHS", "")
         if not allowed_raw:
@@ -141,13 +160,20 @@ class GuardHandler:
         except Exception as exc:
             return False, f"malformed_json_STEWARD_ALLOWED_PATHS: {exc}", worktree, [], []
 
-        forbidden_raw = os.environ.get("STEWARD_FORBIDDEN_PATHS", "[\".git/\", \".github/\"]")
-        try:
-            forbidden = json.loads(forbidden_raw) if forbidden_raw else []
-            if not isinstance(forbidden, list):
-                forbidden = []
-        except Exception:
-            forbidden = []
+        forbidden = [".git/", ".github/"]
+        forbidden_raw = os.environ.get("STEWARD_FORBIDDEN_PATHS")
+        if forbidden_raw is not None:
+            try:
+                configured_forbidden = json.loads(forbidden_raw)
+            except Exception:
+                return False, "malformed_json_STEWARD_FORBIDDEN_PATHS", worktree, [], []
+            if (
+                not isinstance(configured_forbidden, list)
+                or not all(isinstance(path, str) and path.strip() for path in configured_forbidden)
+            ):
+                return False, "invalid_STEWARD_FORBIDDEN_PATHS", worktree, [], []
+            forbidden.extend(configured_forbidden)
+        forbidden = list(dict.fromkeys(forbidden))
 
         return True, "", worktree, allowed, forbidden
 
