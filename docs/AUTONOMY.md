@@ -1,364 +1,66 @@
 # Autonomy and Testing Contract
 
-Last updated: 2026-09-22.
+Last updated: 2026-09-23.
 
-This document defines the autonomy governance, lifecycle state machine, review convergence protocol, exact-head CI, and guarded merge contracts for the Autonomous Steward system.
+This document owns repository-development permissions, verification, independent review, exact-head CI, guarded merge, and recovery. The normal loop begins at `START_HERE.md` and is driven by the user's request or the next unblocked roadmap item.
 
-## Normal repository path
+## Autonomous repository work
 
-The default coding path is ordinary repository maintenance:
+Within the user's request, an agent may inspect, plan, resolve bounded design details, implement, test, document, repair CI, update a focused pull request, and complete the repository's review and merge process. Use one coherent branch/PR and preserve unrelated work. Do not write directly to protected `main`.
 
-```text
-START_HERE.md → inspect relevant code/tests → edit → verify
-→ review exact branch/head → CI → guarded merge
-```
+Normal reversible repository work and already-configured GitHub services are allowed. A new paid-provider request, target-repository write, production release/deployment, credential change, protected force-push, irreversible destruction, or materially broader scope requires current explicit authority. Do not weaken security, verification, audit, compatibility, recovery, or rollback to make work pass.
 
-An agent starts with `START_HERE.md` and the user's latest request, then decides
-the next bounded change from the current repository state. The
-`scripts/session_context.py` projection is optional. Ordinary coding does not
-need a Mission, Stage, WorkCard, generated task card, lifecycle journal,
-checkpoint, or Steward service. The Steward/Card lifecycle below is retained
-only for historical automation and is never a prerequisite or blocker for the
-normal path.
+The product's runtime, scheduler, policy, persistence, provider effects, research acceptance, and release boundaries remain owned by the Rust engine and `docs/ARCHITECTURE.md`. A repository change or a passing test does not authorize those effects.
 
-## Scope of Steward Autonomy
+## Verification and evidence
 
-Autonomous Steward autonomy is planning, bounded execution, verification,
-recovery, and repository-maintenance delivery inside a user-approved Mission.
-It does not mean autonomous acceptance of a research claim or authority to
-change the product's experimental basis. In particular, Steward cannot:
+Run focused checks for the changed behavior, then every applicable check in `AGENTS.md`'s Verification Baseline and the canonical CI matrix. Add negative tests for relevant rejection and recovery paths. `git diff --check`, the security baseline, agent handoff, and wire-codegen drift checks remain required where applicable.
 
-- turn a better score into an accepted Harness or adoption decision;
-- mutate the evaluator, task corpus, verification contract, or comparison
-  budget to rescue a result;
-- authorize unlimited Provider spend, resume a parked effect, or treat a
-  contract/preflight as live authorization;
-- replace the active Harness, promote Level-2 or Meta, or bypass transfer,
-  replication, human approval, or hard quality/safety/comparability gates.
-
-Research Missions may use Steward for Stage decomposition and re-planning, but
-their evidence remains owned by the existing RWE/evaluation and
-Harness-Evolution boundaries. A successful candidate returns to the common
-evidence loop before any explicitly authorized adoption.
-
-### Research Execution Continuation Rule
-
-Repository-maintenance lifecycle and finite research execution are separate
-control paths. A finite, frozen, owner-authorized operator run does not require
-creating a new Steward Mission, Stage, or WorkCard, or an active maintenance
-Stage as a live-execution precondition. Any existing research Mission remains
-the owner of research direction and acceptance under `ROADMAP.md`; it is not a
-live provider-spend gate. In particular, `session_context` returning
-`NO_ACTIVE_STAGE` is a normal maintenance-route observation for this path, not
-a research execution blocker. The session-context capsule is a transport view
-and does not grant or remove provider, target, Store, or experiment authority.
-
-The existing owner-approved live authorization, frozen campaign package,
-provider binding, RWE budget, and Store/evidence gates remain mandatory. This
-rule grants none of those authorities and does not authorize a provider call,
-target write, release, deployment, or scientific claim by itself.
-
-#### Missing-Prerequisite Recovery
-
-For a finite frozen research run that the owner has explicitly required,
-missing canonical prerequisite evidence, an undiscovered correct Store
-location, a Golden Path prerequisite `ProductTask`, or an equivalent
-execution precondition is not automatically `PAUSED_FOR_OWNER`. The agent
-must first search all existing app-owned Store and durable-evidence owners,
-then reuse a prerequisite only when its identity and source revision match the
-frozen run exactly. If no exact real prerequisite exists, the agent must use
-the existing canonical owner flow to generate the smallest real prerequisite
-and automatically resume the original experiment after it is complete.
-
-Prerequisite recovery must not create synthetic rows, alter a revision,
-copy fixture evidence, hand-write terminal evidence, or bypass Store
-transactions. Normal bounded execution required to acquire that prerequisite
-is part of this continuation path and is not by itself a pause condition. The
-prerequisite-specific pause conditions are only: acquisition would expand the
-owner-authorized provider/model set, scientific question, experiment budget
-ceiling, target destructive effect, or credential boundary, or an external
-effect reaches an unreconciled `OUTCOME_UNKNOWN` state. The global stop
-taxonomy, including a genuine emergency stop, material mission/time/effect
-boundary, and external uncertainty recovery rules, remains authoritative and
-has priority. The prerequisite itself is never counted as the experiment's
-scientific result.
-
-#### Standing Recovery Authorization
-
-Apply the owner's latest explicit authorization, not a superseded model or
-budget choice. When the owner authorizes a model, reasoning, experiment-shape,
-or finite execution-envelope revision, record a distinct freeze through the
-existing campaign, binding, Matrix, and budget owners before execution.
-Preserve prior freezes, consumed spend, failures, and usage; never relabel old
-results as matching the revised experiment. This is not permission to change
-the evaluator or comparability rules to rescue a result.
-
-Within that standing authorization, routine session resolution and standard
-refresh, bounded prerequisite acquisition, and finite schedule-derived budget
-updates do not require repeated owner confirmation. Record budget changes and
-actual consumption through the existing owner. Actual quota exhaustion uses
-the provider's bounded reset/retry path; it does not permit unlimited POSTs,
-buying quota, substituting credentials/models, or counting unknown usage as
-zero. Failed authentication requires an owner login only after supported
-automatic recovery is exhausted; authentication and isolation remain enforced.
-
-An unreconciled effect pauses that effect and any dependent execution, not
-independent safe inspection, repair, testing, or delivery. Preserve its receipt
-and reconcile through the existing owner before replay; general recovery
-authorization and passing new tests cannot prove a historical effect absent.
-
-When the owner has explicitly required a finite frozen experiment and a real
-live smoke exposes a missing composition seam between existing canonical
-owners, that seam is a bounded execution repair. The implementation agent may
-resolve it autonomously by reusing the existing Store, RWE, provider, budget,
-and evidence owners. The repair may use one focused Draft PR, its targeted and
-full tests, independent exact-head review, canonical CI, and the existing
-guarded merge owner. After accepted-main readback, the agent resumes the same
-frozen experiment without creating or requesting a new maintenance Mission,
-Stage, or WorkCard.
-
-This continuation rule does not permit:
-
-- adding or replacing an authority owner or a parallel runtime, scheduler,
-  Store, budget, evaluator, evidence, or approval owner;
-- changing the evaluator, corpus, scientific question, Strategy, seed, or
-  comparability contract, or changing the provider/model set, call count, or
-  budget envelope without the explicit authorization and recorded revision
-  described above;
-- creating, rotating, disclosing, or persisting credentials;
-- destructive effects or a second attempt after an outcome whose external
-  effect cannot be safely reconciled.
-
-The agent pauses only under those boundary crossings or the existing global
-stop taxonomy, including an unreconcilable security/recovery conflict or an
-unreconciled `OUTCOME_UNKNOWN`. The existence of a small amount of glue code
-or bounded prerequisite acquisition between existing owners is not
-`PAUSED_FOR_OWNER` and is not a reason to recreate maintenance lifecycle state.
-
-### Research Mainline: Testing, Review, and Merge Rules
-
-The bounded closed-loop research mainline (`MISSION-RESEARCH-20260901` and its
-accepted Stages such as `steward-stage-1-3dc4142fec0b3eb0`) is governed by the
-standard Steward lifecycle, testing, review, and merge rules in this document.
-Research Stages and WorkCards:
-
-- are confined to their owner-approved allowed paths and change categories and
-  obtain evidence only through finite frozen canonical experiments on the
-  common RWE basis; they grant no live Provider effect, spend, merge, release,
-  deployment, evaluator, or adoption authority by themselves;
-- are tested, reviewed, and merged only under the exact-head CI matrix and
-  exact `PASS` independent-review gates defined above, on one coherent
-  base...head diff; and
-- may not mutate the evaluator, task corpus, verification contract, comparison
-  budget, or experiment identity to rescue a result.
-
-Level-1 (transfer/replication/memory+skill) and Level-2/Meta (R4/R5/R6)
-disposition require complete lower-rung evidence, hard quality/safety/
-comparability gates, and explicitly authorized adoption before any change to
-the active Harness. The exact advancement gates are owned by
-`docs/ROADMAP.md`; module and authority ownership by `docs/ARCHITECTURE.md`.
-
-## Historical Steward Lifecycle State Machine
-
-This lifecycle remains documented for compatibility with existing Steward
-automation. It is not the default repository-maintenance workflow and must not
-be used to gate ordinary coding sessions.
-
-The repository-maintenance outer loop is governed by a single lifecycle state machine:
-
-```text
-MISSION_RUNNING → STAGE_PLANNED → WORKCARDS_RUNNING → STAGE_INTEGRATED
-→ STAGE_PR_DRAFT → STAGE_PR_READY → WAITING_CI_REVIEW
-→ (REPAIR / REPLAN | WAITING_FOR_MERGE) → MERGE_DISPATCHED
-→ MERGE_READBACK → NEXT_STAGE | COMPLETE
-```
-
-`steward_service.py` owns those transitions in its restart-safe journal loop.
-`steward.py` is its isolated K=2 WorkCard execution seam, not a second
-lifecycle owner.  Every production iteration holds the one service `flock`,
-reads Issue #208's `agent-emergency-stop` label before dispatch or merge, and
-records intent before a Ready, candidate-supersede, or merge-workflow mutation.
-
-### Owner-direct existing-PR repair lane
-
-Steward-dispatched work continues to require an accepted Mission, Stage, and
-WorkCard. A separate cold-start lane exists only for repairing one already
-existing Draft PR when an authenticated GitHub `OWNER` comment carries the
-bounded `steward-owner-direct-repair:v1` marker. The marker binds exactly the
-repository, PR number, current head SHA and branch, an authorization ID,
-allowed repository paths, and provider-free verification commands. GitHub's
-live PR state must prove that the PR is open, based on `main`, and still Draft;
-the comment's OWNER association and issue URL must also match. Historical
-markers whose repository, PR, head, or branch no longer matches the live PR
-are retained but ignored. Zero currently applicable valid markers, or multiple
-currently applicable valid markers, fail closed.
-
-The lane is represented by the separate
-`agent_owner_direct_repair_entry.v1` session projection. It does not create or
-read a Mission, Stage, WorkCard, Steward journal, or Steward service, and its
-`steward_continuity` field explicitly remains unavailable while its
-`execution_authority` field can be confirmed by the live GitHub binding. The
-checkout must already be the bound PR branch at the bound exact head; the lane
-permits only in-scope coding, declared provider-free verification, and a push
-to that same branch. It never authorizes `main` writes, provider spend,
-deployment, destructive effects, adoption, review/CI bypass, or merge.
-
-After a repair, the PR remains Draft until the normal exact-head independent
-review, canonical CI matrix, and guarded merge workflow authorize progression.
-The owner-direct binding is not a review verdict, CI result, merge authority,
-or replacement lifecycle owner.
-
-### Ordinary repository entry
-
-`START_HERE.md` is the coding entry. `scripts/session_context.py enter` is an
-optional local projection of accepted documents and checkout facts; it does
-not create or require Mission, Stage, WorkCard, checkpoint, journal, or
-Steward-service continuity. On `main` it is read-only; on a feature branch it
-can report the current context and optional verification commands. `.git` and
-`.github` remain protected.
-
-Ordinary repository work follows normal Git review: keep changes on a feature
-branch, run relevant checks, and leave the PR Draft until exact-head
-independent review, canonical CI, and guarded merge requirements pass. The
-optional context tool does not authorize provider calls or spend, deployment,
-release, destructive effects, review/CI bypass, merge, or removal of rollback
-evidence.
-
-A Mission reaches `COMPLETE` only when both conditions are satisfied:
-1. its repository-maintenance Stage lifecycle is settled; and
-2. every Mission-level acceptance obligation has a machine-verifiable terminal disposition.
-If preplanned Stages are exhausted while obligations remain unresolved, Steward generates
-dynamic follow-up Stages or enters `RESEARCH_PENDING`, preventing false-positive completion.
-Ordinary maintenance missions without an acceptance ledger retain their standard bounded behavior.
-
-### Stop Taxonomy: Routine Recovery vs Owner Pause
-
-| Category | Trigger | Disposition |
-|---|---|---|
-| **Routine Recovery** | Worker failure, timeout, formatting error, test failure, CI check failure, review requested changes, git main drift, empty diff, missing workflow run ID, orphan merge dispatch | Handled automatically by Steward (retry, split card, repair round, rebase, exact-candidate quarantine, replacement replan) under standing Mission approval without interrupting user |
-| **Owner Pause (`PAUSED_FOR_OWNER`)** | Material mission goal/completion/forbidden-change change, authority/budget/time/effect expansion, unapproved destructive or hard-to-rollback effect, unresolvable safety conflict, genuine emergency stop | Execution halts; reports reason and awaits explicit owner decision |
-| **External uncertainty** | Lost/timeout mutation result or unavailable PR/main authority without standing recovery authority | `OUTCOME_UNKNOWN` / recovery-required; only read-only reconciliation is permitted and a possibly issued mutation is never repeated |
-
-## Three-Tier Contract Hierarchy
-
-### 1. MaintenanceMission
-- Binds user-approved natural language goal to a proposal digest.
-- Contains explicit repository, allowed path scopes, and change categories.
-- Defines finite attempts, runtime seconds, call counts, and budget ceilings.
-- One approval is read from an authenticated GitHub Issue comment: GitHub
-  supplies the `OWNER` identity; its immutable comment ID, exact Mission ID,
-  proposal SHA-256, and current accepted-main SHA are checked before the
-  journal atomically consumes it.  The CLI cannot manufacture an approval.
-
-### 2. Stage
-- Single verifiable integration result and PR boundary.
-- Binds base SHA, target branch, acceptance checks, and ordered WorkCard graph.
-- Merges to main only after exact-head review and all canonical CI checks pass.
-
-### 3. WorkCard
-- Fine-grained unit executable by a weak agent.
-- Declares exact allowed paths and forbidden paths.
-- Declares step-by-step instructions, focused tests, and expected evidence.
-- Dispatched to an isolated git worktree with dedicated path locks.
-
-## Single Writer Guarantee
-
-- Only one active lifecycle writer is permitted at any time.
-- `steward_journal.py` is the sole durable lifecycle owner; its hash-chained
-  records include lease, approval replay, stage, mutation-intent, and
-  PR/head-bound accepted-main receipts.
-- Production WorkCards use the authenticated local Codex CLI through
-  `CodexWorkCardWorker`; it consumes the WorkCard objective, scope, checks,
-  evidence, attempts, and environment constraints. Its distinct read-only
-  Codex reviewer is not merge-capable. The wrapper uses the account-selected
-  Codex default model within the bounded T0-T2 policy; an explicit
-  `AGENT_CODEX_MODEL` override is optional and operator-controlled. The full
-  managed executable, credential, filesystem, and fail-closed boundary is
-  canonical in
-  [`docs/ARCHITECTURE.md`](ARCHITECTURE.md#managed-codex-credential-boundary).
-  Marker and PR4B adapters are test-only compatibility surfaces.
-- **Codex Lifecycle Hooks Autonomous Operating Contract**:
-  - **H0 Capability Gating**: Production workers gate hook invocation on `CodexHookProbe`. All 14 capabilities (`hooks.basic`, `session_start`, `pre_tool`, `post_tool`, `permission_request`, `compact`, `stop`, `interrupt`, `subagent`, `async`, `mcp_tool`, `isolated_codex_home`, `hook_trust_bootstrap`, `definition_hash_invalidation`) must be actively evaluated; native per-handler discovery trust readback (`trusted`) and definition hash invalidation (`modified`) are verified, and missing core capabilities fail closed with deterministic diagnostics. Trust provisioning failure refuses the run (`codex_hooks_provisioning_failed`); post-run execution attestation rejects unguarded outcomes (`codex_hooks_execution_unattested`), because the runtime silently skips untrusted hooks.
-- **H1 Context & Compaction Invariants (legacy managed runs)**: Bounded context injection at `SessionStart` and the `PreCompact` checkpoint preserve an explicitly managed worker's scope. Ordinary sessions receive only repository context and do not create task-card evidence.
-- **H2 Worktree Boundary Enforcement**: `PreToolUse` protects the current repository and optional `allowed_paths`, preventing edits to forbidden files or destructive operations. Missing task-card metadata is valid for ordinary sessions; `PermissionRequest` still approves only provably scoped low-risk actions.
-- **H3 Completion Continuation Loop (legacy managed runs)**: The `Stop` hook may evaluate declared managed acceptance evidence. Ordinary sessions are never intercepted for missing task metadata and stop normally; managed continuation remains bounded and records incomplete status on exhaustion.
+Report local tests, hosted CI, independent review, merge/readback, and any external effect as separate evidence. A passing test proves only its assertions. Never infer success from a command being started, a capsule, aggregate approval, a worker's self-report, or a local branch that was not read back from GitHub.
 
 ## Review Convergence Protocol
 
-Independent review is a convergence process governed by strict budgets:
+Review the complete `base...head` diff on one stable Draft candidate. Standards and Spec are independent axes. Review receipts must bind the repository, base, exact head, reviewer identity/session, outcome, and unresolved blockers. A later head invalidates earlier review conclusions.
 
 ```text
 stable Draft candidate + local checks passed
         ↓
-R1: Independent session, review_mode=full, complete base...head diff
-     ├─ no open block_current_head → exact PASS (deferred notes permitted)
-     └─ open blockers → 1 autonomous repair batch
+R1: independent full-diff review
+     ├─ no open blockers → exact PASS (deferred notes permitted)
+     └─ blockers → one bounded repair batch
                 ↓
-R2: Independent session, review_mode=repair_verification, complete base...head attestation
-     ├─ no open block_current_head → exact PASS + deferred notes
-     └─ open blockers remaining → Autonomous Stage Replan / Split / Alternative Implementation
-                                  (enters PAUSED_FOR_OWNER only if crossing hard boundaries)
+R2: independent verification of the complete current diff
+     ├─ no open blockers → exact PASS
+     └─ blockers remain → stop and report the exact blocker and decision needed
 ```
 
-### Review Rules:
-- `MAX_SUBSTANTIVE_REVIEW_ROUNDS = 2` (R1 + R2) per candidate head.
-- `MAX_AUTONOMOUS_REPAIR_BATCHES = 1` per review cycle.
-- Exact `PASS` is the sole merge-authorizing verdict.
-- Findings separate severity from disposition (`block_current_head` vs `defer`).
-- Deferred notes do not block merge eligibility.
-- If review repair batches are exhausted on a specific head, Steward does not loop review infinitely. Within active Mission authority, Steward autonomously replans the stage, splits cards, or attempts alternative implementations before pausing for owner.
+- At most two substantive review rounds and one autonomous repair batch per candidate head.
+- Severity and disposition are separate. Only an open `block_current_head` finding blocks; a documented deferred note may remain on a `PASS` receipt.
+- Exact `PASS` is the only review verdict eligible for merge. It is not a substitute for tests, CI, or delivery readback.
+- Review-state projections and generated capsules do not decide severity, disposition, or acceptance.
 
-## Exact-Head CI and Guarded Merge
+The canonical normalization and round budget live in `scripts/agent-control/review_convergence.py`; this document owns the procedure and gate.
 
-1. **Exact-Head Binding**: Every CI check, independent review receipt, and merge decision must attest the exact same commit SHA.
-2. **Canonical CI Matrix**:
-   - `exact-head-check`
-   - `rust-tests`
-   - `pg-integration-tests`
-   - `typescript-tests`
-   - `native-runtime`
-   - `docker-build`
-   - `python-tests`
-   - `rust-typescript-cutover`
-   - `context-capsule`
-3. **Guarded Merge Owner Delegation**: All merges are strictly delegated to the sole canonical merge workflow (`.github/workflows/agent-merge.yml`). Direct `gh pr merge` is prohibited in repository runtime. Merge occurs only when branch ruleset, exact-head CI, exact `PASS` review receipt, zero open blockers, and single PR squash-merge conditions are met. Readback must prove the merged PR number and expected head produced the exact GitHub `main` merge commit; local `HEAD` is never a fallback.
+## Exact-head CI and guarded merge
 
-### Merge-dispatch recovery lifecycle
+All review receipts, required checks, and merge authorization must identify the same exact head SHA. The canonical matrix is:
 
-The durable recovery, authority/evidence split, emergency-stop boundary, and
-restart/idempotency contract are canonical in
-[`docs/ARCHITECTURE.md`](ARCHITECTURE.md#merge-dispatch-recovery-and-emergency-stop-contract).
-This autonomy contract owns only lifecycle integration: record the merge
-intent before dispatch, persist the returned run identity before settling it,
-allow only read-only remote reconciliation after restart (with bounded local
-checkpoint worktree materialization), and require authoritative merged-PR plus
-accepted-main readback before advancing a Stage. A legacy
-quarantine may advance only after the architecture contract's GitHub
-`CLOSED_UNMERGED` fact is journaled; owner authority is never treated as that
-fact.
+- `exact-head-check`
+- `rust-tests`
+- `pg-integration-tests`
+- `typescript-tests`
+- `native-runtime`
+- `docker-build`
+- `python-tests`
+- `rust-typescript-cutover`
+- `context-capsule`
 
-For a WorkCard interrupted after its implementation checkpoint, restart
-recovery selects only the current journal tail and one ordered attempt whose
-`WORKER_STARTED`, `WORKER_CHECKPOINT`, and subsequent verification facts bind
-the Mission, Stage, card, base, derived branch, exact head, scoped diff, and
-implementation session. The existing local branch must already point at the
-checkpoint head and the base must be its ancestor; a missing derived worktree
-may then be re-materialized without moving the branch. Recovery resumes at
-deterministic verification or independent review, and never invokes the
-implementation worker again. Missing, stale, mixed-attempt, dirty, or
-identity-mismatched checkpoint evidence remains `RECOVERY_REQUIRED`.
-If resumed deterministic verification itself fails, the checkpoint remains
-`VERIFYING` and the invocation returns `RECOVERY_REQUIRED`; a later attempt may
-retry only that verifier, never a new implementation attempt.
+Keep a changing PR Draft. Mark it Ready only after local verification and complete-diff independent review. Merge only through `.github/workflows/agent-merge.yml` after the branch ruleset, current exact-head CI, exact `PASS`, zero open blockers, and squash-merge eligibility are confirmed. Direct `gh pr merge` is not the repository merge path.
 
-## Recovery and Rollback
+After merge, read the PR and `main` from GitHub and verify the merged PR number, expected head, and exact merge commit. A successful workflow dispatch or local `HEAD` alone is not proof of merge.
 
-- Every Stage and Mission specifies an exact rollback target (e.g. `revert:<SHA>`).
-- If a Stage fails or encounters an unrecoverable conflict, the branch is reset or reverted cleanly without affecting `main`.
-- The Issue-label emergency stop halts new WorkCard, Ready, supersede, and
-  merge dispatch while retaining the active Mission and recovery evidence.
-  Existing unresolved merge intents may undergo read-only canonical
-  reconciliation while the stop remains active; the legacy quarantine is an
-  external effect and therefore requires the separate exact control
-  transition described above. No replan or external effect may follow while
-  the stop is active. Clearing it does not create a second Mission approval.
+## Recovery and rollback
+
+Preserve the branch and evidence when a check, review, or merge operation fails. A changed head requires fresh review and CI. If a merge dispatch or other external mutation has an unknown outcome, do not retry it; reconcile its exact remote identity read-only using the recovery contract in `docs/ARCHITECTURE.md`.
+
+Every change needs a recoverable Git point. Prefer a focused revert of the exact accepted commit. Do not overwrite unrelated work or remove a rollback path without a tested replacement. Stop when resolution requires new authority, an unprovable external-effect status, or a decision outside the user's accepted scope; report evidence, consequence, and the smallest decision needed.

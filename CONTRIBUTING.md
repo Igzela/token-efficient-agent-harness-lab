@@ -82,15 +82,13 @@ PostgreSQL integration (when you touch storage parity):
 cargo test -p engine --features pg-tests -- --test-threads=1
 ```
 
-### Workflows / steward scripts
+### Repository safety and review protocol
 
 ```bash
 PYTHONPATH=scripts/agent-control uv run --no-project python -m unittest \
-  tests/test_agent_steward.py \
-  tests/test_agent_steward_faults.py \
-  tests/test_agent_steward_journal.py \
-  tests/test_mission_contract.py \
-  tests/test_steward_deferred_acceptance.py
+  tests.test_codex_hooks \
+  tests.test_review_convergence \
+  tests.test_review_loop
 uv run --no-project python tools/check_security_baseline.py
 ```
 

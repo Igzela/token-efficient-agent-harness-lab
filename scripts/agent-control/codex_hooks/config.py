@@ -1,4 +1,4 @@
-"""Configuration generator and trust manager for Codex Lifecycle Hooks.
+"""Configuration generator and trust manager for optional repository-safety hooks.
 
 Generates the TOML configuration block linking Codex hook events to the
 dispatcher, establishes cryptographically verified per-handler trust entries
@@ -15,15 +15,7 @@ import shutil
 import subprocess
 from typing import Any, Mapping, Sequence
 
-DEFAULT_HOOK_EVENTS = (
-    "SessionStart",
-    "PreCompact",
-    "PostCompact",
-    "PreToolUse",
-    "PostToolUse",
-    "PermissionRequest",
-    "Stop",
-)
+DEFAULT_HOOK_EVENTS = ("PreToolUse", "PermissionRequest")
 
 EVENT_NAME_NORMALIZATION: dict[str, str] = {
     "SessionStart": "session_start",
@@ -125,7 +117,7 @@ def discover_hooks(
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
-            "params": {"clientInfo": {"name": "steward-discovery", "version": "1.0.0"}},
+            "params": {"clientInfo": {"name": "repository-safety-hooks", "version": "1.0.0"}},
         }
         send_and_wait(init_req)
 

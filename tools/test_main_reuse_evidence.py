@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.util
-import json
 from pathlib import Path
 import sys
 import unittest
@@ -41,77 +39,6 @@ Axes: architecture, authority, compatibility, security, audit, rollback, scope/p
 Outcome: {outcome}
 Unresolved objections: none
 """
-
-
-def durable_review_state(
-    verdict: str = "PASS",
-    *,
-    open_blocker_ids: list[str] | None = None,
-    head_sha: str = HEAD,
-    issue_number: int = 42,
-    pr_number: int = 41,
-) -> str:
-    findings = [
-        {
-            "id": blocker_id,
-            "axis": "correctness",
-            "evidence": blocker_id,
-            "severity": "blocker",
-            "disposition": "block_current_head",
-            "scope_relation": "in_packet",
-            "origin_head": head_sha,
-            "acceptance_condition": "repair",
-            "status": "open",
-        }
-        for blocker_id in (open_blocker_ids or [])
-    ]
-    rows = [
-        {
-            "acceptance_condition": finding["acceptance_condition"],
-            "disposition": finding["disposition"],
-            "id": finding["id"],
-            "origin_head": finding["origin_head"],
-            "severity": finding["severity"],
-            "status": finding["status"],
-        }
-        for finding in sorted(findings, key=lambda item: item["id"])
-    ]
-    finding_ledger_digest = hashlib.sha256(
-        json.dumps(
-            rows, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-        ).encode()
-    ).hexdigest()
-    base_sha = BASE
-    return json.dumps(
-        {
-            "kind": "agent-orchestrator-review-state",
-            "version": 3,
-            "issue_number": issue_number,
-            "pr_number": pr_number,
-            "review_protocol_version": "review-convergence.v1",
-            "review_mode": "repair_verification",
-            "review_round": 2,
-            "prior_reviewed_head": "c" * 40,
-            "base_sha": base_sha,
-            "head_sha": head_sha,
-            "reviewed_range": f"{base_sha}...{head_sha}",
-            "findings": findings,
-            "finding_ledger_digest": finding_ledger_digest,
-            "open_blocker_ids": open_blocker_ids or [],
-            "deferred_note_ids": [],
-            "decision_required_ids": [],
-            "autonomous_repairs_remaining": 0,
-            "stop_reason": "" if verdict == "PASS" else "decision_required",
-            "artifact_sha256": "",
-            "review_workflow_run_id": None,
-            "summary": verdict.lower(),
-            "blockers": [finding["evidence"] for finding in findings],
-            "major_notes": [],
-            "minor_notes": [],
-            "verdict": verdict,
-        },
-        sort_keys=True,
-    )
 
 
 def accepted_observer() -> mock.Mock:
@@ -163,12 +90,6 @@ def accepted_observer() -> mock.Mock:
     observer.pull_request_comments.return_value = []
     observer.issue_comments_by_number = {
         41: [{"user": {"login": "reviewer"}, "body": review_body()}],
-        42: [
-            {
-                "user": {"login": "github-actions[bot]"},
-                "body": durable_review_state(),
-            }
-        ],
     }
     observer.issue_comments.side_effect = (
         lambda number: observer.issue_comments_by_number.get(number, [])
@@ -184,13 +105,14 @@ class MainReuseEvidenceTests(unittest.TestCase):
             after=AFTER,
             paths=["engine/src/lib.rs"],
         )
-        self.assertEqual(receipt["schema_version"], "main_ci_reuse.v1")
+        self.assertEqual(receipt["schema_version"], "main_ci_reuse.v2")
         self.assertEqual(receipt["tree_sha"], TREE)
         self.assertEqual(receipt["pull_request"], 41)
         self.assertEqual(receipt["pull_request_head_sha"], HEAD)
         self.assertEqual(len(receipt["review_receipt_sha256"]), 64)
-        self.assertEqual(receipt["linked_issue_numbers"], [42])
-        self.assertEqual(len(receipt["linked_review_state_sha256"]), 64)
+        self.assertEqual(receipt["reviewed_head"], HEAD)
+        self.assertEqual(receipt["review_outcome"], "PASS")
+        self.assertNotIn("linked_issue_numbers", receipt)
         self.assertNotIn("reviewer", str(receipt))
 
     def test_ci_authority_change_forces_full_matrix(self) -> None:
@@ -361,130 +283,6 @@ class MainReuseEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(
             main_reuse.ReuseEvidenceError,
             "exact_pass_review_receipt_missing",
-        ):
-            main_reuse.build_reuse_receipt(
-                observer,
-                before=BEFORE,
-                after=AFTER,
-                paths=["engine/src/lib.rs"],
-            )
-
-    def test_linked_issue_blocked_review_state_prevents_reuse(self) -> None:
-        observer = accepted_observer()
-        observer.issue_comments_by_number[42] = [
-            {
-                "user": {"login": "github-actions[bot]"},
-                "body": durable_review_state(
-                    "DECISION_REQUIRED", open_blocker_ids=["REVIEW-AUDIT-001"]
-                ),
-            }
-        ]
-        with self.assertRaisesRegex(
-            main_reuse.ReuseEvidenceError,
-            "exact_pass_review_receipt_missing",
-        ):
-            main_reuse.build_reuse_receipt(
-                observer,
-                before=BEFORE,
-                after=AFTER,
-                paths=["engine/src/lib.rs"],
-            )
-
-    def test_latest_trusted_linked_issue_state_controls_reuse(self) -> None:
-        observer = accepted_observer()
-        observer.issue_comments_by_number[42] = [
-            {
-                "user": {"login": "github-actions[bot]"},
-                "body": durable_review_state(
-                    "DECISION_REQUIRED", open_blocker_ids=["REVIEW-AUDIT-001"]
-                ),
-            },
-            {
-                "user": {"login": "github-actions[bot]"},
-                "body": durable_review_state(),
-            },
-        ]
-        receipt = main_reuse.build_reuse_receipt(
-            observer,
-            before=BEFORE,
-            after=AFTER,
-            paths=["engine/src/lib.rs"],
-        )
-        self.assertEqual(receipt["linked_issue_numbers"], [42])
-
-    def test_untrusted_pass_cannot_shadow_linked_issue_blocker(self) -> None:
-        observer = accepted_observer()
-        observer.issue_comments_by_number[42] = [
-            {
-                "user": {"login": "github-actions[bot]"},
-                "body": durable_review_state(
-                    "DECISION_REQUIRED", open_blocker_ids=["REVIEW-AUDIT-001"]
-                ),
-            },
-            {"user": {"login": "attacker"}, "body": durable_review_state()},
-        ]
-        with self.assertRaisesRegex(
-            main_reuse.ReuseEvidenceError,
-            "exact_pass_review_receipt_missing",
-        ):
-            main_reuse.build_reuse_receipt(
-                observer,
-                before=BEFORE,
-                after=AFTER,
-                paths=["engine/src/lib.rs"],
-            )
-
-    def test_missing_or_malformed_linked_issue_state_forces_full_matrix(self) -> None:
-        for comments, expected in (
-            ([], "linked_issue_review_state_unavailable"),
-            (
-                [
-                    {
-                        "user": {"login": "github-actions[bot]"},
-                        "body": "agent-orchestrator-review-state: malformed",
-                    }
-                ],
-                "linked_issue_review_state_conflict",
-            ),
-            (
-                [
-                    {
-                        "user": {"login": "github-actions[bot]"},
-                        "body": durable_review_state(head_sha="9" * 40),
-                    }
-                ],
-                "linked_issue_review_state_conflict",
-            ),
-            (
-                [
-                    {
-                        "user": {"login": "github-actions[bot]"},
-                        "body": durable_review_state(pr_number=99),
-                    }
-                ],
-                "linked_issue_review_state_conflict",
-            ),
-        ):
-            with self.subTest(expected=expected):
-                observer = accepted_observer()
-                observer.issue_comments_by_number[42] = comments
-                with self.assertRaisesRegex(
-                    main_reuse.ReuseEvidenceError,
-                    expected,
-                ):
-                    main_reuse.build_reuse_receipt(
-                        observer,
-                        before=BEFORE,
-                        after=AFTER,
-                        paths=["engine/src/lib.rs"],
-                    )
-
-    def test_multiple_linked_issues_force_full_matrix(self) -> None:
-        observer = accepted_observer()
-        observer.pull_request.return_value["body"] = "Closes #42\nFixes #43"
-        with self.assertRaisesRegex(
-            main_reuse.ReuseEvidenceError,
-            "linked_issue_binding_not_unique",
         ):
             main_reuse.build_reuse_receipt(
                 observer,

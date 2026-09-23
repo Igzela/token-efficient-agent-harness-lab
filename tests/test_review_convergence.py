@@ -30,7 +30,7 @@ def finding(**overrides):
         "evidence": "defect evidence",
         "severity": "blocker",
         "disposition": "block_current_head",
-        "scope_relation": "in_packet",
+        "scope_relation": "in_scope",
         "origin_head": HEAD1,
         "acceptance_condition": "fixed with focused test",
         "status": "open",

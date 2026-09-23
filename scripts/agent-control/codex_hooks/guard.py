@@ -1,7 +1,7 @@
-"""Path boundary guard and permission verification for Codex Lifecycle Hooks (H2).
+"""Optional repository path and command safety checks for Codex hooks.
 
 Implements:
-- PreToolUse: Intercepts tool calls and rejects out-of-scope paths, forbidden
+- PreToolUse: Checks tool calls and rejects out-of-checkout paths, forbidden
   commands, or executions lacking a valid repository scope.
 - PermissionRequest: Auto-approves only provably scoped, low-risk workspace actions;
   strictly fails closed on missing/malformed context or unknown/risky operations
@@ -10,15 +10,12 @@ Implements:
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
 import re
 import shlex
 import subprocess
 from typing import Any
 
-from .evidence import read_focused_tests
 from .protocol import (
     HookInput,
     HookOutput,
@@ -26,12 +23,10 @@ from .protocol import (
     PermissionDecision,
     PermissionRequestDecisionWire,
 )
-from .telemetry import HookTelemetry
 
 FORBIDDEN_COMMAND_PATTERNS = (
     re.compile(r"\bgit\s+(?:push|fetch|pull|merge|remote|clone)\b"),
     re.compile(r"\brm\s+-[a-zA-Z]*[rf][a-zA-Z]*\s+(?:/|\.\.)(?:[\s;&|]|$)"),
-    re.compile(r"/var/lib/agent-steward\b"),
     re.compile(r"\.git/config\b"),
     re.compile(r"\b(?:sudo|su|passwd|chown)\b"),
     re.compile(r"\b(?:curl|wget|ssh|nc|ncat|telnet|ftp|scp|rsync)\b"),
@@ -85,11 +80,8 @@ LOW_RISK_COMMAND_PREFIXES = (
     "test",
 )
 
-# Verification-runner heads. Unlike the read-only tools above, these execute
-# repository code, so every path-like argument must either sit inside the
-# allowed scope or be explicitly declared in STEWARD_FOCUSED_TESTS. This keeps
-# the worker's own sanctioned verification working without opening arbitrary
-# out-of-scope execution.
+# Verification-runner heads. These execute repository code, so every
+# path-like argument must remain inside the current Git checkout.
 TEST_RUNNER_PREFIXES = (
     "pytest",
     "python3 -m unittest",
@@ -104,82 +96,31 @@ TEST_RUNNER_PREFIXES = (
 
 
 class GuardHandler:
-    """Enforces ordinary repository path boundaries and safe commands.
-
-    This guard is intentionally independent of Steward/WorkCard state.  A
-    normal repository session has the checkout root as its default scope;
-    callers may narrow it with ``STEWARD_ALLOWED_PATHS`` for an older managed
-    worker, but missing card metadata is never an execution blocker.
-    """
+    """Enforce checkout boundaries and reject unprovable or dangerous commands."""
 
     def __init__(self, state_dir: Path | str | None = None):
-        if state_dir is not None:
-            self.state_dir = Path(state_dir)
-        else:
-            env_dir = os.environ.get("STEWARD_SESSION_STATE_DIR")
-            self.state_dir = Path(env_dir) if env_dir else Path("/tmp/codex_hooks_state")
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        self.telemetry = HookTelemetry(self.state_dir)
+        # Kept for uniform construction; the policy handler is stateless.
+        self.state_dir = Path(state_dir) if state_dir is not None else None
 
     def _get_context(self) -> tuple[bool, str, Path, list[str], list[str]]:
-        """Extract optional scope context from environment.
-
-        Returns (is_valid, error_reason, worktree, allowed_paths, forbidden_paths).
-        """
-        worktree_raw = os.environ.get("STEWARD_WORKTREE", "")
+        """Resolve the actual Git checkout and its mandatory protected paths."""
+        current_dir = Path.cwd().resolve()
         try:
-            if worktree_raw:
-                worktree = Path(worktree_raw).resolve()
-            else:
-                current_dir = Path(os.getcwd()).resolve()
-                repository_result = subprocess.run(
-                    ["git", "rev-parse", "--show-toplevel"],
-                    cwd=current_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    check=False,
-                )
-                if repository_result.returncode != 0 or not repository_result.stdout.strip():
-                    return False, "repository_root_unavailable", current_dir, [], []
-                worktree = Path(repository_result.stdout.strip()).resolve()
+            repository_result = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=current_dir,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if repository_result.returncode != 0 or not repository_result.stdout.strip():
+                return False, "repository_root_unavailable", current_dir, [], []
+            worktree = Path(repository_result.stdout.strip()).resolve()
         except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
-            fallback = Path(worktree_raw) if worktree_raw else Path(".")
-            return False, "repository_root_unavailable", fallback, [], []
+            return False, "repository_root_unavailable", current_dir, [], []
 
-        allowed_raw = os.environ.get("STEWARD_ALLOWED_PATHS", "")
-        if not allowed_raw:
-            return True, "", worktree, ["."], [".git/", ".github/"]
-
-        try:
-            allowed = json.loads(allowed_raw)
-            if not isinstance(allowed, list) or len(allowed) == 0:
-                return False, "empty_or_non_list_STEWARD_ALLOWED_PATHS", worktree, [], []
-            if not all(isinstance(p, str) and p.strip() for p in allowed):
-                return False, "invalid_entry_in_STEWARD_ALLOWED_PATHS", worktree, [], []
-        except Exception as exc:
-            return False, f"malformed_json_STEWARD_ALLOWED_PATHS: {exc}", worktree, [], []
-
-        forbidden = [".git/", ".github/"]
-        forbidden_raw = os.environ.get("STEWARD_FORBIDDEN_PATHS")
-        if forbidden_raw is not None:
-            try:
-                configured_forbidden = json.loads(forbidden_raw)
-            except Exception:
-                return False, "malformed_json_STEWARD_FORBIDDEN_PATHS", worktree, [], []
-            if (
-                not isinstance(configured_forbidden, list)
-                or not all(isinstance(path, str) and path.strip() for path in configured_forbidden)
-            ):
-                return False, "invalid_STEWARD_FORBIDDEN_PATHS", worktree, [], []
-            forbidden.extend(configured_forbidden)
-        forbidden = list(dict.fromkeys(forbidden))
-
-        return True, "", worktree, allowed, forbidden
-
-    def _get_focused_tests(self) -> list[str]:
-        """Return optional focused verification checks (may be empty)."""
-        return read_focused_tests()
+        return True, "", worktree, ["."], [".git/", ".github/"]
 
     def _extract_paths(self, tool_input: dict[str, Any] | None) -> list[str]:
         """Extract candidate target file paths from tool input payload."""
@@ -344,7 +285,6 @@ class GuardHandler:
         worktree_root: Path,
         allowed_paths: list[str],
         forbidden_paths: list[str],
-        focused_tests: list[str] | None = None,
     ) -> tuple[bool, str]:
         """Verify command is provably low-risk and in-scope (no auto-allow on blacklist miss)."""
         stripped = cmd_str.strip()
@@ -379,13 +319,12 @@ class GuardHandler:
         segments = self._split_command_chain(stripped)
         if segments is None:
             return False, "unbalanced_quotes_unparseable_command"
-        focused = focused_tests if focused_tests is not None else self._get_focused_tests()
         for segment in segments:
             seg = segment.strip()
             if not seg:
                 return False, "empty_chain_segment"
             ok, reason = self._is_segment_low_risk_and_scoped(
-                seg, worktree_root, allowed_paths, forbidden_paths, focused
+                seg, worktree_root, allowed_paths, forbidden_paths
             )
             if not ok:
                 return False, reason
@@ -398,16 +337,8 @@ class GuardHandler:
         worktree_root: Path,
         allowed_paths: list[str],
         forbidden_paths: list[str],
-        focused_tests: list[str],
     ) -> tuple[bool, str]:
-        """Allow a verification-runner segment only for scoped/declared targets.
-
-        Every path-like argument must sit inside the allowed scope or be
-        explicitly declared in STEWARD_FOCUSED_TESTS. A runner segment with no
-        path-like arguments (e.g. bare `cargo build`) is allowed: it executes
-        the repository's own declared build/test entrypoints, not arbitrary
-        out-of-scope files.
-        """
+        """Allow verification commands whose path arguments stay in the checkout."""
         try:
             parts = shlex.split(seg)
         except Exception:
@@ -418,27 +349,10 @@ class GuardHandler:
             ok, _reason = self._is_path_allowed(arg, worktree_root, allowed_paths, forbidden_paths)
             if ok:
                 continue
-            if self._is_focused_test_target(arg, focused_tests):
-                continue
             return False, (
-                f"test_runner_target_out_of_scope: {arg} "
-                f"(allowed: {allowed_paths}, focused_tests: {focused_tests})"
+                f"test_runner_target_out_of_scope: {arg} (allowed: {allowed_paths})"
             )
         return True, ""
-
-    def _is_focused_test_target(self, arg: str, focused_tests: list[str]) -> bool:
-        """Check whether a path-like arg is an explicitly focused test."""
-        candidate = arg.strip()
-        for entry in focused_tests:
-            if not entry:
-                continue
-            if candidate == entry:
-                return True
-            # Focused entries may be full commands ("pytest tests/x.py") or
-            # bare paths ("tests/x.py"); match either form by suffix.
-            if entry.endswith(candidate) or candidate.endswith(entry):
-                return True
-        return False
 
     def _is_segment_low_risk_and_scoped(
         self,
@@ -446,17 +360,14 @@ class GuardHandler:
         worktree_root: Path,
         allowed_paths: list[str],
         forbidden_paths: list[str],
-        focused_tests: list[str] | None = None,
     ) -> tuple[bool, str]:
         """Verify a single chain segment is provably safe.
 
         Read-only inspection tools are allowed unconditionally. Verification
-        runners are allowed only for scoped/declared targets. Scoped script
+        runners are allowed only for checkout-scoped targets. Scoped script
         execution (python/<.->) is allowed only when every path-like argument
         is in scope. Everything else fails closed.
         """
-        focused = focused_tests if focused_tests is not None else self._get_focused_tests()
-
         # 1. Read-only whitelist: workspace inspection without write capability.
         for prefix in LOW_RISK_COMMAND_PREFIXES:
             if seg == prefix or seg.startswith(f"{prefix} ") or seg.startswith(f"{prefix}\t"):
@@ -466,7 +377,7 @@ class GuardHandler:
         for prefix in TEST_RUNNER_PREFIXES:
             if seg == prefix or seg.startswith(f"{prefix} ") or seg.startswith(f"{prefix}\t"):
                 return self._is_test_runner_segment_allowed(
-                    seg, worktree_root, allowed_paths, forbidden_paths, focused
+                    seg, worktree_root, allowed_paths, forbidden_paths
                 )
 
         # 3. Scoped script execution (python <in-scope script>, ./<in-scope script>).
@@ -490,14 +401,12 @@ class GuardHandler:
         is blocked. The static analysis is explicitly not a complete shell
         parser, so unprovable scope fails closed.
         """
-        tool_name = hook_input.tool_name or ""
         tool_input = hook_input.tool_input or {}
 
         # 1. Context validation (fail-closed)
         is_valid, ctx_err, worktree, allowed, forbidden = self._get_context()
         if not is_valid:
-            reason = f"missing_or_malformed_scope_context: {ctx_err}"
-            self.telemetry.record_tool_block(tool_name, reason)
+            reason = f"repository_root_unavailable: {ctx_err}"
             return HookOutput(
                 continue_=True,
                 decision="block",
@@ -520,7 +429,6 @@ class GuardHandler:
             for pat in FORBIDDEN_COMMAND_PATTERNS:
                 if pat.search(cmd_str):
                     reason = f"Command matches forbidden pattern ({pat.pattern}): {cmd_str[:80]}"
-                    self.telemetry.record_tool_block(tool_name, reason)
                     return HookOutput(
                         continue_=True,
                         decision="block",
@@ -537,7 +445,6 @@ class GuardHandler:
         for p in paths:
             ok, reason = self._is_path_allowed(p, worktree, allowed, forbidden)
             if not ok:
-                self.telemetry.record_tool_block(tool_name, reason)
                 return HookOutput(
                     continue_=True,
                     decision="block",
@@ -555,7 +462,6 @@ class GuardHandler:
         # paths has no provable surface at all and fails closed as well.
         if not cmd_str and not paths:
             reason = "unprovable_scope: no observable command or paths in tool input"
-            self.telemetry.record_tool_block(tool_name, reason)
             return HookOutput(
                 continue_=True,
                 decision="block",
@@ -569,7 +475,6 @@ class GuardHandler:
         if cmd_str:
             ok, reason = self._is_command_low_risk_and_scoped(cmd_str, worktree, allowed, forbidden)
             if not ok:
-                self.telemetry.record_tool_block(tool_name, reason)
                 return HookOutput(
                     continue_=True,
                     decision="block",
@@ -608,7 +513,7 @@ class GuardHandler:
                     hookEventName="PermissionRequest",
                     decision=PermissionRequestDecisionWire(
                         behavior="deny",
-                        message=f"missing_or_malformed_scope_context: {ctx_err}",
+                        message=f"repository_root_unavailable: {ctx_err}",
                     ),
                 ),
             )

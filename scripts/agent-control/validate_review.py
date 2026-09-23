@@ -123,7 +123,7 @@ def _validate_finding(item, field):
     enums = {
         "severity": {"blocker", "major", "minor", "note"},
         "disposition": {"block_current_head", "defer", "decision_required"},
-        "scope_relation": {"in_packet", "out_of_packet"},
+        "scope_relation": {"in_scope", "out_of_scope"},
         "status": {"open", "resolved", "deferred"},
     }
     for key, values in enums.items():

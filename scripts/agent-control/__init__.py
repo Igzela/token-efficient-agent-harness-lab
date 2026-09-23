@@ -1,1 +1,1 @@
-"""Agent Control Plane orchestrator for event-driven GitHub Actions."""
+"""Repository review and optional checkout-safety tools."""

@@ -31,13 +31,12 @@ A green CI check is not enough if it belongs to an older PR head. This lab binds
 
 > **Boundary:** local / small-team research tool — not multi-tenant SaaS, not a free provider proxy, no container/VM isolation claim. Provider, managed-CLI, adaptive, and autonomous paths remain default-off and use explicit fail-closed authority, identity, budget, lease, audit, and kill controls. Governance and testing rules are owned by `docs/AUTONOMY.md`; the roadmap is in `docs/ROADMAP.md`.
 
-The research direction is a closed loop: common Real Workload Evidence feeds
-controlled `Harness × Model × Strategy` comparisons; hard gates precede
-lifecycle-cost and Pareto analysis; only replicated, explicitly adopted
-changes become the next Harness. Context Working Set, memory, and skill are
-Strategy inputs within that loop, while Autonomous Steward remains the
-repository-maintenance control plane. See [`docs/ROADMAP.md`](docs/ROADMAP.md)
-for the current gated frontier.
+The engineering mainline is the autonomous development and maintenance loop:
+start from `START_HERE.md`, inspect the repository and live PR/CI state, make
+the requested change, verify it, obtain exact-head review, pass canonical CI,
+and confirm the guarded merge. Research programs are separate optional work,
+not an entry gate or substitute for repository maintenance. See
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for priorities.
 
 Maintainer and Agent entry: [`START_HERE.md`](START_HERE.md) · architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · autonomy & testing: [`docs/AUTONOMY.md`](docs/AUTONOMY.md) · roadmap: [`docs/ROADMAP.md`](docs/ROADMAP.md) · implementation rules: [`AGENTS.md`](AGENTS.md) · support: [`SUPPORT.md`](SUPPORT.md).
 
@@ -425,13 +424,17 @@ Historical phase plans, closeouts, validation reports, and low-frequency referen
 
 ## Agent Maintenance
 
-Repository maintenance authority is governed by [`START_HERE.md`](START_HERE.md), [`AGENTS.md`](AGENTS.md), and [`docs/AUTONOMY.md`](docs/AUTONOMY.md). A coding agent reads `START_HERE.md`, inspects the current checkout, makes a bounded change, and verifies it like a normal repository. The historical Autonomous Steward remains optional compatibility automation for explicitly managed runs; its task packets never gate ordinary coding. A missing or conflicting architecture, authority, schema, security, evaluator, release, or recovery decision pauses with `PAUSED_FOR_OWNER` or `DECISION_REQUIRED`.
+Repository maintenance follows [`START_HERE.md`](START_HERE.md),
+[`AGENTS.md`](AGENTS.md), and [`docs/AUTONOMY.md`](docs/AUTONOMY.md). A coding
+agent reads the entrypoint and the user's request, inspects the current
+checkout, implements a coherent change, and verifies it. A missing or
+conflicting architecture, authority, schema, security, evaluator, release, or
+recovery decision pauses with `PAUSED_FOR_OWNER` or `DECISION_REQUIRED`.
 
 This maintenance authority does not grant Provider spend, target output, direct
-merge, release, deployment, or production-adoption authority. If a managed
-Steward run is explicitly used, it may only dispatch the canonical guarded
-merge workflow after exact-head CI/review gates; GitHub remains the merge and
-accepted-main authority. The durable architecture baseline is
+merge, release, deployment, or production-adoption authority. GitHub remains
+the merge and accepted-main authority; repository changes use exact-head
+review, canonical CI, and the guarded merge workflow. The durable architecture baseline is
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Contributing

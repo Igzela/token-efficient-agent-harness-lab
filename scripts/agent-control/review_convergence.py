@@ -7,8 +7,8 @@ Canonical owner for:
   ReviewFinding / ReviewDecision normalization
   R1 / repair-batch / R2 transition rules
 
-Persistence is caller-owned (Steward journal or accepted GitHub evidence).
-This module only validates review facts; it never decides repair, Ready, or
+Persistence is caller-owned accepted GitHub evidence. This module validates
+review facts and bounded review rounds; it never decides repair, Ready, or
 merge authority.
 """
 
@@ -34,7 +34,9 @@ INITIAL_AUTONOMOUS_REPAIRS_REMAINING = MAX_AUTONOMOUS_REPAIR_BATCHES
 REVIEW_MODES = frozenset({"full", "repair_verification"})
 SEVERITIES = frozenset({"blocker", "major", "minor", "note"})
 DISPOSITIONS = frozenset({"block_current_head", "defer", "decision_required"})
-SCOPE_RELATIONS = frozenset({"in_packet", "out_of_packet"})
+SCOPE_RELATIONS = frozenset(
+    {"in_scope", "out_of_scope", "in_packet", "out_of_packet"}
+)
 FINDING_STATUSES = frozenset({"open", "resolved", "deferred"})
 ADMISSION_REASONS = frozenset(
     {"repair_regression", "prior_evidence_unavailable", "hard_stop_miss"}
@@ -441,7 +443,7 @@ def findings_from_legacy_lists(
                 evidence=text[:MAX_NOTE_LEN],
                 severity="blocker",
                 disposition="block_current_head",
-                scope_relation="in_packet",
+                scope_relation="in_scope",
                 origin_head=origin_head,
                 acceptance_condition=text[:MAX_NOTE_LEN],
                 status="open",
@@ -455,7 +457,7 @@ def findings_from_legacy_lists(
                 evidence=str(text)[:MAX_NOTE_LEN],
                 severity="major",
                 disposition="defer",
-                scope_relation="in_packet",
+                scope_relation="in_scope",
                 origin_head=origin_head,
                 acceptance_condition="deferred residual risk",
                 status="deferred",
@@ -469,7 +471,7 @@ def findings_from_legacy_lists(
                 evidence=str(text)[:MAX_NOTE_LEN],
                 severity="minor",
                 disposition="defer",
-                scope_relation="in_packet",
+                scope_relation="in_scope",
                 origin_head=origin_head,
                 acceptance_condition="deferred residual risk",
                 status="deferred",
@@ -663,12 +665,9 @@ def build_review_state(
 ) -> dict[str, Any]:
     """Build the complete v3 state written to the linked Issue comment.
 
-    This is the sole producer for the durable ReviewState consumed by
-    ``project_context`` and ``prompt_builder``.  The caller owns the external
-    comment transport; this function only creates a fully bound, semantically
-    validated JSON object.  The local Steward journal deliberately stores a
-    smaller projection because it is bounded and never replaces this shared
-    recovery record.
+    This is the sole producer for the durable ReviewState consumed by the
+    review loop. The caller owns comment transport; this function creates a
+    fully bound, semantically validated JSON object for recovery.
     """
 
     if not isinstance(state, ReviewRoundState):
@@ -854,7 +853,7 @@ def apply_r2_decision(
                     evidence="resolved at R2 (legacy adapter)",
                     severity="blocker",
                     disposition="block_current_head",
-                    scope_relation="in_packet",
+                    scope_relation="in_scope",
                     origin_head=prior.reviewed_head or decision.reviewed_head,
                     acceptance_condition="resolved",
                     status="resolved",
@@ -870,7 +869,7 @@ def apply_r2_decision(
                     evidence="deferred note carried from R1",
                     severity="note",
                     disposition="defer",
-                    scope_relation="in_packet",
+                    scope_relation="in_scope",
                     origin_head=prior.reviewed_head or decision.reviewed_head,
                     acceptance_condition="deferred residual risk",
                     status="deferred",
