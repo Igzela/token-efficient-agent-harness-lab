@@ -189,7 +189,7 @@ This repository is not a cloud production SaaS, hosted multi-tenant service, or 
 
 Provider API execution requires explicit endpoint/auth/budget configuration; CI uses stub/mock paths and does not call real provider APIs. A ready trusted-local profile activates bounded provider execution, adaptive routing, experiments, promotion, default routing, and acknowledged task advancement for internal local operation. Managed CLI execution is default-off. Codex retains its existing `workspace-write` adapter. Claude Code registration is currently disabled because provider-independent worktree-only filesystem mediation is unproved; exact identity, model, usage, and process checks alone do not establish read confinement. The local dashboard remains guarded; dangerous actions require confirmation and audit logging.
 
-Internal maintainer paths (repository-agent / Issue orchestrator, emergency stop, runner recovery) live in [`AGENTS.md`](AGENTS.md) and [`docs/AUTONOMY.md`](docs/AUTONOMY.md). They are not the public product entry.
+Maintainer guidance, recovery boundaries, and merge gates live in [`AGENTS.md`](AGENTS.md) and [`docs/AUTONOMY.md`](docs/AUTONOMY.md). They are not the public product entry.
 
 ## Toolchain
 

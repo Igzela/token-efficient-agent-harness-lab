@@ -688,8 +688,8 @@ new authority.
    `SYMBOLIC_GITHUB_TOKEN_VARIABLE`, never a raw credential value.
 6. **Recovery-required outcomes** — the document treats `OUTCOME_UNKNOWN`, a
    lost Ready/supersede/merge result, and failed `post_merge_readback` as
-   recovery-required states that retain branch, journal, and exact-head facts
-   instead of silent retry or destructive cleanup.
+   recovery-required states that retain the branch, recovery evidence, and
+   exact-head facts instead of silent retry or destructive cleanup.
 7. **Link, do not duplicate** — the document references `docs/AUTONOMY.md` for
    autonomy, review, and merge rules instead of restating them.
 
