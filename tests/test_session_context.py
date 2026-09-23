@@ -963,7 +963,7 @@ class CheckpointTests(unittest.TestCase):
                 self.assertFalse(entry["checkpoint_allowed"])
                 self.assertIsNone(entry["checkpoint_write_commands"])
 
-    def test_enter_cli_composes_one_fresh_entry_projection(self):
+    def test_enter_cli_on_main_returns_read_only_without_lifecycle_gate(self):
         snapshot = checkout_snapshot(
             head_sha=MAIN,
             branch="main",
@@ -993,11 +993,14 @@ class CheckpointTests(unittest.TestCase):
             mock.patch.object(session_context, "_print") as printer,
         ):
             result = session_context.main(["enter", "--role", "coding", "--offline"])
-        self.assertEqual(result, 3)
+        self.assertEqual(result, 0)
         entry = printer.call_args.args[0]
-        self.assertEqual(entry["schema_version"], "agent_session_entry.v1")
-        self.assertEqual(entry["context_mode"], "STOP")
-        self.assertEqual(entry["resume_disposition"], "DECISION_REQUIRED")
+        self.assertEqual(entry["schema_version"], "agent_repository_entry.v1")
+        self.assertEqual(entry["context_mode"], "REPOSITORY_READ_ONLY")
+        self.assertFalse(entry["execution_authorized"])
+        self.assertNotIn("mission_id", entry)
+        self.assertNotIn("stage_id", entry)
+        self.assertNotIn("card_id", entry)
 
     def test_owner_direct_entry_authorizes_fresh_existing_pr_without_lifecycle_state(self):
         snapshot = checkout_snapshot(
@@ -1147,7 +1150,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(entry["allowed_paths"], ["."])
         self.assertIn("Do not write directly to main", entry["forbidden_next_actions"][0])
 
-    def test_repository_entry_rejects_main_and_protected_dirty_paths(self):
+    def test_repository_entry_keeps_main_read_only_and_rejects_protected_dirty_paths(self):
         arguments = {
             "contract": session_context.parse_route_contract(route_document()),
             "role": "coding",
@@ -1157,19 +1160,25 @@ class CheckpointTests(unittest.TestCase):
             "allowed_paths": ["."],
             "verification": ["git diff --check"],
         }
-        with self.assertRaisesRegex(
-            session_context.SessionContextError, "repository_entry_branch_invalid"
-        ):
-            session_context.build_repository_entry(
-                **arguments,
-                snapshot=checkout_snapshot(
-                    head_sha=HEAD,
-                    branch="main",
-                    dirty_paths=[],
-                    path_digests={},
-                    worktree_sha256="0" * 64,
-                ),
-            )
+        main_entry = session_context.build_repository_entry(
+            **arguments,
+            snapshot=checkout_snapshot(
+                head_sha=HEAD,
+                branch="main",
+                dirty_paths=[],
+                path_digests={},
+                worktree_sha256="0" * 64,
+            ),
+        )
+        self.assertEqual(main_entry["context_mode"], "REPOSITORY_READ_ONLY")
+        self.assertFalse(main_entry["execution_authorized"])
+        self.assertEqual(
+            main_entry["execution_authority"]["availability"], "read_only"
+        )
+        self.assertIn(
+            "create or switch to a feature branch",
+            main_entry["next_permitted_action"],
+        )
         with self.assertRaisesRegex(
             session_context.SessionContextError, "repository_entry_dirty_path_invalid"
         ):
@@ -1270,6 +1279,54 @@ class CheckpointTests(unittest.TestCase):
         self.assertNotIn("stage_id", entry)
         self.assertNotIn("card_id", entry)
         self.assertNotIn("direct_maintenance_binding", entry)
+
+    def test_coding_entry_on_main_is_read_only_without_lifecycle_or_checkpoint(self):
+        snapshot = checkout_snapshot(
+            head_sha=HEAD,
+            branch="main",
+            dirty_paths=[],
+            path_digests={},
+            worktree_sha256="0" * 64,
+        )
+        loaded = {
+            "accepted_main_sha": MAIN,
+            "accepted_main_source": "test",
+            "document_source": "accepted",
+            "document_source_binding": MAIN,
+            "documents": {
+                "START_HERE.md": route_document(),
+                "AGENTS.md": "# Agent Instructions\n",
+                "docs/ARCHITECTURE.md": "# Architecture\n",
+                "docs/AUTONOMY.md": "# Autonomy\n",
+                "README.md": "# README\n",
+                "docs/ROADMAP.md": "# Roadmap\n",
+                "docs/RUNBOOK.md": "# Runbook\n",
+            },
+        }
+        with (
+            mock.patch.object(session_context, "_load_documents", return_value=loaded),
+            mock.patch.object(session_context, "capture_checkout", return_value=snapshot),
+            mock.patch.object(
+                session_context,
+                "_canonical_session_mission",
+                side_effect=AssertionError("ordinary coding entry must not build lifecycle state"),
+            ),
+            mock.patch.object(
+                session_context,
+                "read_checkpoint",
+                side_effect=AssertionError("ordinary coding entry must not read a checkpoint"),
+            ),
+            mock.patch.object(session_context, "_print") as printer,
+        ):
+            result = session_context.main(["enter", "--role", "coding"])
+        self.assertEqual(result, 0)
+        entry = printer.call_args.args[0]
+        self.assertEqual(entry["context_mode"], "REPOSITORY_READ_ONLY")
+        self.assertFalse(entry["execution_authorized"])
+        self.assertEqual(entry["schema_version"], "agent_repository_entry.v1")
+        self.assertNotIn("mission_id", entry)
+        self.assertNotIn("stage_id", entry)
+        self.assertNotIn("card_id", entry)
 
     def test_manual_checkpoint_cli_is_not_exposed(self):
         with self.assertRaises(SystemExit):

@@ -24,7 +24,8 @@ Conciseness is a quality-preserving optimization, never a reason to remove requi
 | Who owns a module or architecture boundary? | `docs/ARCHITECTURE.md` |
 | What are the autonomy, testing, review, and merge rules? | `docs/AUTONOMY.md` |
 | What are the closed-loop roadmap milestones and research programs? | `docs/ROADMAP.md` |
-| What are the live observed PR heads, CI results, and review observations? | A fresh `scripts/project_context.py` capsule, verified against GitHub |
+| What product or maintenance work is next? | The user's latest request; otherwise `docs/ROADMAP.md` plus live GitHub issues/PRs |
+| What are the live PR heads, CI results, and review observations? | Fresh Git/GitHub state; `scripts/project_context.py` is an optional summary |
 | How does independent review converge (severity vs disposition, R1/R2 budget, exact PASS + deferred notes)? | `docs/AUTONOMY.md` → **Review Convergence Protocol** |
 | What operator procedure has actually been proved? | `docs/RUNBOOK.md` |
 | What may an implementation agent do? | `AGENTS.md` |
@@ -37,46 +38,28 @@ Independent review is a **convergence process**, not an unbounded nit loop. Exac
 
 Review has no `COMPLETE` verdict. Exact `PASS` satisfies only the independent-review gate for one exact head; never infer completion from a receipt, CI result, capsule, PR merge alone, or a handoff headline.
 
-## Establish the Leading Valid Frontier
+## Choose and Start the Work
 
-Never interpret “latest” as “the newest branch wins.” Establish these three layers first:
+Use this sequence:
 
-1. **Accepted baseline** — the latest remote `main` commit that defines repository authority.
-2. **Active implementation frontier** — the current checkout branch and exact `HEAD` being maintained.
-3. **Blocked future frontier** — stacked, deferred, or unaccepted work that may be inspected but cannot define accepted truth or authorize later work.
+1. The user's latest explicit request is the task.
+2. If no task was given, refresh `main`, open PRs, issues, and CI, then select the next unblocked product-development or repository-maintenance item in `docs/ROADMAP.md`. Do not start a research/model experiment as a substitute for implementation work.
+3. Work on a feature branch. If the checkout is `main`, refresh it and create or switch to a feature branch before editing.
+4. Read only the relevant owner docs, source, and tests; make one coherent change, verify it, and leave a reviewable PR.
 
-Before editing:
+Never interpret “latest” as “the newest branch wins.” A blocked or unmerged PR is context, not accepted truth. A new PR head invalidates its previous CI and review evidence. Ordinary coding has no generated task assignment or lifecycle prerequisite.
 
-```text
-refresh remote main
-→ refresh open PR heads, dependencies, CI, and reviews
-→ read ARCHITECTURE and AUTONOMY from the accepted baseline
-→ confirm the current branch/head and the task described by this document
-→ confirm the local checkout/worktree matches the intended frontier
-→ read only the relevant owner, architecture, playbook, code, and tests
-→ state scope, non-goals, authority, acceptance, rollback, and hard stops
-→ begin work
-```
+## Optional Session Context Tool
 
-A new PR head invalidates earlier CI and review conclusions for that PR. A blocked downstream PR never becomes the baseline for its prerequisite. Branch-local status or routing prose is proposed content until merged and must not override accepted-main navigation.
-
-## One-Command Session Bootstrap
-
-Every repository-maintenance session starts here, but no agent should load every maintained document. A coding agent, including a fresh successor resuming interrupted work, first runs one accepted-main entry command:
+The normal entrypoint is this file and the task in the user's request. No generated capsule, command, checkpoint, Mission, Stage, WorkCard, or Steward service is required before an agent can inspect or edit a feature branch. For convenience, this local command summarizes accepted docs and checkout facts; it is optional and never decides what work is allowed:
 
 ```bash
 uv run --no-project python scripts/session_context.py enter --role coding
 ```
 
-The default command composes a small accepted-document and checkout context. It does not require a Mission, Stage, WorkCard, journal, checkpoint, or generated dispatch capsule:
+On a feature branch it returns ordinary repository context. On `main` it is read-only and tells the agent to create a feature branch. `.git` and `.github` remain protected; exact-head review, CI, rollback, and guarded merge still apply before delivery.
 
-```bash
-uv run --no-project python scripts/session_context.py enter --role coding
-```
-
-On a non-main coding checkout this returns ordinary repository execution context automatically. It records the current branch/head and safe verification baseline, but does not bind the agent to a card. Read `START_HERE.md`, inspect the relevant code and tests, and decide the next bounded change yourself. `.git` and `.github` remain protected; review, CI, rollback, and guarded merge still apply before delivery.
-
-Planning, review, CI-repair, operator, and contributor sessions request their bounded accepted document route:
+Other roles may use the helper to print a bounded reading route; the human-readable routes above remain sufficient:
 
 ```bash
 uv run --no-project python scripts/session_context.py route --role planning
@@ -152,7 +135,7 @@ Replace `planning` with `review`, `ci-repair`, `operator`, or `contributor`. The
 
 ## Role Routes
 
-The machine-readable `agent-context-routes:v1` marker above is the enforced route contract for `scripts/session_context.py` and `scripts/check_agent_handoff.py`; the human table below is its readable projection.
+The machine-readable `agent-context-routes:v1` marker above is an optional route contract for `scripts/session_context.py` and `scripts/check_agent_handoff.py`; the human table below is its readable projection.
 
 | Role | Reading route |
 |---|---|
@@ -165,13 +148,13 @@ The machine-readable `agent-context-routes:v1` marker above is the enforced rout
 
 Use targeted reads. Do not load every document when the role and task narrow the necessary context.
 
-## Planning and Execution Separation
+## Ordinary Planning and Execution
 
-The user owns the high-level objective. A coding agent reads this file, inspects the repository, chooses the smallest coherent change, runs the relevant checks, and returns evidence. No Mission, Stage, WorkCard, generated task card, or lifecycle journal is required to begin. The normal repository boundaries still apply: do not commit secrets, write protected `main` directly, invoke providers, deploy, release, or bypass review/CI/rollback requirements.
+The user's request or the next unblocked roadmap item supplies the objective. The coding agent inspects the repository, chooses a coherent implementation slice, edits the source directly, runs tests, and reports evidence. Planning and implementation do not require a separate assignment object or generated task card. The normal repository boundaries still apply: do not commit secrets, write protected `main` directly, invoke providers, deploy, release, or bypass review/CI/rollback requirements.
 
-## Generate a Fresh Handoff Capsule
+## Optional Handoff Capsule
 
-From a repository checkout, run:
+For a compact status summary, you may run this from a repository checkout:
 
 ```bash
 uv run --no-project python scripts/project_context.py

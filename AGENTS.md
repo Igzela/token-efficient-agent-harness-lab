@@ -10,9 +10,9 @@ Use this order: correctness, safety, evidence, recovery, and rollback → archit
 
 Before acting, establish the **leading valid frontier** from accepted remote
 `main`, the current checkout branch/HEAD, and the task stated by
-`START_HERE.md`. Enter through the command returned by `START_HERE.md`; read
-the relevant owner docs, code, and tests directly. Generated capsules and
-local checkpoints are optional transport views, never authority.
+the user's request or `START_HERE.md`. Read the relevant owner docs, code, and
+tests directly. Generated capsules, local checkpoints, and task cards are not
+entry requirements or authority.
 
 ## Autonomous Operating Model
 
@@ -80,8 +80,8 @@ A difficult implementation or failed first attempt is not a blocker: diagnose an
 
 ## Autonomous Advancement Loop
 
-1. Enter through `START_HERE.md`; refresh accepted main, exact worktree/PR head, dependencies, reviews, CI, objections, and canonical owners.
-2. Select and audit the active task; state scope, non-goals, authority, risk, acceptance, rollback, and hard stops.
+1. Read `START_HERE.md`; refresh accepted main, the exact worktree/PR head, dependencies, reviews, CI, objections, and canonical owners.
+2. Use the user's request, or the next unblocked product/maintenance roadmap item, as the task; state scope, non-goals, authority, risk, acceptance, rollback, and hard stops.
 3. Reuse or deepen existing owners before adding mechanisms; implement one coherent bounded slice with focused negative tests where practical.
 4. Run the exact verification contract, repair root causes without weakening guards, and review correctness, authority, security, compatibility, audit, recovery, cost, and SQLite/PostgreSQL parity where applicable.
 5. Update canonical owners, run handoff/diff checks, then follow the exact-head PR/CI/merge path. Continue only from refreshed accepted state.

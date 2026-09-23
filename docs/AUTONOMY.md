@@ -6,19 +6,20 @@ This document defines the autonomy governance, lifecycle state machine, review c
 
 ## Normal repository path
 
-The default coding path is intentionally ordinary repository maintenance:
+The default coding path is ordinary repository maintenance:
 
 ```text
 START_HERE.md → inspect relevant code/tests → edit → verify
 → review exact branch/head → CI → guarded merge
 ```
 
-An agent enters through `scripts/session_context.py`, reads `START_HERE.md`,
-and decides the next bounded change from the current repository state. It does
-not need a Mission, Stage, WorkCard, generated task card, lifecycle journal,
+An agent starts with `START_HERE.md` and the user's latest request, then decides
+the next bounded change from the current repository state. The
+`scripts/session_context.py` projection is optional. Ordinary coding does not
+need a Mission, Stage, WorkCard, generated task card, lifecycle journal,
 checkpoint, or Steward service. The Steward/Card lifecycle below is retained
-only as a legacy compatibility surface for historical automation and is never
-a prerequisite or blocker for the normal path.
+only for historical automation and is never a prerequisite or blocker for the
+normal path.
 
 ## Scope of Steward Autonomy
 
@@ -157,7 +158,11 @@ comparability gates, and explicitly authorized adoption before any change to
 the active Harness. The exact advancement gates are owned by
 `docs/ROADMAP.md`; module and authority ownership by `docs/ARCHITECTURE.md`.
 
-## Lifecycle State Machine
+## Historical Steward Lifecycle State Machine
+
+This lifecycle remains documented for compatibility with existing Steward
+automation. It is not the default repository-maintenance workflow and must not
+be used to gate ordinary coding sessions.
 
 The repository-maintenance outer loop is governed by a single lifecycle state machine:
 
@@ -205,27 +210,19 @@ or replacement lifecycle owner.
 
 ### Ordinary repository entry
 
-The coding entry is the ordinary repository path. A coding agent enters it
-directly on a non-main checkout:
+`START_HERE.md` is the coding entry. `scripts/session_context.py enter` is an
+optional local projection of accepted documents and checkout facts; it does
+not create or require Mission, Stage, WorkCard, checkpoint, journal, or
+Steward-service continuity. On `main` it is read-only; on a feature branch it
+can report the current context and optional verification commands. `.git` and
+`.github` remain protected.
 
-```bash
-uv run --no-project python scripts/session_context.py enter --role coding \
-  --scope . --verify "git diff --check"
-```
-
-The entry is local and provider-free. It records the accepted document
-source, current checkout, and optional verification commands. It does not
-create or require Mission, Stage, WorkCard, checkpoint, journal, or
-Steward-service continuity. Repository-root scope is allowed for ordinary
-source maintenance, while `.git` and `.github` remain protected.
-
-The entry authorizes only in-scope local edits and declared checks. It never
-authorizes writes to `main`, provider calls or spend, deployment, release,
-destructive effects, review/CI bypass, merge, or removal of rollback evidence.
-The resulting branch remains Draft until exact-head independent review,
-canonical CI, and the guarded merge contract pass. This is an execution-entry
-change, not permission to weaken any existing product, security, recovery, or
-external-effect boundary.
+Ordinary repository work follows normal Git review: keep changes on a feature
+branch, run relevant checks, and leave the PR Draft until exact-head
+independent review, canonical CI, and guarded merge requirements pass. The
+optional context tool does not authorize provider calls or spend, deployment,
+release, destructive effects, review/CI bypass, merge, or removal of rollback
+evidence.
 
 A Mission reaches `COMPLETE` only when both conditions are satisfied:
 1. its repository-maintenance Stage lifecycle is settled; and

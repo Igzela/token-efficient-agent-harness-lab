@@ -16,7 +16,10 @@ Last updated: 2026-09-06.
 
 ## Session Entry
 
-Operator sessions enter through the accepted router: run `uv run --no-project python scripts/session_context.py route --role operator` (or the full entry command from `START_HERE.md`) to obtain the bounded accepted-document route before using any procedure below. This file owns only procedures that have actually been proved.
+Read `START_HERE.md` first, then use the relevant procedure below. The
+`scripts/session_context.py route --role operator` command is an optional
+convenience, not a prerequisite. This file owns only procedures that have
+actually been proved.
 
 ### Cold-start owner-direct existing-PR repair
 
@@ -688,16 +691,11 @@ Review terminal states are explicit. The validator accepts only schema-valid exa
 
 ### Ordinary repository entry
 
-For ordinary local repository maintenance, start from a non-main checkout with:
-
-```bash
-uv run --no-project python scripts/session_context.py enter --role coding
-```
-
-Use the optional `--scope` and `--verify` flags only when a narrower local
-contract is useful. The entry records the accepted document source and current
-checkout; it does not read or create a lifecycle task, checkpoint, journal, or
-Steward service state. `.git` and `.github` remain protected.
+For ordinary local repository maintenance, start at `START_HERE.md` and work
+on a feature branch. `scripts/session_context.py enter --role coding` is an
+optional local summary; it does not read or create a lifecycle task,
+checkpoint, journal, or Steward service state. `.git` and `.github` remain
+protected.
 
 ## Research Execution Continuation Procedure
 
@@ -917,10 +915,9 @@ assertions directly against the accepted document and code; the focused hygiene
 gate is `git diff --check`. This section is documentation-only and grants no
 new authority.
 
-1. **Operator entry route and proved-procedures ownership** — the document
-   asserts operator sessions enter through the accepted router
-   (`uv run --no-project python scripts/session_context.py route --role operator`)
-   and that this file owns only procedures that have actually been proved.
+1. **Operator entry and proved-procedures ownership** — the document asserts
+   that operators read `START_HERE.md` first, the session router is optional,
+   and this file owns only procedures that have actually been proved.
 2. **Scheduler sole authority** — the document asserts the Rust scheduler
    remains the sole owner of admission, leases, retries, cooldown, concurrency,
    pause/resume, and run state, and the Rust engine remains the sole product

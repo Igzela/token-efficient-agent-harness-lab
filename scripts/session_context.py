@@ -531,6 +531,11 @@ def _repository_forbidden_actions() -> list[str]:
 def _repository_next_action(
     *, head_sha: str, branch: str, allowed_paths: list[str]
 ) -> str:
+    if branch == "main":
+        return (
+            "Read START_HERE.md and inspect the accepted repository state. Do not edit main; "
+            "refresh accepted main and create or switch to a feature branch before making changes."
+        )
     scope = ", ".join(allowed_paths)
     return (
         f"Read START_HERE.md, inspect the relevant code and tests, and make one bounded change "
@@ -560,9 +565,11 @@ def _validate_repository_entry(value: object) -> dict[str, object]:
     snapshot = CheckoutSnapshot.from_wire(wire.get("checkout_snapshot"))
     if snapshot.accepted_main_sha != accepted_main_sha:
         raise SessionContextError("repository_entry_checkout_binding_invalid")
-    if snapshot.detached or snapshot.branch == "main":
+    if snapshot.detached:
         raise SessionContextError("repository_entry_branch_invalid")
-    if wire.get("role") != "coding" or wire.get("context_mode") != "REPOSITORY":
+    main_read_only = snapshot.branch == "main"
+    expected_mode = "REPOSITORY_READ_ONLY" if main_read_only else "REPOSITORY"
+    if wire.get("role") != "coding" or wire.get("context_mode") != expected_mode:
         raise SessionContextError("repository_entry_role_or_mode_invalid")
     allowed_paths = _repository_scope_list(wire.get("allowed_paths"), "repository_entry_allowed_paths")
     if any(not _repository_path_is_allowed(path, allowed_paths) for path in snapshot.dirty_paths):
@@ -583,11 +590,16 @@ def _validate_repository_entry(value: object) -> dict[str, object]:
     if wire.get("forbidden_next_actions") != _repository_forbidden_actions():
         raise SessionContextError("repository_entry_forbidden_actions_invalid")
     authority = _wire_mapping(wire.get("execution_authority"), "repository_entry_authority_binding_invalid")
-    if authority.get("source") != "accepted_main_and_checkout" or authority.get("accepted_main_sha") != accepted_main_sha:
+    expected_availability = "read_only" if main_read_only else "confirmed"
+    if (
+        authority.get("availability") != expected_availability
+        or authority.get("source") != "accepted_main_and_checkout"
+        or authority.get("accepted_main_sha") != accepted_main_sha
+    ):
         raise SessionContextError("repository_entry_authority_binding_invalid")
     if authority.get("head_sha") != snapshot.head_sha:
         raise SessionContextError("repository_entry_authority_head_invalid")
-    if wire.get("execution_authorized") is not True:
+    if wire.get("execution_authorized") is not (not main_read_only):
         raise SessionContextError("repository_entry_execution_authorized_invalid")
     if wire.get("next_permitted_action") != _repository_next_action(
         head_sha=snapshot.head_sha, branch=snapshot.branch, allowed_paths=allowed_paths
@@ -627,8 +639,9 @@ def build_repository_entry(
     snapshot_model = CheckoutSnapshot.from_wire(snapshot)
     if snapshot_model.accepted_main_sha != accepted_main_sha:
         raise SessionContextError("repository_entry_checkout_binding_invalid")
-    if snapshot_model.detached or snapshot_model.branch == "main":
+    if snapshot_model.detached:
         raise SessionContextError("repository_entry_branch_invalid")
+    main_read_only = snapshot_model.branch == "main"
     scope = _repository_scope_list(allowed_paths, "repository_entry_allowed_paths")
     verification_commands = _bounded_string_list(
         verification, "repository_entry_verification", max_items=50
@@ -646,7 +659,7 @@ def build_repository_entry(
         "document_source_binding": document_source_binding,
         "checkout_snapshot": snapshot_model.to_wire(),
         "role": role,
-        "context_mode": "REPOSITORY",
+        "context_mode": "REPOSITORY_READ_ONLY" if main_read_only else "REPOSITORY",
         "next_permitted_action": _repository_next_action(
             head_sha=snapshot_model.head_sha,
             branch=snapshot_model.branch,
@@ -658,12 +671,12 @@ def build_repository_entry(
         "deferred_documents": targeted_reads,
         "forbidden_next_actions": _repository_forbidden_actions(),
         "execution_authority": {
-            "availability": "confirmed",
+            "availability": "read_only" if main_read_only else "confirmed",
             "source": "accepted_main_and_checkout",
             "accepted_main_sha": accepted_main_sha,
             "head_sha": snapshot_model.head_sha,
         },
-        "execution_authorized": True,
+        "execution_authorized": not main_read_only,
     }
     entry["entry_sha256"] = _json_sha256(entry)
     return _validate_repository_entry(entry)
@@ -3095,7 +3108,6 @@ def main(argv: list[str] | None = None) -> int:
         ordinary_repository = (
             args.command == "enter"
             and args.role == "coding"
-            and str(snapshot.get("branch", "")) != "main"
             and owner_direct_pr is None
         )
         if ordinary_repository:

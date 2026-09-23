@@ -20,12 +20,14 @@ REQUIRED_TEXT = {
         "# Start Here",
         "## Quality Order",
         "## Source-of-Truth Hierarchy",
-        "## Establish the Leading Valid Frontier",
-        "## One-Command Session Bootstrap",
+        "## Choose and Start the Work",
+        "## Optional Session Context Tool",
         "## Role Routes",
         "agent-context-routes:v1",
         "scripts/project_context.py",
         "scripts/session_context.py",
+        "review_protocol_version",
+        "review_round",
         "## Automation Boundary",
         "## End-of-Work Handoff",
         "## Documentation Discipline",
@@ -114,10 +116,6 @@ REQUIRED_TEXT = {
     "scripts/agent-control/validate_review.py": [
         "review_convergence",
         "convergence_cross_field_invalid",
-    ],
-    "START_HERE.md": [
-        "review_protocol_version",
-        "review_round",
     ],
     "scripts/verify_rust_typescript_stack.sh": [
         "bash scripts/check_wire_codegen_drift.sh",
