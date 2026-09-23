@@ -1,6 +1,6 @@
 # Agent Instructions
 
-Read `START_HERE.md` first. It is the canonical navigation entry and defines the role-specific route, source-of-truth hierarchy, frontier discovery, and handoff procedure. This file owns only stable implementation-agent permissions and stop boundaries; it does not own architecture detail, roadmap, or operational runbooks.
+Read `START_HERE.md` first. It is the direct repository entry and points to the canonical owners for architecture, autonomy, priorities, and operator procedures. This file owns only stable implementation-agent permissions and stop boundaries.
 
 This repository is a local, deterministic, auditable Agent harness and workflow control plane. Rust `engine/` is the sole runtime, API, scheduler, policy, and application-owned storage authority; `LocalProductStore` is the sole persistence owner.
 
@@ -8,7 +8,11 @@ This repository is a local, deterministic, auditable Agent harness and workflow 
 
 Use this order: correctness, safety, evidence, recovery, and rollback → architecture and authority integrity → maintainability and one canonical owner → low duplication and low context cost. Conciseness must preserve quality.
 
-Before acting, establish the **leading valid frontier** from accepted remote `main`, the active Mission or Stage, its owned exact PR head when one exists, and blocked downstream work. Enter through the command returned by `START_HERE.md`; treat `scripts/project_context.py` and generated capsules as verified transport views, never authority. Do not continue from a stale branch, review, CI run, checkpoint, or downstream PR.
+Before acting, establish the **leading valid frontier** from accepted remote
+`main`, the current checkout branch/HEAD, and the task stated by
+the user's request or `START_HERE.md`. Read the relevant owner docs, code, and
+tests directly. Optional generated status summaries never choose the task or
+grant authority.
 
 ## Autonomous Operating Model
 
@@ -18,28 +22,26 @@ Normal reversible repository work and already-configured local/GitHub services a
 
 ## Authority and Ownership Boundaries
 
-- Cross-mission direction, architecture/authority choices, scope, prerequisites, ordering, acceptance criteria, schema or durable-contract changes, security/recovery boundaries, and GO/NO-GO decisions belong to planning and their canonical owners.
-- Task-internal implementation may reuse existing owners, choose local design details, add focused tests, repair root causes, and synchronize canonical documents. It may not broaden scope, create a parallel owner, or silently change a durable boundary.
+- Architecture/authority choices, scope, acceptance criteria, schema or durable-contract changes, security/recovery boundaries, and GO/NO-GO decisions belong to the user and their canonical owners.
+- Implementation may reuse existing owners, resolve bounded design details, add focused tests, repair root causes, and synchronize canonical documents. It may not broaden scope, create a parallel owner, or silently change a durable boundary.
 - Repository automation or any external/experimental harness or model may be only an admitted bounded worker or experimental subject. None may become a second runtime, scheduler, store, evaluator, budget, approval, workspace, output, audit, rollback, merge, release, or deployment owner.
 - Product/provider, managed acceptance, credential, redaction, and recovery rules are owned by `docs/ARCHITECTURE.md`; autonomy, testing, review, and merge rules by `docs/AUTONOMY.md`; closed-loop milestones and research programs by `docs/ROADMAP.md`.
 - Never persist or report credentials, raw prompts/outputs/transcripts, private paths, or unredacted repository content.
 
 If work needs to cross any boundary above, stop with `DECISION_REQUIRED` or `PAUSED_FOR_OWNER`: report evidence, options, consequences, and the smallest proposed owner update. A proposal is not accepted authority.
 
-## Execution-Ready Tasks and WorkCards
+## Ordinary Repository Maintenance
 
-Task execution is governed by `docs/AUTONOMY.md`: ordinary states are `READY_FOR_EXECUTION`, `IN_PROGRESS`, and `COMPLETE`. External-effect boundaries may use `T3_REQUIRED` as a non-executable authority gate. Execute only the active task and only its exact owners, allowed changes, ordered steps, verification, rollback, budgets, pause gates, and forbidden next actions. Review `PASS` satisfies one exact-head review gate; it is never task `COMPLETE`.
+Read `START_HERE.md`, use the user's request (or the next unblocked roadmap
+item) as the objective, inspect the relevant source and tests, implement one
+coherent change, and verify it locally. Keep changes on a non-main branch,
+protect `.git` and `.github`, preserve rollback, and follow the repository's
+ordinary review, CI, and merge gates. Review `PASS` is evidence for one exact
+head; it is not a substitute for testing or delivery acceptance.
 
-## Research execution continuation
-
-For a finite owner-authorized experiment, use the
-[Research Execution Continuation Rule](docs/AUTONOMY.md#research-execution-continuation-rule)
-and [operator procedure](docs/RUNBOOK.md#research-execution-continuation-procedure).
-This path does not create a new maintenance Mission, Stage, or WorkCard, nor
-require an active maintenance Stage as a live-execution precondition;
-`NO_ACTIVE_STAGE` is normal. A smoke-exposed glue gap between existing owners
-is a bounded execution repair, not `PAUSED_FOR_OWNER`; pause only at the
-boundary conditions owned by `AUTONOMY.md`.
+Research and model experiments are separate, optional work. They do not
+replace product-development or repository-maintenance work and require an
+explicit user request plus their documented authority and safety gates.
 
 ## Investigation Escalation (`ask_sol`)
 
@@ -73,23 +75,23 @@ A difficult implementation or failed first attempt is not a blocker: diagnose an
 
 ## Autonomous Advancement Loop
 
-1. Enter through `START_HERE.md`; refresh accepted main, exact worktree/PR head, dependencies, reviews, CI, objections, and canonical owners.
-2. Select and audit the active task; state scope, non-goals, authority, risk, acceptance, rollback, and hard stops.
+1. Read `START_HERE.md`; refresh accepted main, the exact worktree/PR head, dependencies, reviews, CI, objections, and canonical owners.
+2. Use the user's request, or the next unblocked product/maintenance roadmap item, as the objective; state scope, non-goals, authority, risk, acceptance, rollback, and hard stops.
 3. Reuse or deepen existing owners before adding mechanisms; implement one coherent bounded slice with focused negative tests where practical.
 4. Run the exact verification contract, repair root causes without weakening guards, and review correctness, authority, security, compatibility, audit, recovery, cost, and SQLite/PostgreSQL parity where applicable.
 5. Update canonical owners, run handoff/diff checks, then follow the exact-head PR/CI/merge path. Continue only from refreshed accepted state.
 
 ## Reading and Verification
 
-After `START_HERE.md`, follow only the returned role route and targeted reads. `docs/ARCHITECTURE.md` owns architecture and module ownership; `docs/AUTONOMY.md` autonomy and testing; `docs/ROADMAP.md` roadmap; `docs/RUNBOOK.md` operator procedures. Code, tests, Git/GitHub, and accepted canonical documents outrank stale prose. Use CodeGraph first for structural, dependency, impact, or call-flow exploration. If no `.codegraph/` index exists, **proactively run `codegraph index` at the repo root** before proceeding with code exploration. If CodeGraph is unavailable, damaged, locked, or its interface is missing after an index attempt, make at most one bounded local repair attempt (unlock or re-index); if that does not restore it, immediately fall back to `rg`, raw source, compiler, and tests (a CodeGraph failure is not `DECISION_REQUIRED`; temporary indices or repair artifacts must never be committed).
+After `START_HERE.md`, read only the relevant owner documents and targeted source/tests. `docs/ARCHITECTURE.md` owns architecture and module ownership; `docs/AUTONOMY.md` autonomy and testing; `docs/ROADMAP.md` product-development priorities and optional research programs; `docs/RUNBOOK.md` operator procedures. Code, tests, Git/GitHub, and accepted canonical documents outrank stale prose. Use CodeGraph first for structural, dependency, impact, or call-flow exploration. If no `.codegraph/` index exists, **proactively run `codegraph index` at the repo root** before proceeding with code exploration. If CodeGraph is unavailable, damaged, locked, or its interface is missing after an index attempt, make at most one bounded local repair attempt (unlock or re-index); if that does not restore it, immediately fall back to `rg`, raw source, compiler, and tests (a CodeGraph failure is not `DECISION_REQUIRED`; temporary indices or repair artifacts must never be committed).
 
 ## Documentation Maintenance Rule
 
 One fact has one full owner:
 - `START_HERE.md` owns navigation/context routing;
 - `docs/ARCHITECTURE.md` owns durable architecture, authority, security, recovery, and module ownership;
-- `docs/AUTONOMY.md` owns mission/stage contracts, autonomy, testing, review, and merge rules;
-- `docs/ROADMAP.md` owns closed-loop milestones and research programs;
+- `docs/AUTONOMY.md` owns autonomy, testing, review, and merge rules;
+- `docs/ROADMAP.md` owns product-development priorities and separately authorized research programs;
 - `docs/RUNBOOK.md` owns proven operator runbooks.
 
 Other entrypoints link instead of copying. Replace stale status rather than appending history; add no document when an existing owner fits.

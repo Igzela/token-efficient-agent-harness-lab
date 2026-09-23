@@ -115,7 +115,7 @@
           },
           "scope_relation": {
             "type": "string",
-            "enum": ["in_packet", "out_of_packet"]
+            "enum": ["in_scope", "out_of_scope"]
           },
           "origin_head": {
             "type": "string",

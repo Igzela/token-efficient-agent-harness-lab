@@ -2,7 +2,7 @@ name: agent-merge
 
 # Manual, fail-closed merge boundary.  All decisions are re-read from live
 # GitHub state immediately before the one expected-head merge request.  This
-# workflow never dispatches a successor or changes orchestrator control state.
+# workflow never dispatches successor work or mutates planning state.
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ on:
         required: true
         type: string
       dispatch_id:
-        description: Exact Steward logical dispatch identity
+        description: Unique identity for this exact merge request
         required: true
         type: string
 

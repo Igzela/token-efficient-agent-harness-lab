@@ -17,6 +17,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts" / "agent-control"))
 
 import review_convergence as rc  # noqa: E402
+import validate_review as review_validation  # noqa: E402
 
 HEAD1 = "a" * 40
 HEAD2 = "b" * 40
@@ -30,7 +31,7 @@ def finding(**overrides):
         "evidence": "defect evidence",
         "severity": "blocker",
         "disposition": "block_current_head",
-        "scope_relation": "in_packet",
+        "scope_relation": "in_scope",
         "origin_head": HEAD1,
         "acceptance_condition": "fixed with focused test",
         "status": "open",
@@ -666,6 +667,32 @@ class TestDurablePersistenceFields(unittest.TestCase):
         parsed_issue, parsed_pr, parsed_state = rc.parse_review_state(durable)
         self.assertEqual((parsed_issue, parsed_pr), (208, 349))
         self.assertEqual(parsed_state, state)
+
+
+class TestReviewSchemaScopeRelations(unittest.TestCase):
+    def test_schema_and_validator_use_repository_scope_terms(self):
+        schema = review_validation.load_schema()
+        scope_enum = set(
+            schema["properties"]["findings"]["items"]["properties"]["scope_relation"][
+                "enum"
+            ]
+        )
+        self.assertEqual(scope_enum, {"in_scope", "out_of_scope"})
+
+        payload = {
+            "verdict": "PASS",
+            "summary": "complete review",
+            "reviewed_head_sha": HEAD1,
+            "security_ok": True,
+            "rollback_ok": True,
+            "findings": [finding(scope_relation="in_scope")],
+        }
+        self.assertEqual(review_validation.validate(payload, schema), [])
+        payload["findings"][0]["scope_relation"] = "in_packet"
+        self.assertIn(
+            "findings finding has invalid scope_relation",
+            review_validation.validate(payload, schema),
+        )
 
 
 if __name__ == "__main__":

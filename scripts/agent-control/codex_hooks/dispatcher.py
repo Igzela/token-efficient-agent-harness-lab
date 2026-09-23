@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Thin event dispatcher for Codex Lifecycle Hooks.
+"""Thin dispatcher for optional repository-safety hooks.
 
 Single entrypoint invoked by the Codex hook execution engine:
 `python3 dispatcher.py <event_name>`
 
-Reads event context from stdin (JSON), routes to specialized event handlers
-(Session, Guard, Continuation), and emits responses strictly adhering to the
+Reads event context from stdin (JSON), routes repository-safety events to the guard,
+and emits responses strictly adhering to the
 official Codex hook wire schemas.
 
 Exit-code contract (verified against the real Codex CLI runtime): exit 0 with
 a JSON decision document on stdout is the ONLY channel the runtime parses. A
 nonzero exit is treated as a hook failure: the runtime ignores stdout and
-proceeds fail-open. Blocks (PreToolUse deny, Stop continuation) MUST therefore
+proceeds fail-open. Blocks (PreToolUse deny) MUST therefore
 exit 0 with their decision document. Nonzero exits are reserved for genuine
 hook errors (malformed input, missing event) where no decision exists.
 """
@@ -22,7 +22,6 @@ import json
 import os
 from pathlib import Path
 import sys
-from typing import Any
 
 # Ensure parent directory is on sys.path when executed directly as a script
 _CURRENT_DIR = Path(__file__).resolve().parent
@@ -31,27 +30,19 @@ if str(_PKG_PARENT) not in sys.path:
     sys.path.insert(0, str(_PKG_PARENT))
 
 try:
-    from .continuation import ContinuationHandler
     from .guard import GuardHandler
     from .protocol import (
         HookEventName,
         HookInput,
         HookOutput,
-        HookSpecificOutput,
-        PermissionDecision,
     )
-    from .session import SessionHandler
 except ImportError:
-    from codex_hooks.continuation import ContinuationHandler
     from codex_hooks.guard import GuardHandler
     from codex_hooks.protocol import (
         HookEventName,
         HookInput,
         HookOutput,
-        HookSpecificOutput,
-        PermissionDecision,
     )
-    from codex_hooks.session import SessionHandler
 
 
 class HookDispatcher:
@@ -59,9 +50,7 @@ class HookDispatcher:
 
     def __init__(self, state_dir: Path | str | None = None):
         self.state_dir = Path(state_dir) if state_dir else None
-        self.session_handler = SessionHandler(self.state_dir)
         self.guard_handler = GuardHandler(self.state_dir)
-        self.continuation_handler = ContinuationHandler(self.state_dir)
 
     def dispatch(self, event_name: str, raw_input: str) -> tuple[int, str, str]:
         """Dispatch event to handler.
@@ -75,23 +64,7 @@ class HookDispatcher:
 
         event = hook_input.hook_event_name or event_name
 
-        if event == HookEventName.SESSION_START.value:
-            output = self.session_handler.handle_session_start(hook_input)
-            return 0, output.to_json(), ""
-
-        elif event == HookEventName.PRE_COMPACT.value:
-            output = self.session_handler.handle_pre_compact(hook_input)
-            return 0, output.to_json(), ""
-
-        elif event == HookEventName.POST_COMPACT.value:
-            output = self.session_handler.handle_post_compact(hook_input)
-            return 0, output.to_json(), ""
-
-        elif event == HookEventName.POST_TOOL_USE.value:
-            output = self.session_handler.handle_post_tool_use(hook_input)
-            return 0, output.to_json(), ""
-
-        elif event == HookEventName.PRE_TOOL_USE.value:
+        if event == HookEventName.PRE_TOOL_USE.value:
             output = self.guard_handler.handle_pre_tool_use(hook_input)
             if output.decision == "block":
                 # Exit 0: the runtime only parses stdout on exit 0; a nonzero
@@ -100,15 +73,11 @@ class HookDispatcher:
                 return 0, output.to_json(), reason
             return 0, output.to_json(), ""
 
-        elif event == HookEventName.PERMISSION_REQUEST.value:
+        if event == HookEventName.PERMISSION_REQUEST.value:
             output = self.guard_handler.handle_permission_request(hook_input)
             return 0, output.to_json(), ""
 
-        elif event == HookEventName.STOP.value:
-            exit_code, output, stderr_msg = self.continuation_handler.handle_stop(hook_input)
-            return exit_code, output.to_json(), stderr_msg or ""
-
-        # Pass-through for other events
+        # Other events pass through; these hooks own no session lifecycle.
         return 0, HookOutput().to_json(), ""
 
 

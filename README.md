@@ -31,13 +31,12 @@ A green CI check is not enough if it belongs to an older PR head. This lab binds
 
 > **Boundary:** local / small-team research tool — not multi-tenant SaaS, not a free provider proxy, no container/VM isolation claim. Provider, managed-CLI, adaptive, and autonomous paths remain default-off and use explicit fail-closed authority, identity, budget, lease, audit, and kill controls. Governance and testing rules are owned by `docs/AUTONOMY.md`; the roadmap is in `docs/ROADMAP.md`.
 
-The research direction is a closed loop: common Real Workload Evidence feeds
-controlled `Harness × Model × Strategy` comparisons; hard gates precede
-lifecycle-cost and Pareto analysis; only replicated, explicitly adopted
-changes become the next Harness. Context Working Set, memory, and skill are
-Strategy inputs within that loop, while Autonomous Steward remains the
-repository-maintenance control plane. See [`docs/ROADMAP.md`](docs/ROADMAP.md)
-for the current gated frontier.
+The engineering mainline is the autonomous development and maintenance loop:
+start from `START_HERE.md`, inspect the repository and live PR/CI state, make
+the requested change, verify it, obtain exact-head review, pass canonical CI,
+and confirm the guarded merge. Research programs are separate optional work,
+not an entry gate or substitute for repository maintenance. See
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for priorities.
 
 Maintainer and Agent entry: [`START_HERE.md`](START_HERE.md) · architecture: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · autonomy & testing: [`docs/AUTONOMY.md`](docs/AUTONOMY.md) · roadmap: [`docs/ROADMAP.md`](docs/ROADMAP.md) · implementation rules: [`AGENTS.md`](AGENTS.md) · support: [`SUPPORT.md`](SUPPORT.md).
 
@@ -190,7 +189,7 @@ This repository is not a cloud production SaaS, hosted multi-tenant service, or 
 
 Provider API execution requires explicit endpoint/auth/budget configuration; CI uses stub/mock paths and does not call real provider APIs. A ready trusted-local profile activates bounded provider execution, adaptive routing, experiments, promotion, default routing, and acknowledged task advancement for internal local operation. Managed CLI execution is default-off. Codex retains its existing `workspace-write` adapter. Claude Code registration is currently disabled because provider-independent worktree-only filesystem mediation is unproved; exact identity, model, usage, and process checks alone do not establish read confinement. The local dashboard remains guarded; dangerous actions require confirmation and audit logging.
 
-Internal maintainer paths (repository-agent / Issue orchestrator, emergency stop, runner recovery) live in [`AGENTS.md`](AGENTS.md) and [`docs/AUTONOMY.md`](docs/AUTONOMY.md). They are not the public product entry.
+Maintainer guidance, recovery boundaries, and merge gates live in [`AGENTS.md`](AGENTS.md) and [`docs/AUTONOMY.md`](docs/AUTONOMY.md). They are not the public product entry.
 
 ## Toolchain
 
@@ -425,13 +424,17 @@ Historical phase plans, closeouts, validation reports, and low-frequency referen
 
 ## Agent Maintenance
 
-Repository maintenance authority is governed by [`START_HERE.md`](START_HERE.md), [`AGENTS.md`](AGENTS.md), and [`docs/AUTONOMY.md`](docs/AUTONOMY.md). Autonomous Steward coordinates mission execution, stage verification, independent review, CI, and guarded merges. A missing or conflicting architecture, authority, schema, security, evaluator, release, or recovery decision pauses with `PAUSED_FOR_OWNER` or `DECISION_REQUIRED`.
+Repository maintenance follows [`START_HERE.md`](START_HERE.md),
+[`AGENTS.md`](AGENTS.md), and [`docs/AUTONOMY.md`](docs/AUTONOMY.md). A coding
+agent reads the entrypoint and the user's request, inspects the current
+checkout, implements a coherent change, and verifies it. A missing or
+conflicting architecture, authority, schema, security, evaluator, release, or
+recovery decision pauses with `PAUSED_FOR_OWNER` or `DECISION_REQUIRED`.
 
 This maintenance authority does not grant Provider spend, target output, direct
-merge, release, deployment, or production-adoption authority. Within one
-GitHub-authenticated bounded Mission, Steward may only dispatch the canonical
-guarded merge workflow after exact-head CI/review gates; GitHub remains the
-merge and accepted-main authority. The durable architecture baseline is
+merge, release, deployment, or production-adoption authority. GitHub remains
+the merge and accepted-main authority; repository changes use exact-head
+review, canonical CI, and the guarded merge workflow. The durable architecture baseline is
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Contributing

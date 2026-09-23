@@ -1,4 +1,4 @@
-"""Provider-free tests for the handoff guard's Mission compatibility read."""
+"""Provider-free tests for repository handoff and navigation checks."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "scripts" / "agent-control"))
 import check_agent_handoff as handoff  # noqa: E402
 
 
-class HandoffMissionCompatibilityTests(unittest.TestCase):
+class HandoffNavigationTests(unittest.TestCase):
     def test_codegraph_fallback_policy_is_explicit(self):
         agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
         policy = agents[agents.index("## Reading and Verification") :]
