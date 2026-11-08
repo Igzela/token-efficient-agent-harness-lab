@@ -44,7 +44,18 @@ Maintainer and Agent entry: [`START_HERE.md`](START_HERE.md) · architecture: [`
 
 Verified on a source checkout with Rust stable, [Bun](https://bun.sh/), and [uv](https://docs.astral.sh/uv/) (Python 3.11+ for the SDK; 3.10+ scripts where noted). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-### Five-minute no-provider demo (recommended first success)
+### Do one local job
+
+No API key and no model call. This starts the engine, runs the existing local command path, and writes one checked file into a new folder:
+
+```bash
+./scripts/start_local_work.sh
+./scripts/start_local_work.sh --cleanup
+```
+
+The file is `.acp-work-state/inbox/docs/product_golden_path_fixture.md`. The engine stays on the printed loopback URL until cleanup. It does not modify this repository. Model and pull-request output stay behind the gates in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
+
+### Five-minute no-provider demo (evidence check)
 
 No API key, no real provider, no target-repository writes. Builds the engine/dashboard if needed, runs a fixture dispatch, binds proof to the current git revision, and rejects a stale-head scenario:
 

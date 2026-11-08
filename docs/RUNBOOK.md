@@ -113,6 +113,10 @@ Emergency disable and rollback:
 
 Post-execution hooks run after the external effect. A post block marks the node result failed, preserves inner usage fields, and is non-retryable because the effect may already have occurred; it cannot undo the external effect. Use pre-execution block/approval hooks when execution itself must be prevented.
 
+## First local job
+
+`./scripts/start_local_work.sh` is the proved no-provider start. It enables the product golden path and the command scheduler, admits one `local_folder` task with `apply_local_changes`, waits until verification passes, records approval, and confirms output. The only workspace change is `docs/product_golden_path_fixture.md` inside `.acp-work-state/inbox/`. Cleanup is `./scripts/start_local_work.sh --cleanup`. This does not authorize a model call, a target-repository write, or a pull request.
+
 ## Product Golden Path Approval and Draft PR Output
 
 Product approval and output are separate operator actions. After finalization returns `awaiting_approval`, an authenticated `team:admin` reviewer records the exact approval. A later operator with `dispatch:execute` supplies that approval and explicitly confirms output. Do not use the combined compatibility route as an ordinary client flow, and never pre-create approval as part of task submission.
