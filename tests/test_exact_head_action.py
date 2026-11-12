@@ -154,6 +154,12 @@ class TestExactHeadAction(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("review=confirmed", result.stdout)
 
+    def test_mocked_current_receipt_with_malformed_sha_history_passes(self):
+        malformed = self._receipt(reviewed_sha="deadbeefPLACEHOLDER")
+        result = self._run_verify(issue_comments=[malformed, self._receipt()])
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("review=confirmed", result.stdout)
+
     def test_mocked_receipt_missing_governance_axis_fails_closed(self):
         incomplete = self._receipt()
         incomplete["body"] = incomplete["body"].replace(

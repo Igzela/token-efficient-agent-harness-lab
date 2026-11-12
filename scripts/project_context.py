@@ -417,7 +417,10 @@ def _build_review_observation(
                 r"[0-9a-f]{40}", str(receipt.get("observed_head_sha") or "")
             )
         ]
-        if len(current_receipts) == 1 and not unbound_receipts:
+        # Prefer exactly one current-head receipt even if older comments have
+        # malformed SHAs. Unbound garbage only fails closed when no current
+        # receipt exists (it must not poison a valid exact-head PASS).
+        if len(current_receipts) == 1:
             parsed_receipt = current_receipts[0]
             observation["review_receipt"] = parsed_receipt
         elif len(current_receipts) > 1:

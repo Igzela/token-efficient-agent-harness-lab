@@ -513,7 +513,11 @@ impl LocalProductStore {
             conn.execute_batch(&format!("PRAGMA key = '{}';", key.replace('\'', "''")))
                 .map_err(|e| format!("Failed to set encryption key: {}", e))?;
         }
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
+        // busy_timeout covers transient lock contention on open (notably
+        // macOS clean-environment races) without changing ownership or WAL.
+        conn.execute_batch(
+            "PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;",
+        )
             .map_err(|e| e.to_string())?;
         // The current full DDL creates the v33 logical-spend index. An
         // existing legacy spend table can predate that column (regardless of
