@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Agent Control Plane
+Comment=Local operator harness dashboard (engine + UI)
+Exec=@HARNESS_ROOT@/scripts/harness.sh start
+Icon=@HARNESS_ROOT@/dashboard/src/app/icon.svg
+Terminal=true
+Categories=Development;Utility;
+StartupNotify=true
+Path=@HARNESS_ROOT@

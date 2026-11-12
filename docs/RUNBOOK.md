@@ -113,9 +113,16 @@ Emergency disable and rollback:
 
 Post-execution hooks run after the external effect. A post block marks the node result failed, preserves inner usage fields, and is non-retryable because the effect may already have occurred; it cannot undo the external effect. Use pre-execution block/approval hooks when execution itself must be prevented.
 
-## First local job
+## Usable local harness (CLI and Linux desktop)
 
-`./scripts/start_local_work.sh` is the proved no-provider start. It enables the product golden path and the command scheduler, admits one `local_folder` task with `apply_local_changes`, waits until verification passes, records approval, and confirms output. The only workspace change is `docs/product_golden_path_fixture.md` inside `.acp-work-state/inbox/`. Cleanup is `./scripts/start_local_work.sh --cleanup`. This does not authorize a model call, a target-repository write, or a pull request.
+`./scripts/harness.sh` is the proved operator entry:
+
+- `./scripts/harness.sh start` builds the engine and static dashboard when needed, starts the loopback control plane with the product golden path and command scheduler, serves the dashboard UI, and opens it with `xdg-open` when available. State lives under `.acp-operator-state/`.
+- `./scripts/harness.sh work` runs the local-folder product task (`apply_local_changes`) and writes `docs/product_golden_path_fixture.md` inside `.acp-work-state/inbox/`.
+- `./scripts/harness.sh install-desktop` installs `~/.local/share/applications/agent-control-plane.desktop` so the same start path appears in a Linux app menu.
+- `./scripts/harness.sh stop` stops operator, work, and demo sessions.
+
+These paths do not authorize a model call, a target-repository write, or a pull request.
 
 ## Product Golden Path Approval and Draft PR Output
 
