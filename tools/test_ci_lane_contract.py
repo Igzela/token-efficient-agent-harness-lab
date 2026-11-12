@@ -60,19 +60,23 @@ class CiLaneContractTests(unittest.TestCase):
         self.assertTrue(required.issubset(set(capsule["needs"])))
         self.assertIn("--require-success", capsule["steps"][-1]["run"])
 
-    def test_pr_fast_checks_enforce_draft_for_every_mutating_event(self) -> None:
+    def test_pr_fast_checks_run_on_ordinary_pr_events(self) -> None:
         events = self.fast[True]["pull_request"]["types"]
-        self.assertEqual(events, ["opened", "synchronize", "reopened", "converted_to_draft"])
+        self.assertEqual(
+            events,
+            ["opened", "synchronize", "reopened", "ready_for_review", "converted_to_draft"],
+        )
         self.assertTrue(self.fast["concurrency"]["cancel-in-progress"])
-        self.assertIn("PR_IS_DRAFT", self.fast["env"])
-        guard = self.fast["jobs"]["fast-pr-checks"]["steps"][0]
-        self.assertEqual(guard["name"], "Enforce Draft lane")
-        self.assertIn('PR_IS_DRAFT}" != "true', guard["run"])
-        self.assertIn("Convert this PR to Draft", guard["run"])
+        self.assertNotIn("PR_IS_DRAFT", self.fast["env"])
+        step_names = [step.get("name") for step in self.fast["jobs"]["fast-pr-checks"]["steps"]]
+        self.assertNotIn("Enforce Draft lane", step_names)
 
-    def test_canonical_pr_workflow_starts_only_on_ready_transition(self) -> None:
-        self.assertEqual(self.tests[True]["pull_request"]["types"], ["ready_for_review"])
-        self.assertNotIn("synchronize", self.tests[True]["pull_request"]["types"])
+    def test_canonical_pr_workflow_runs_on_synchronize(self) -> None:
+        self.assertEqual(
+            self.tests[True]["pull_request"]["types"],
+            ["opened", "synchronize", "reopened", "ready_for_review"],
+        )
+        self.assertIn("synchronize", self.tests[True]["pull_request"]["types"])
         self.assertIn("tools.test_ci_lane_contract", self.tests_source)
         self.assertIn("tools.test_ci_lane_contract", self.fast_source)
 

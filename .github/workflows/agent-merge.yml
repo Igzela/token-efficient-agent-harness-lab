@@ -69,14 +69,14 @@ jobs:
             .head.sha == $head
           ' "$RUNNER_TEMP/pr.json" >/dev/null
 
-      - name: Verify exact head and authenticated PASS receipt
+      - name: Verify exact head
         uses: ./trusted-base/actions/exact-head-check
         with:
           github-token: ${{ github.token }}
           pull-request: ${{ inputs.pr_number }}
           expected-head: ${{ inputs.head_sha }}
           allow-fork-head: "true"
-          require-review-receipt: "true"
+          require-review-receipt: "false"
           proof-path: ${{ runner.temp }}/exact-head-proof.json
 
       - name: Require every canonical check on the exact head

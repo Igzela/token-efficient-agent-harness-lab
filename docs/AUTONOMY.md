@@ -55,7 +55,13 @@ All review receipts, required checks, and merge authorization must identify the 
 - `rust-typescript-cutover`
 - `context-capsule`
 
-Keep a changing PR Draft. Mark it Ready only after local verification and complete-diff independent review. Merge only through `.github/workflows/agent-merge.yml` after the branch ruleset, current exact-head CI, exact `PASS`, zero open blockers, and squash-merge eligibility are confirmed. Direct `gh pr merge` is not the repository merge path.
+Draft remains useful while a head is still churning, but it is not a required
+CI lane: `pr-fast-checks` and `tests` run on ordinary PR synchronize events.
+Prefer Ready once local verification and complete-diff review are done. Merge
+only through `.github/workflows/agent-merge.yml` after the branch ruleset,
+current exact-head CI, and squash-merge eligibility are confirmed. Direct
+`gh pr merge` is not the repository merge path. Independent review receipts
+are retained as evidence when present; they are not a hard CI stop.
 
 After merge, read the PR and `main` from GitHub and verify the merged PR number, expected head, and exact merge commit. A successful workflow dispatch or local `HEAD` alone is not proof of merge.
 

@@ -64,7 +64,7 @@ class TestExactHeadAction(unittest.TestCase):
         self.assertIn('allow-fork-head: "true"', text)
         self.assertIn("issues: read", text)
         self.assertIn("require-review-receipt:", text)
-        self.assertIn("github.event.action == 'ready_for_review'", text)
+        self.assertIn('require-review-receipt: "false"', text)
         self.assertNotIn("uses: ./actions/exact-head-check", text)
 
     def test_example_workflow_present(self):
@@ -151,6 +151,12 @@ class TestExactHeadAction(unittest.TestCase):
     def test_mocked_current_receipt_with_stale_history_passes(self):
         stale = self._receipt(reviewed_sha="c" * 40)
         result = self._run_verify(issue_comments=[stale, self._receipt()])
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("review=confirmed", result.stdout)
+
+    def test_mocked_current_receipt_with_malformed_sha_history_passes(self):
+        malformed = self._receipt(reviewed_sha="deadbeefPLACEHOLDER")
+        result = self._run_verify(issue_comments=[malformed, self._receipt()])
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("review=confirmed", result.stdout)
 

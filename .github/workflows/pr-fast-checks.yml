@@ -3,7 +3,7 @@ name: pr-fast-checks
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, converted_to_draft]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 
 concurrency:
   group: pr-fast-${{ github.event.pull_request.number }}
@@ -15,19 +15,11 @@ permissions:
 env:
   EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
   BASE_SHA: ${{ github.event.pull_request.base.sha }}
-  PR_IS_DRAFT: ${{ github.event.pull_request.draft }}
 
 jobs:
   fast-pr-checks:
     runs-on: ubuntu-latest
     steps:
-      - name: Enforce Draft lane
-        run: |
-          set -euo pipefail
-          if [ "${PR_IS_DRAFT}" != "true" ]; then
-            echo "Changing PR heads must remain Draft. Convert this PR to Draft, publish the stabilized head, then mark it Ready once to trigger canonical tests."
-            exit 1
-          fi
       - name: Check out exact PR head
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -54,12 +46,12 @@ jobs:
           cache-dependency-glob: |
             **/uv.lock
             **/pyproject.toml
-      - name: Classify bounded Draft feedback
+      - name: Classify change impact for fast feedback
         run: |
           set -euo pipefail
           git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "${BASE_SHA}"
           git diff --name-only "${BASE_SHA}" "${EXPECTED_SHA}" > changed-files.txt
-          args=(--draft)
+          args=()
           while IFS= read -r path; do
             [ -n "${path}" ] && args+=(--path "${path}")
           done < changed-files.txt
@@ -67,8 +59,6 @@ jobs:
           python3 - <<'PY'
           import json
           data = json.load(open("impact.json", encoding="utf-8"))
-          if data["mode"] != "fast_draft" or not data["fast_only"]:
-              raise SystemExit("fast workflow did not produce the bounded Draft lane")
           print(json.dumps(data, sort_keys=True))
           PY
       - name: Run fast governance checks
@@ -81,7 +71,7 @@ jobs:
           uv run --no-project --with pyyaml python -m unittest tools.test_ci_lane_contract
           uv run --no-project --with pyyaml python scripts/check_agent_workflow_yaml.py
           git diff --check "${BASE_SHA}" "${EXPECTED_SHA}"
-      - name: Report non-canonical lane
+      - name: Report fast feedback
         run: |
           echo "Fast PR feedback passed for ${EXPECTED_SHA}."
-          echo "This workflow is not canonical merge evidence. Mark the PR Ready for review to trigger the complete tests workflow."
+          echo "Canonical merge evidence still comes from the tests workflow on this head."

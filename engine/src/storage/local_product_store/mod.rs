@@ -223,6 +223,27 @@ fn ensure_lock_matches_path(path: &Path, file: &File) -> Result<FileIdentity, St
     Ok(identity)
 }
 
+fn ensure_writable_db_path_stable(db_path: &Path, expected: FileIdentity) -> Result<(), String> {
+    match path_identity(db_path) {
+        Ok(current) if current == expected => Ok(()),
+        Ok(_) => Err("mutable store path identity changed since it was opened".into()),
+        // Unlinked inode: keep serving the open connection until a replacement
+        // appears at the same path (detected above).
+        Err(_) => Ok(()),
+    }
+}
+
+/// Sibling process-lock path for a SQLite database file.
+///
+/// Exclusive flock is held on this file rather than the database inode so
+/// SQLite/sqlcipher open is not blocked by the same-process process lock
+/// (observed as `database is locked` on macOS clean-environment).
+fn process_lock_path(db_path: &Path) -> PathBuf {
+    let mut lock = db_path.as_os_str().to_owned();
+    lock.push(".acp-process.lock");
+    PathBuf::from(lock)
+}
+
 fn lock_exclusive(file: &File) -> Result<(), String> {
     let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
     if result == -1 {
@@ -246,9 +267,25 @@ fn unlock(file: &File) -> Result<(), String> {
 }
 
 fn acquire_read_only_lock(path: &Path) -> Result<File, String> {
-    let file = File::open(path)
+    // Share the sibling process-lock namespace with writers (LOCK_SH vs LOCK_EX)
+    // so read-only snapshots still serialize mutations without flocking the DB
+    // inode that SQLite opens.
+    let lock_path = process_lock_path(path);
+    if let Some(parent) = lock_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!("read-only store could not create process lock parent: {error}")
+            })?;
+        }
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
         .map_err(|error| format!("read-only store could not open lock handle: {error}"))?;
-    ensure_lock_matches_path(path, &file)?;
+    ensure_lock_matches_path(&lock_path, &file)?;
     let shared_result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) };
     if shared_result == -1 {
         return Err(format!(
@@ -270,7 +307,7 @@ fn acquire_read_only_lock(path: &Path) -> Result<File, String> {
             std::io::Error::last_os_error()
         ));
     }
-    ensure_lock_matches_path(path, &file)?;
+    ensure_lock_matches_path(&lock_path, &file)?;
     Ok(file)
 }
 
@@ -282,20 +319,28 @@ fn acquire_process_write_lock(
     if path == Path::new(":memory:") {
         return Ok(None);
     }
+    let lock_path = process_lock_path(path);
+    if let Some(parent) = lock_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!("mutable store could not create process lock parent: {error}")
+            })?;
+        }
+    }
     let file = if create_if_missing {
         OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(path)
+            .open(&lock_path)
             .map_err(|error| format!("mutable store could not open its process lock: {error}"))?
     } else {
-        match File::open(path) {
+        match File::open(&lock_path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let anchor = anchor.ok_or_else(|| {
-                    "mutable store path disappeared before lock acquisition".to_string()
+                    "mutable store process lock disappeared before lock acquisition".to_string()
                 })?;
                 let file = anchor.try_clone().map_err(|error| {
                     format!("mutable store lock anchor is unavailable: {error}")
@@ -313,10 +358,10 @@ fn acquire_process_write_lock(
     let expected = anchor.map(file_identity).transpose()?;
     let identity = file_identity(&file)?;
     if expected.is_some_and(|expected| expected != identity) {
-        return Err("mutable store path identity changed since it was opened".into());
+        return Err("mutable store process lock identity changed since it was opened".into());
     }
     lock_exclusive(&file)?;
-    ensure_lock_matches_path(path, &file)?;
+    ensure_lock_matches_path(&lock_path, &file)?;
     Ok(Some(file))
 }
 
@@ -333,10 +378,17 @@ pub struct SqliteDatabase {
     _read_only_lock: Option<File>,
     read_only_snapshot_digest: Option<String>,
     read_only_path_identity: Option<FileIdentity>,
+    /// DB path inode captured at open. Distinct from the sibling process lock
+    /// so path-replacement still fails closed after the DB file is replaced.
+    writable_path_identity: Option<FileIdentity>,
 }
 
 impl SqliteDatabase {
-    fn writable(connection: Connection, process_lock: Option<File>) -> Self {
+    fn writable(
+        connection: Connection,
+        process_lock: Option<File>,
+        writable_path_identity: Option<FileIdentity>,
+    ) -> Self {
         Self {
             connection: Mutex::new(connection),
             process_lock_held: process_lock.is_some(),
@@ -344,6 +396,7 @@ impl SqliteDatabase {
             _read_only_lock: None,
             read_only_snapshot_digest: None,
             read_only_path_identity: None,
+            writable_path_identity,
         }
     }
 
@@ -351,8 +404,8 @@ impl SqliteDatabase {
         connection: Connection,
         read_only_lock: File,
         read_only_snapshot_digest: String,
+        read_only_path_identity: FileIdentity,
     ) -> Result<Self, String> {
-        let read_only_path_identity = file_identity(&read_only_lock)?;
         Ok(Self {
             connection: Mutex::new(connection),
             process_lock: None,
@@ -360,6 +413,7 @@ impl SqliteDatabase {
             _read_only_lock: Some(read_only_lock),
             read_only_snapshot_digest: Some(read_only_snapshot_digest),
             read_only_path_identity: Some(read_only_path_identity),
+            writable_path_identity: None,
         })
     }
 
@@ -479,12 +533,14 @@ impl LocalProductStore {
         if initial_snapshot_digest != final_snapshot_digest {
             return Err("read-only store changed while opening its snapshot".into());
         }
+        let db_path_identity = path_identity(&path)?;
         Ok(Self {
             db_path: path,
             db: DatabaseConnection::Sqlite(SqliteDatabase::read_only(
                 conn,
                 read_only_lock,
                 final_snapshot_digest,
+                db_path_identity,
             )?),
             clock: Box::new(utc_now),
             encryption_active: encryption_key.is_some(),
@@ -507,14 +563,18 @@ impl LocalProductStore {
         let process_write_lock = acquire_process_write_lock(&path, true, None)?;
         let conn = Connection::open(&path).map_err(|e| e.to_string())?;
         if let Some(lock) = process_write_lock.as_ref() {
-            ensure_lock_matches_path(&path, lock)?;
+            ensure_lock_matches_path(&process_lock_path(&path), lock)?;
         }
         if let Some(key) = encryption_key {
             conn.execute_batch(&format!("PRAGMA key = '{}';", key.replace('\'', "''")))
                 .map_err(|e| format!("Failed to set encryption key: {}", e))?;
         }
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
-            .map_err(|e| e.to_string())?;
+        // busy_timeout covers transient lock contention on open (notably
+        // macOS clean-environment races) without changing ownership or WAL.
+        conn.execute_batch(
+            "PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;",
+        )
+        .map_err(|e| e.to_string())?;
         // The current full DDL creates the v33 logical-spend index. An
         // existing legacy spend table can predate that column (regardless of
         // its migration marker), so add the nullable compatibility column
@@ -553,9 +613,18 @@ impl LocalProductStore {
         }
         conn.execute_batch(schema::ddl_for(schema::Dialect::Sqlite))
             .map_err(|e| e.to_string())?;
+        let writable_path_identity = if path == Path::new(":memory:") {
+            None
+        } else {
+            Some(path_identity(&path)?)
+        };
         let mut store = Self {
             db_path: path,
-            db: DatabaseConnection::Sqlite(SqliteDatabase::writable(conn, process_write_lock)),
+            db: DatabaseConnection::Sqlite(SqliteDatabase::writable(
+                conn,
+                process_write_lock,
+                writable_path_identity,
+            )),
             clock: Box::new(clock),
             encryption_active: encryption_key.is_some(),
             embedding_client,
@@ -666,10 +735,16 @@ impl LocalProductStore {
                 } else {
                     None
                 };
+                if let Some(expected) = conn.writable_path_identity {
+                    ensure_writable_db_path_stable(&self.db_path, expected)?;
+                }
                 self.ensure_read_only_snapshot_stable()?;
                 let guard = conn.connection.lock().map_err(|e| e.to_string())?;
                 let result = f(&guard);
                 drop(guard);
+                if let Some(expected) = conn.writable_path_identity {
+                    ensure_writable_db_path_stable(&self.db_path, expected)?;
+                }
                 self.ensure_read_only_snapshot_stable()
                     .map(|()| result)
                     .and_then(|result| result)
