@@ -20,10 +20,10 @@ Report local tests, hosted CI, independent review, merge/readback, and any exter
 
 ## Review Convergence Protocol
 
-Review the complete `base...head` diff on one stable Draft candidate. Standards and Spec are independent axes. Review receipts must bind the repository, base, exact head, reviewer identity/session, outcome, and unresolved blockers. A later head invalidates earlier review conclusions.
+Review the complete `base...head` diff on one stable PR candidate. Standards and Spec are independent axes. Review receipts must bind the repository, base, exact head, reviewer identity/session, outcome, and unresolved blockers. A later head invalidates earlier review conclusions.
 
 ```text
-stable Draft candidate + local checks passed
+stable PR candidate + local checks passed
         ↓
 R1: independent full-diff review
      ├─ no open blockers → exact PASS (deferred notes permitted)

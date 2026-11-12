@@ -8,7 +8,7 @@ This is the repository's direct entrypoint. Read it, then use the user's latest 
 2. Check the current branch, head, and worktree. Make changes on a feature branch, never directly on protected `main`.
 3. Read only the relevant owner documentation, source, and tests. `docs/ARCHITECTURE.md` owns architecture and module boundaries; `docs/AUTONOMY.md` owns verification, review, CI, merge, and recovery; `docs/ROADMAP.md` owns product-development priorities; `docs/RUNBOOK.md` owns proven operator procedures; `AGENTS.md` owns implementation permissions and stop boundaries.
 4. Implement one coherent change. Run focused tests, applicable repository checks, and `git diff --check`; update the canonical owner document when behavior or policy changes.
-5. Review the complete diff against the exact base. Keep changing pull requests Draft. A new head invalidates prior review and CI. Ready/merge only after independent exact-head review and all required canonical CI pass. Use the guarded merge workflow and verify the merged commit on `main`.
+5. Review the complete diff against the exact base. Draft is optional while a head is still churning; prefer Ready once local verification and complete-diff review are done. A new head invalidates prior review and CI. Merge only after independent exact-head review and all required canonical CI pass. Use the guarded merge workflow and verify the merged commit on `main`.
 
 ## Safety and evidence
 
