@@ -53,6 +53,7 @@ git clone https://github.com/Igzela/token-efficient-agent-harness-lab.git
 cd token-efficient-agent-harness-lab
 ./scripts/harness.sh start            # engine + dashboard UI (opens browser)
 ./scripts/harness.sh work             # finish one real local-folder job
+./scripts/harness.sh self-test        # full provider-free function + perf matrix
 ./scripts/harness.sh install-desktop  # Linux app-menu launcher
 ./scripts/harness.sh stop
 ```
@@ -63,6 +64,7 @@ cd token-efficient-agent-harness-lab
 | `./scripts/harness.sh work` | One checked file written under `.acp-work-state/inbox/` |
 | `./scripts/harness.sh demo` | No-provider evidence / stale-head proof |
 | `./scripts/harness.sh doctor` | Local toolchain readiness |
+| `./scripts/harness.sh self-test` | Pure checks + doctor + local-work golden path + efficiency fixture scorecard (`PASS` required); live model/perf when `ACP_SELF_TEST_LIVE_CONFIRM` and credential env are set |
 | `./scripts/harness.sh install-desktop` | `~/.local/share/applications/agent-control-plane.desktop` |
 
 Model calls and pull-request output stay behind the gates in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).

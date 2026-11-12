@@ -41,9 +41,15 @@ to `docs/RUNBOOK.md`.
 3. Make the smallest end-to-end product or maintenance change verifiable by
    focused tests, the required verification baseline, independent exact-head
    review, and canonical CI.
-4. Close failures at their root cause and retain observable evidence,
+4. Keep the usable local harness (`./scripts/harness.sh`) operator-complete:
+   CLI + Linux desktop entry, doctor, product golden path, and
+   `self-test` (provider-free function + efficiency fixture `PASS`; live
+   model/perf only under the existing confirmation and credential gates).
+   External harness lessons (for example Pi) may inform adapters and UX only
+   through existing owners; see `docs/ARCHITECTURE.md`.
+5. Close failures at their root cause and retain observable evidence,
    recovery, and rollback; never turn missing evidence into success.
-5. After accepted-main readback, refresh the repository and choose the next
+6. After accepted-main readback, refresh the repository and choose the next
    unblocked user or roadmap objective. Do not resume from stale branches,
    reviews, CI, or generated context.
 

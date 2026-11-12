@@ -7,6 +7,7 @@
 #   ./scripts/harness.sh work         # finish one real local-folder job
 #   ./scripts/harness.sh demo         # no-provider evidence demo
 #   ./scripts/harness.sh doctor       # local readiness checks
+#   ./scripts/harness.sh self-test    # full provider-free matrix (+ live if gated)
 #   ./scripts/harness.sh stop         # stop desktop/work/demo sessions
 #   ./scripts/harness.sh install-desktop   # install a Linux .desktop launcher
 set -euo pipefail
@@ -64,6 +65,10 @@ case "${CMD}" in
   doctor)
     exec uv run --no-project python scripts/acp_local_doctor.py "$@"
     ;;
+  self-test|selftest)
+    ensure_engine
+    exec uv run --no-project python scripts/harness_self_test.py "$@"
+    ;;
   stop|cleanup)
     uv run --no-project python scripts/start_operator_desktop.py --cleanup || true
     uv run --no-project python scripts/start_local_work.py --cleanup || true
@@ -105,7 +110,7 @@ EOF
     ;;
   *)
     echo "Unknown command: ${CMD}" >&2
-    echo "Usage: $0 [start|work|demo|doctor|stop|install-desktop]" >&2
+    echo "Usage: $0 [start|work|demo|doctor|self-test|stop|install-desktop]" >&2
     exit 2
     ;;
 esac

@@ -144,6 +144,16 @@ ALLOWED_TEST_IMPORTS: dict[str, set[str]] = {
         "urllib.error",
         "urllib.request",
     },
+    "scripts/start_local_work.py": {
+        "socket",
+        "urllib.error",
+        "urllib.request",
+    },
+    "scripts/start_operator_desktop.py": {
+        "socket",
+        "urllib.error",
+        "urllib.request",
+    },
     "scripts/github_observer.py": {
         "urllib.error",
         "urllib.parse",
