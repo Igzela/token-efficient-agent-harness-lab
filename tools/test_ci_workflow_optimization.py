@@ -267,7 +267,10 @@ class CiWorkflowOptimizationTests(unittest.TestCase):
 
     def test_canonical_identity_and_context_capsule_are_unchanged(self) -> None:
         self.assertIn("name: tests", self.source)
-        self.assertIn("types: [ready_for_review]", self.source)
+        self.assertIn(
+            "types: [opened, synchronize, reopened, ready_for_review]",
+            self.source,
+        )
         capsule = self.job_source("context-capsule")
         for required in (
             "python-tests",

@@ -257,9 +257,25 @@ fn unlock(file: &File) -> Result<(), String> {
 }
 
 fn acquire_read_only_lock(path: &Path) -> Result<File, String> {
-    let file = File::open(path)
+    // Share the sibling process-lock namespace with writers (LOCK_SH vs LOCK_EX)
+    // so read-only snapshots still serialize mutations without flocking the DB
+    // inode that SQLite opens.
+    let lock_path = process_lock_path(path);
+    if let Some(parent) = lock_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!("read-only store could not create process lock parent: {error}")
+            })?;
+        }
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
         .map_err(|error| format!("read-only store could not open lock handle: {error}"))?;
-    ensure_lock_matches_path(path, &file)?;
+    ensure_lock_matches_path(&lock_path, &file)?;
     let shared_result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) };
     if shared_result == -1 {
         return Err(format!(
@@ -281,7 +297,7 @@ fn acquire_read_only_lock(path: &Path) -> Result<File, String> {
             std::io::Error::last_os_error()
         ));
     }
-    ensure_lock_matches_path(path, &file)?;
+    ensure_lock_matches_path(&lock_path, &file)?;
     Ok(file)
 }
 
@@ -370,8 +386,8 @@ impl SqliteDatabase {
         connection: Connection,
         read_only_lock: File,
         read_only_snapshot_digest: String,
+        read_only_path_identity: FileIdentity,
     ) -> Result<Self, String> {
-        let read_only_path_identity = file_identity(&read_only_lock)?;
         Ok(Self {
             connection: Mutex::new(connection),
             process_lock: None,
@@ -498,12 +514,14 @@ impl LocalProductStore {
         if initial_snapshot_digest != final_snapshot_digest {
             return Err("read-only store changed while opening its snapshot".into());
         }
+        let db_path_identity = path_identity(&path)?;
         Ok(Self {
             db_path: path,
             db: DatabaseConnection::Sqlite(SqliteDatabase::read_only(
                 conn,
                 read_only_lock,
                 final_snapshot_digest,
+                db_path_identity,
             )?),
             clock: Box::new(utc_now),
             encryption_active: encryption_key.is_some(),
