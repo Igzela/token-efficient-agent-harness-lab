@@ -249,6 +249,29 @@ repository's normal test/build outputs. Its acceptance evidence is owned by
 the canonical PR and CI/review records described in `docs/AUTONOMY.md`; this
 architecture map records the boundaries under test and is explanatory only.
 
+### External harness lessons (Pi-inspired, adapted owners)
+
+Compact coding-agent harnesses such as Pi (`earendil-works/pi`) are useful
+architecture references. Lessons may be borrowed only as patterns mapped onto
+existing owners in this repository. Pi (or any external/experimental harness)
+must not become a second runtime, scheduler, store, evaluator, budget,
+approval, workspace, output, audit, rollback, merge, release, or deployment
+owner.
+
+| Pi-style lesson | Maps into this repository | Explicit non-owner |
+|---|---|---|
+| Provider-neutral core + boundary adapters | Engine provider adapters normalize model I/O; Store keeps durable evidence | External package as message truth |
+| Deterministic fixture / drive mode | Fixture scorecards, `scripts/harness_self_test.py`, CI without credentials | Live provider as default proof |
+| Session persistence, branching, compaction | `LocalProductStore` sessions/lanes and Strategy/context inputs | JSONL files or extension state as persistence authority |
+| Event stream → UI | Canonical event schema + operator dashboard | TUI/extension as scheduler or audit owner |
+| Steering, cancellation, kill switches | Scheduler leases, pause/kill, existing kill-switch env gates | Client UI as effect authority |
+| Tool call/result pairing by stable id | Typed actions, receipts, and Store settlement | Transcript prose as settlement proof |
+
+Operator self-test and performance qualification use the existing efficiency
+benchmark and product golden paths (`./scripts/harness.sh self-test`). Live
+model runs remain fail-closed behind the confirmation, credential-reference,
+pricing, budget, and kill-switch gates owned by `docs/RUNBOOK.md`.
+
 ## Documentation Test
 
 This document carries a bounded, self-contained documentation test. It passes

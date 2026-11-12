@@ -6,6 +6,8 @@ htmlcov/
 target/
 .agent-control-plane/
 .acp-demo-state/
+.acp-work-state/
+.acp-operator-state/
 
 # Frontend and SDK build outputs
 dashboard/.next/

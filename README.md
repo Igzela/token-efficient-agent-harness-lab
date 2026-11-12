@@ -44,7 +44,32 @@ Maintainer and Agent entry: [`START_HERE.md`](START_HERE.md) · architecture: [`
 
 Verified on a source checkout with Rust stable, [Bun](https://bun.sh/), and [uv](https://docs.astral.sh/uv/) (Python 3.11+ for the SDK; 3.10+ scripts where noted). See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-### Five-minute no-provider demo (recommended first success)
+### Usable local harness (CLI + Linux desktop)
+
+One entry starts the operator UI and the companion CLI jobs. No API key and no model call for these paths:
+
+```bash
+git clone https://github.com/Igzela/token-efficient-agent-harness-lab.git
+cd token-efficient-agent-harness-lab
+./scripts/harness.sh start            # engine + dashboard UI (opens browser)
+./scripts/harness.sh work             # finish one real local-folder job
+./scripts/harness.sh self-test        # full provider-free function + perf matrix
+./scripts/harness.sh install-desktop  # Linux app-menu launcher
+./scripts/harness.sh stop
+```
+
+| Command | What you get |
+|---|---|
+| `./scripts/harness.sh start` | Loopback engine + full dashboard (Mission Control, Operator, Runs, Scheduler, Settings, Health, Audit) |
+| `./scripts/harness.sh work` | One checked file written under `.acp-work-state/inbox/` |
+| `./scripts/harness.sh demo` | No-provider evidence / stale-head proof |
+| `./scripts/harness.sh doctor` | Local toolchain readiness |
+| `./scripts/harness.sh self-test` | Pure checks + doctor + local-work golden path + efficiency fixture scorecard (`PASS` required); live model/perf when `ACP_SELF_TEST_LIVE_CONFIRM` and credential env are set |
+| `./scripts/harness.sh install-desktop` | `~/.local/share/applications/agent-control-plane.desktop` |
+
+Model calls and pull-request output stay behind the gates in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
+
+### Five-minute no-provider demo (evidence check)
 
 No API key, no real provider, no target-repository writes. Builds the engine/dashboard if needed, runs a fixture dispatch, binds proof to the current git revision, and rejects a stale-head scenario:
 

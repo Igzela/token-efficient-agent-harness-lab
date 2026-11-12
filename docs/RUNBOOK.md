@@ -23,6 +23,41 @@ Read `START_HERE.md` before choosing a procedure. The commands in this file
 operate the Rust product runtime or explicitly authorized product capabilities;
 they do not assign repository work or replace GitHub review and branch rules.
 
+## Usable harness self-test (function + performance)
+
+Qualify the local CLI/desktop entry and efficiency scorecard path without
+inventing a second runtime. Provider-free is the default; live model mode is
+opt-in and fail-closed.
+
+```bash
+./scripts/harness.sh self-test
+# equivalent:
+uv run --no-project python scripts/harness_self_test.py --mode auto
+```
+
+Provider-free acceptance requires every step to pass:
+
+- pure unit self-tests for desktop, local-work, and demo entrypoints;
+- `acp_local_doctor`;
+- one real `start_local_work` golden path;
+- `efficiency_live_benchmark.py --mode fixture` with `acceptance_status=PASS`.
+
+For bounded live model/performance qualification (never in CI), set a symbolic
+credential that is already present in the environment, then confirm spend:
+
+```bash
+export OPENAI_API_KEY='…'   # value never belongs in docs, argv, or artifacts
+export ACP_SELF_TEST_LIVE_CONFIRM=I_CONFIRM_BOUNDED_LIVE_PROVIDER_COSTS
+# optional: ACP_PROVIDER_BASE_URL, ACP_SELF_TEST_MODEL, cost caps
+./scripts/harness.sh self-test --mode live
+```
+
+The orchestrator reuses the existing efficiency live gates (confirmation,
+HTTPS OpenAI-compatible provider, pricing identity, per-call/run/daily caps,
+kill switch, audit-store parent). A missing credential, missing confirmation,
+`INCOMPARABLE`/`FAIL` report, or CI environment fails closed. Architecture
+mapping for Pi-inspired lessons stays in `docs/ARCHITECTURE.md`.
+
 ## Agent Runtime and Tool Policy Operations
 
 Agent Runtime is a Rust-engine workflow executor. The Rust scheduler remains
@@ -112,6 +147,17 @@ Emergency disable and rollback:
 5. If destructive local cleanup is required, perform it before reverting the code: after a verified backup and stopped v22 writers, invoke `LocalProductStore::rollback_v22_to_v21` with explicit destructive-local confirmation, then revert the integration merge. The transaction refuses any non-empty v22 authority table, audits a successful empty-table rollback, drops only the three v22 tables, and moves the backend version marker to v21 atomically. Do not bypass refusal by manually dropping receipt, authorization, or configured-allowlist evidence.
 
 Post-execution hooks run after the external effect. A post block marks the node result failed, preserves inner usage fields, and is non-retryable because the effect may already have occurred; it cannot undo the external effect. Use pre-execution block/approval hooks when execution itself must be prevented.
+
+## Usable local harness (CLI and Linux desktop)
+
+`./scripts/harness.sh` is the proved operator entry:
+
+- `./scripts/harness.sh start` builds the engine and static dashboard when needed, starts the loopback control plane with the product golden path and command scheduler, serves the dashboard UI, and opens it with `xdg-open` when available. State lives under `.acp-operator-state/`.
+- `./scripts/harness.sh work` runs the local-folder product task (`apply_local_changes`) and writes `docs/product_golden_path_fixture.md` inside `.acp-work-state/inbox/`.
+- `./scripts/harness.sh install-desktop` installs `~/.local/share/applications/agent-control-plane.desktop` so the same start path appears in a Linux app menu.
+- `./scripts/harness.sh stop` stops operator, work, and demo sessions.
+
+These paths do not authorize a model call, a target-repository write, or a pull request.
 
 ## Product Golden Path Approval and Draft PR Output
 
