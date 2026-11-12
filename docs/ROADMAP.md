@@ -23,10 +23,11 @@ START_HERE.md
   → read back accepted main and select the next unblocked objective
 ```
 
-The loop must remain recoverable: preserve unrelated work, keep changing PRs
-Draft, bind review and CI evidence to the exact head, retain rollback paths,
-and treat uncertain external effects as unresolved until read-only evidence
-settles them. Details and hard gates belong to `docs/AUTONOMY.md`; module
+The loop must remain recoverable: preserve unrelated work, bind review and CI
+evidence to the exact head, retain rollback paths, and treat uncertain
+external effects as unresolved until read-only evidence settles them. Draft is
+optional while a head churns; Ready is preferred once verification and review
+are done. Details and hard gates belong to `docs/AUTONOMY.md`; module
 ownership belongs to `docs/ARCHITECTURE.md`; proven operator procedures belong
 to `docs/RUNBOOK.md`.
 

@@ -55,7 +55,7 @@ It cannot mutate, approve, or grant authority; verify its result against first-p
 
 ## Delivery and Verification
 
-The complete Draft/Ready, exact-head review, CI, merge, rebase, recovery, and rollback contract is owned by `docs/AUTONOMY.md`. Invariant summary: one coherent branch/PR; keep changing work Draft; a new head invalidates prior review and CI; mark Ready only after local verification and complete-diff independent review; require canonical exact-head CI; merge manually only when eligible; refresh `main` afterward.
+The complete Draft/Ready, exact-head review, CI, merge, rebase, recovery, and rollback contract is owned by `docs/AUTONOMY.md`. Invariant summary: one coherent branch/PR; Draft is optional (not a CI lane); a new head invalidates prior review and CI; prefer Ready after local verification and complete-diff independent review; require canonical exact-head CI; merge manually only when eligible; refresh `main` afterward.
 
 Run the accepted task's focused and full verification contract and the applicable **Verification Baseline**; a task may add checks but may not silently omit an applicable one. `scripts/check_wire_codegen_drift.sh`, security baseline, agent handoff, and `git diff --check` remain fail-closed where applicable. Never claim a command, result, review, cost, benchmark, effect, or acceptance that was not actually observed.
 
