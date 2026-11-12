@@ -64,7 +64,7 @@ class TestExactHeadAction(unittest.TestCase):
         self.assertIn('allow-fork-head: "true"', text)
         self.assertIn("issues: read", text)
         self.assertIn("require-review-receipt:", text)
-        self.assertIn("github.event.action == 'ready_for_review'", text)
+        self.assertIn('require-review-receipt: "false"', text)
         self.assertNotIn("uses: ./actions/exact-head-check", text)
 
     def test_example_workflow_present(self):

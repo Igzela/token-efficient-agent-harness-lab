@@ -223,6 +223,19 @@ fn ensure_lock_matches_path(path: &Path, file: &File) -> Result<FileIdentity, St
     Ok(identity)
 }
 
+fn ensure_writable_db_path_stable(
+    db_path: &Path,
+    expected: FileIdentity,
+) -> Result<(), String> {
+    match path_identity(db_path) {
+        Ok(current) if current == expected => Ok(()),
+        Ok(_) => Err("mutable store path identity changed since it was opened".into()),
+        // Unlinked inode: keep serving the open connection until a replacement
+        // appears at the same path (detected above).
+        Err(_) => Ok(()),
+    }
+}
+
 /// Sibling process-lock path for a SQLite database file.
 ///
 /// Exclusive flock is held on this file rather than the database inode so
@@ -368,10 +381,17 @@ pub struct SqliteDatabase {
     _read_only_lock: Option<File>,
     read_only_snapshot_digest: Option<String>,
     read_only_path_identity: Option<FileIdentity>,
+    /// DB path inode captured at open. Distinct from the sibling process lock
+    /// so path-replacement still fails closed after the DB file is replaced.
+    writable_path_identity: Option<FileIdentity>,
 }
 
 impl SqliteDatabase {
-    fn writable(connection: Connection, process_lock: Option<File>) -> Self {
+    fn writable(
+        connection: Connection,
+        process_lock: Option<File>,
+        writable_path_identity: Option<FileIdentity>,
+    ) -> Self {
         Self {
             connection: Mutex::new(connection),
             process_lock_held: process_lock.is_some(),
@@ -379,6 +399,7 @@ impl SqliteDatabase {
             _read_only_lock: None,
             read_only_snapshot_digest: None,
             read_only_path_identity: None,
+            writable_path_identity,
         }
     }
 
@@ -395,6 +416,7 @@ impl SqliteDatabase {
             _read_only_lock: Some(read_only_lock),
             read_only_snapshot_digest: Some(read_only_snapshot_digest),
             read_only_path_identity: Some(read_only_path_identity),
+            writable_path_identity: None,
         })
     }
 
@@ -594,9 +616,18 @@ impl LocalProductStore {
         }
         conn.execute_batch(schema::ddl_for(schema::Dialect::Sqlite))
             .map_err(|e| e.to_string())?;
+        let writable_path_identity = if path == Path::new(":memory:") {
+            None
+        } else {
+            Some(path_identity(&path)?)
+        };
         let mut store = Self {
             db_path: path,
-            db: DatabaseConnection::Sqlite(SqliteDatabase::writable(conn, process_write_lock)),
+            db: DatabaseConnection::Sqlite(SqliteDatabase::writable(
+                conn,
+                process_write_lock,
+                writable_path_identity,
+            )),
             clock: Box::new(clock),
             encryption_active: encryption_key.is_some(),
             embedding_client,
@@ -707,10 +738,16 @@ impl LocalProductStore {
                 } else {
                     None
                 };
+                if let Some(expected) = conn.writable_path_identity {
+                    ensure_writable_db_path_stable(&self.db_path, expected)?;
+                }
                 self.ensure_read_only_snapshot_stable()?;
                 let guard = conn.connection.lock().map_err(|e| e.to_string())?;
                 let result = f(&guard);
                 drop(guard);
+                if let Some(expected) = conn.writable_path_identity {
+                    ensure_writable_db_path_stable(&self.db_path, expected)?;
+                }
                 self.ensure_read_only_snapshot_stable()
                     .map(|()| result)
                     .and_then(|result| result)
