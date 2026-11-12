@@ -223,6 +223,17 @@ fn ensure_lock_matches_path(path: &Path, file: &File) -> Result<FileIdentity, St
     Ok(identity)
 }
 
+/// Sibling process-lock path for a SQLite database file.
+///
+/// Exclusive flock is held on this file rather than the database inode so
+/// SQLite/sqlcipher open is not blocked by the same-process process lock
+/// (observed as `database is locked` on macOS clean-environment).
+fn process_lock_path(db_path: &Path) -> PathBuf {
+    let mut lock = db_path.as_os_str().to_owned();
+    lock.push(".acp-process.lock");
+    PathBuf::from(lock)
+}
+
 fn lock_exclusive(file: &File) -> Result<(), String> {
     let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
     if result == -1 {
@@ -282,20 +293,28 @@ fn acquire_process_write_lock(
     if path == Path::new(":memory:") {
         return Ok(None);
     }
+    let lock_path = process_lock_path(path);
+    if let Some(parent) = lock_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!("mutable store could not create process lock parent: {error}")
+            })?;
+        }
+    }
     let file = if create_if_missing {
         OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(path)
+            .open(&lock_path)
             .map_err(|error| format!("mutable store could not open its process lock: {error}"))?
     } else {
-        match File::open(path) {
+        match File::open(&lock_path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let anchor = anchor.ok_or_else(|| {
-                    "mutable store path disappeared before lock acquisition".to_string()
+                    "mutable store process lock disappeared before lock acquisition".to_string()
                 })?;
                 let file = anchor.try_clone().map_err(|error| {
                     format!("mutable store lock anchor is unavailable: {error}")
@@ -313,10 +332,10 @@ fn acquire_process_write_lock(
     let expected = anchor.map(file_identity).transpose()?;
     let identity = file_identity(&file)?;
     if expected.is_some_and(|expected| expected != identity) {
-        return Err("mutable store path identity changed since it was opened".into());
+        return Err("mutable store process lock identity changed since it was opened".into());
     }
     lock_exclusive(&file)?;
-    ensure_lock_matches_path(path, &file)?;
+    ensure_lock_matches_path(&lock_path, &file)?;
     Ok(Some(file))
 }
 
@@ -507,7 +526,7 @@ impl LocalProductStore {
         let process_write_lock = acquire_process_write_lock(&path, true, None)?;
         let conn = Connection::open(&path).map_err(|e| e.to_string())?;
         if let Some(lock) = process_write_lock.as_ref() {
-            ensure_lock_matches_path(&path, lock)?;
+            ensure_lock_matches_path(&process_lock_path(&path), lock)?;
         }
         if let Some(key) = encryption_key {
             conn.execute_batch(&format!("PRAGMA key = '{}';", key.replace('\'', "''")))
