@@ -223,10 +223,7 @@ fn ensure_lock_matches_path(path: &Path, file: &File) -> Result<FileIdentity, St
     Ok(identity)
 }
 
-fn ensure_writable_db_path_stable(
-    db_path: &Path,
-    expected: FileIdentity,
-) -> Result<(), String> {
+fn ensure_writable_db_path_stable(db_path: &Path, expected: FileIdentity) -> Result<(), String> {
     match path_identity(db_path) {
         Ok(current) if current == expected => Ok(()),
         Ok(_) => Err("mutable store path identity changed since it was opened".into()),
@@ -577,7 +574,7 @@ impl LocalProductStore {
         conn.execute_batch(
             "PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;",
         )
-            .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
         // The current full DDL creates the v33 logical-spend index. An
         // existing legacy spend table can predate that column (regardless of
         // its migration marker), so add the nullable compatibility column
