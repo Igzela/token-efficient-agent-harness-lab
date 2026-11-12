@@ -122,11 +122,43 @@ jobs:
         id: merge
         run: |
           set -euo pipefail
-          result=$(gh api --method PUT \
-            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/merge" \
-            -f sha="${EXPECTED_HEAD}" -f merge_method=squash)
-          jq -e '.merged == true and (.sha | type == "string")' <<< "$result" >/dev/null
-          jq -r '.sha' <<< "$result" > "$RUNNER_TEMP/merge-commit-sha"
+          # Stacked PRs require the asynchronous merge API; the sync /merge
+          # endpoint returns 403 for stack members.
+          enqueue=$(gh api --method PUT \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/merge-async" \
+            -f sha="${EXPECTED_HEAD}" \
+            -f merge_method=squash \
+            -f merge_action=direct_merge)
+          echo "$enqueue" > "$RUNNER_TEMP/merge-async-enqueue.json"
+          uuid=$(jq -r '.details.uuid // empty' <<< "$enqueue")
+          status=$(jq -r '.status // empty' <<< "$enqueue")
+          if [ "$status" = "merged" ]; then
+            jq -r '.details.sha' <<< "$enqueue" > "$RUNNER_TEMP/merge-commit-sha"
+            exit 0
+          fi
+          test -n "$uuid"
+          for _ in $(seq 1 60); do
+            result=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/merge-async/${uuid}")
+            echo "$result" > "$RUNNER_TEMP/merge-async-status.json"
+            status=$(jq -r '.status // empty' <<< "$result")
+            case "$status" in
+              merged)
+                jq -r '.details.sha' <<< "$result" > "$RUNNER_TEMP/merge-commit-sha"
+                exit 0
+                ;;
+              failed)
+                echo "async merge failed: $result" >&2
+                exit 1
+                ;;
+              pending|enqueued) sleep 5 ;;
+              *)
+                echo "unexpected async merge status: $status ($result)" >&2
+                exit 1
+                ;;
+            esac
+          done
+          echo "async merge timed out waiting for uuid=$uuid" >&2
+          exit 1
 
       - name: Confirm durable merge result
         run: |
