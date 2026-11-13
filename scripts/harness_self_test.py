@@ -306,9 +306,22 @@ def main() -> int:
             live_report = step_efficiency_live(bins, output_root / "live")
             results["efficiency_live"] = f"PASS:{live_report}"
         else:
-            results["efficiency_live"] = "SKIP:live_gates_absent"
+            credential_env = (
+                os.environ.get("ACP_SELF_TEST_CREDENTIAL_ENV", "OPENAI_API_KEY").strip()
+                or "OPENAI_API_KEY"
+            )
+            missing = []
+            if os.environ.get("ACP_SELF_TEST_LIVE_CONFIRM", "").strip() != LIVE_CONFIRMATION:
+                missing.append("ACP_SELF_TEST_LIVE_CONFIRM")
+            if not os.environ.get(credential_env):
+                missing.append(f"credential_env:{credential_env}")
+            skip_detail = ",".join(missing) if missing else "gates_absent"
+            results["efficiency_live"] = f"SKIP:live_gates_absent:{skip_detail}"
             if args.mode == "live":
-                raise SelfTestError("live mode requested but gates incomplete")
+                raise SelfTestError(
+                    "live mode requested but gates incomplete "
+                    f"(missing {skip_detail}; values never logged)"
+                )
 
         elapsed = time.time() - started
         summary = {

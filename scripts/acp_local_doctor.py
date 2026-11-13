@@ -98,24 +98,58 @@ def auth_check() -> Check:
         return Check(
             name="auth",
             status="warn",
-            message="protected mode is off",
-            action="run scripts/bootstrap_local_auth.py to generate a local admin key",
+            message="protected mode is off (fixture desktop/work still OK)",
+            action=(
+                "optional for provider-free use; for protected/dashboard auth run "
+                "./scripts/harness.sh bootstrap-auth"
+            ),
         )
     if enabled and not admin_key:
         return Check(
             name="auth",
             status="error",
             message="ACP_REQUIRE_AUTH is on but ACP_ADMIN_API_KEY is missing",
-            action="run scripts/bootstrap_local_auth.py and export the generated key",
+            action="run ./scripts/harness.sh bootstrap-auth and export the generated key",
         )
     if admin_key and not ADMIN_KEY_RE.match(admin_key):
         return Check(
             name="auth",
             status="error",
             message="ACP_ADMIN_API_KEY has invalid shape",
-            action="expected harness_<64 hex characters>",
+            action="expected harness_<64 hex characters> from ./scripts/harness.sh bootstrap-auth",
         )
     return Check(name="auth", status="ok", message="protected mode key shape is valid")
+
+
+LIVE_CONFIRMATION = "I_CONFIRM_BOUNDED_LIVE_PROVIDER_COSTS"
+
+
+def live_self_test_gate_check() -> Check:
+    """Report live-model self-test readiness without reading credential values."""
+    credential_env = os.environ.get("ACP_SELF_TEST_CREDENTIAL_ENV", "OPENAI_API_KEY").strip() or "OPENAI_API_KEY"
+    confirm = os.environ.get("ACP_SELF_TEST_LIVE_CONFIRM", "").strip()
+    credential_present = bool(os.environ.get(credential_env))
+    confirm_ok = confirm == LIVE_CONFIRMATION
+    if credential_present and confirm_ok:
+        return Check(
+            name="live_self_test",
+            status="ok",
+            message=(
+                f"gates present (credential env {credential_env!r} set; "
+                "confirmation matches; values never printed)"
+            ),
+        )
+    missing: list[str] = []
+    if not credential_present:
+        missing.append(f"set symbolic credential env {credential_env}")
+    if not confirm_ok:
+        missing.append(f"export ACP_SELF_TEST_LIVE_CONFIRM={LIVE_CONFIRMATION}")
+    return Check(
+        name="live_self_test",
+        status="warn",
+        message="live model/perf self-test gates incomplete (fixture path still OK)",
+        action="; ".join(missing) + "; then ./scripts/harness.sh self-test --mode live",
+    )
 
 
 def gh_check() -> Check:
@@ -166,6 +200,7 @@ def collect_checks(repo_root: Path, port: int) -> list[Check]:
         file_check("engine_binary", engine_bin, "run: cargo build -p engine"),
         port_check(port),
         auth_check(),
+        live_self_test_gate_check(),
     ]
 
 

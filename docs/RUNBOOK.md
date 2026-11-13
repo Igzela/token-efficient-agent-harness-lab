@@ -154,6 +154,8 @@ Post-execution hooks run after the external effect. A post block marks the node 
 
 - `./scripts/harness.sh start` builds the engine and static dashboard when needed, starts the loopback control plane with the product golden path and command scheduler, serves the dashboard UI, and opens it with `xdg-open` when available. State lives under `.acp-operator-state/`.
 - `./scripts/harness.sh work` runs the local-folder product task (`apply_local_changes`) and writes `docs/product_golden_path_fixture.md` inside `.acp-work-state/inbox/`.
+- `./scripts/harness.sh doctor` checks toolchain, dashboard/engine artifacts, port, optional auth, and live self-test gate *presence* (credential env name + confirmation; never prints secret values). Fixture/desktop/work remain valid when auth or live gates are only `WARN`.
+- `./scripts/harness.sh bootstrap-auth` generates a local admin key for protected/dashboard/provider paths; it is optional for provider-free start/work/fixture self-test.
 - `./scripts/harness.sh install-desktop` installs `~/.local/share/applications/agent-control-plane.desktop` so the same start path appears in a Linux app menu.
 - `./scripts/harness.sh stop` stops operator, work, and demo sessions.
 
