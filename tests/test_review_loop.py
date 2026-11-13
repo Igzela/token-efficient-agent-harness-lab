@@ -249,6 +249,25 @@ class TestLiveValidation(unittest.TestCase):
             [],
         )
 
+    def test_ready_pr_accepted_when_open_unmerged(self):
+        # Draft is optional for evidence delivery; Ready must not hard-fail.
+        self.assertEqual(
+            live_validation.validate_pr_live_state(
+                repository=REPO,
+                pr_number=349,
+                observed_repository=REPO,
+                observed_pr_number=349,
+                observed_state="OPEN",
+                observed_is_draft=False,
+                observed_base_sha=BASE,
+                observed_head_sha=HEAD,
+                expected_base_sha=BASE,
+                expected_head_sha=HEAD,
+                observed_merged=False,
+            ),
+            [],
+        )
+
     def test_head_drift_rejected(self):
         errors = live_validation.validate_pr_live_state(
             repository=REPO,

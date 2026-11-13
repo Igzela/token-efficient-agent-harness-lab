@@ -34,8 +34,10 @@ def validate_pr_live_state(
     adapter's returned facts, never from the caller, so a misrouted or cached
     fetch cannot be accepted (R2-B8).
 
-    An open unmerged Draft PR with unchanged base/head is the only accepted
-    live state for evidence delivery and receipt posting.
+    An open unmerged PR with unchanged base/head is the only accepted live
+    state for evidence delivery and receipt posting. Draft is optional
+    (Ready is accepted); ``observed_is_draft`` is retained for callers that
+    record draft vs Ready but is not a hard gate.
     """
     errors = []
     if observed_repository != repository:
@@ -46,8 +48,7 @@ def validate_pr_live_state(
         errors.append(f"PR is not OPEN: {observed_state}")
     if observed_merged:
         errors.append("PR is merged")
-    if observed_is_draft is not True:
-        errors.append("PR is not a Draft")
+    _ = observed_is_draft  # Draft optional; identity/open/unmerged/exact-head remain.
     if observed_base_sha != expected_base_sha:
         errors.append(f"base drifted {observed_base_sha} != {expected_base_sha}")
     if observed_head_sha != expected_head_sha:

@@ -63,7 +63,8 @@ cd token-efficient-agent-harness-lab
 | `./scripts/harness.sh start` | Loopback engine + full dashboard (Mission Control, Operator, Runs, Scheduler, Settings, Health, Audit) |
 | `./scripts/harness.sh work` | One checked file written under `.acp-work-state/inbox/` |
 | `./scripts/harness.sh demo` | No-provider evidence / stale-head proof |
-| `./scripts/harness.sh doctor` | Local toolchain readiness |
+| `./scripts/harness.sh doctor` | Toolchain + optional auth + live self-test gate presence (fixture path OK on `WARN`) |
+| `./scripts/harness.sh bootstrap-auth` | Optional local admin key for protected/dashboard/provider paths |
 | `./scripts/harness.sh self-test` | Pure checks + doctor + local-work golden path + efficiency fixture scorecard (`PASS` required); live model/perf when `ACP_SELF_TEST_LIVE_CONFIRM` and credential env are set |
 | `./scripts/harness.sh install-desktop` | `~/.local/share/applications/agent-control-plane.desktop` |
 

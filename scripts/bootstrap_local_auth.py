@@ -36,6 +36,8 @@ def main() -> int:
         return 0
 
     print("Generated local admin key. It is not stored by this script.")
+    print("Provider-free ./scripts/harness.sh start|work|self-test --mode fixture")
+    print("do not require this key; use it only for protected/dashboard/provider paths.")
     print()
     for key, value in env.items():
         print(f'export {key}="{value}"')
@@ -43,6 +45,7 @@ def main() -> int:
     print("Start protected local runtime:")
     print(command)
     print()
+    print("Or: export the lines above, then ./scripts/harness.sh start")
     print("Paste the generated key into the dashboard auth panel when prompted.")
     return 0
 

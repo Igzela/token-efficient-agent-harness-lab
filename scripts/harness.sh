@@ -6,7 +6,8 @@
 #   ./scripts/harness.sh start        # same
 #   ./scripts/harness.sh work         # finish one real local-folder job
 #   ./scripts/harness.sh demo         # no-provider evidence demo
-#   ./scripts/harness.sh doctor       # local readiness checks
+#   ./scripts/harness.sh doctor       # local readiness checks (incl. live-gate presence)
+#   ./scripts/harness.sh bootstrap-auth  # generate local admin key (optional; protected mode)
 #   ./scripts/harness.sh self-test    # full provider-free matrix (+ live if gated)
 #   ./scripts/harness.sh stop         # stop desktop/work/demo sessions
 #   ./scripts/harness.sh install-desktop   # install a Linux .desktop launcher
@@ -65,6 +66,9 @@ case "${CMD}" in
   doctor)
     exec uv run --no-project python scripts/acp_local_doctor.py "$@"
     ;;
+  bootstrap-auth|bootstrap_auth|auth-bootstrap)
+    exec uv run --no-project python scripts/bootstrap_local_auth.py "$@"
+    ;;
   self-test|selftest)
     ensure_engine
     exec uv run --no-project python scripts/harness_self_test.py "$@"
@@ -106,11 +110,11 @@ EOF
     echo "Launch from your app menu as “Agent Control Plane”, or run: ./scripts/harness.sh start"
     ;;
   -h|--help|help)
-    sed -n '2,12p' "$0"
+    sed -n '2,13p' "$0"
     ;;
   *)
     echo "Unknown command: ${CMD}" >&2
-    echo "Usage: $0 [start|work|demo|doctor|self-test|stop|install-desktop]" >&2
+    echo "Usage: $0 [start|work|demo|doctor|bootstrap-auth|self-test|stop|install-desktop]" >&2
     exit 2
     ;;
 esac
